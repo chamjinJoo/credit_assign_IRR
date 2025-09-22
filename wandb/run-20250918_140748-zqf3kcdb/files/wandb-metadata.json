@@ -1,0 +1,56 @@
+{
+  "os": "Linux-6.11.0-17-generic-x86_64-with-glibc2.39",
+  "python": "CPython 3.10.18",
+  "startedAt": "2025-09-18T05:07:48.509960Z",
+  "args": [
+    "--env",
+    "StagHunt",
+    "--config",
+    "configs/stag_hunt.yaml",
+    "--max-steps",
+    "1024",
+    "--max-iterations",
+    "3000",
+    "--causal-lambda",
+    "0.8",
+    "--use-wandb"
+  ],
+  "program": "/home/chamjin/research/pci-mappo-DoublyRobust/main.py",
+  "codePath": "research/pci-mappo-DoublyRobust/main.py",
+  "git": {
+    "remote": "https://github.com/chamjinJoo/MADP.git",
+    "commit": "0734618a6a0dc4d08d97fded21b08a5aa55d0c28"
+  },
+  "email": "joocham331@gmail.com",
+  "root": "/home/chamjin/research/pci-mappo-DoublyRobust",
+  "host": "GD4-BML-KAIST",
+  "executable": "/home/chamjin/miniconda3/envs/jaxmarl/bin/python",
+  "codePathLocal": "main.py",
+  "cpu_count": 4,
+  "cpu_count_logical": 8,
+  "gpu": "NVIDIA GeForce RTX 2080 Ti",
+  "gpu_count": 1,
+  "disk": {
+    "/": {
+      "total": "243885932544",
+      "used": "67539939328"
+    }
+  },
+  "memory": {
+    "total": "67349127168"
+  },
+  "cpu": {
+    "count": 4,
+    "countLogical": 8
+  },
+  "gpu_nvidia": [
+    {
+      "name": "NVIDIA GeForce RTX 2080 Ti",
+      "memoryTotal": "11811160064",
+      "cudaCores": 4352,
+      "architecture": "Turing",
+      "uuid": "GPU-f0a84bd7-94fe-84cd-987f-65b3e0f1dd79"
+    }
+  ],
+  "cudaVersion": "12.8"
+}

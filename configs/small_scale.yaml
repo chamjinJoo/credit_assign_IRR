@@ -1,0 +1,59 @@
+# PCI-MAPPO Small Scale Configuration (for quick testing)
+
+# Neural Network Configuration
+network:
+  hidden_dim: 32
+  lr_policy: 5.0e-4
+  lr_value: 5.0e-4
+  lr_bridge: 5.0e-4
+  lr_critic: 5.0e-4
+
+# Algorithm Configuration
+algorithm:
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 2
+  batch_size: 32
+  causal_lambda: 0.05
+  causal_lambda_schedule: false
+  causal_lambda_start: 0.0
+  causal_lambda_final: 0.1
+  causal_lambda_warmup_steps: 1000
+  causal_lambda_startingpoint: 0
+  num_batches: 2  # Number of batches K for training
+  # Epsilon greedy parameters for causal data collection
+  epsilon_start: 0.6
+  epsilon_end: 0.0
+  epsilon_decay_steps: 1000
+  # Buffer size limits for FIFO queue behavior
+  max_buffer_size: 5000
+  max_causal_buffer_size: 1000
+
+# Training Configuration
+training:
+  max_iterations: 200
+  max_steps_per_iteration: 512
+  log_interval: 5
+  save_interval: 50
+  eval_interval: 20
+  eval_episodes: 5
+  save_dir: "./checkpoints_small"
+  device: "cpu"
+
+# Environment Configuration
+environment:
+  env_name: "simple_cooperative"
+  num_agents: 2
+  grid_size: 3
+  max_steps: 25
+  cooperation_bonus: 1.0
+
+# Weights & Biases Configuration
+wandb:
+  use_wandb: false
+  project: "pci-mappo-test"
+  run_name: "small_scale_test"
+  tags: ["pci", "mappo", "test", "small"]

@@ -1,0 +1,53 @@
+# Simple Stag Hunt Environment Configuration
+
+# Neural Network Configuration
+network:
+  hidden_dim: 64
+  lr: 3.0e-4
+  lr_bridge: 3.0e-4
+  lr_critic: 3.0e-4
+
+# Algorithm Configuration
+algorithm:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  batch_size: 64
+  causal_lambda: 0.1
+  causal_lambda_schedule: false
+  causal_lambda_start: 0.0
+  causal_lambda_final: 0.2
+  causal_lambda_warmup_steps: 1000
+  causal_lambda_startingpoint: 0
+  num_batches: 4
+
+# Training Configuration
+training:
+  max_iterations: 1000
+  max_steps_per_iteration: 128
+  log_interval: 10
+  save_interval: 100
+  eval_interval: 50
+  eval_episodes: 10
+  save_dir: "./checkpoints"
+  device: "cpu"
+
+# Environment Configuration
+environment:
+  env_name: "SimpleStagHuntEnv"
+  cooperation_reward: 3
+  defect_alone_reward: 5
+  defect_together_reward: 1
+  failed_cooperation_punishment: 0
+  eps_per_game: 1
+
+# Weights & Biases Configuration
+wandb:
+  use_wandb: false
+  project: "pci-mappo-simple-stag-hunt"
+  run_name: "stag-hunt"
+  tags: ["pci", "mappo", "simple-stag-hunt"]

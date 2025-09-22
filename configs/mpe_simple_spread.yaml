@@ -1,0 +1,60 @@
+# PCI-MAPPO MPE Simple Spread Environment Configuration
+
+# Neural Network Configuration
+network:
+  hidden_dim: 128
+  lr: 3.0e-4
+  lr_bridge: 3.0e-4
+  lr_critic: 3.0e-4
+
+# Algorithm Configuration
+algorithm:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  batch_size: 128
+  causal_lambda: 0.1
+  causal_lambda_schedule: false  # Enable causal lambda scheduling
+  causal_lambda_start: 0.0      # Starting causal lambda value
+  causal_lambda_final: 0.2      # Final causal lambda value
+  causal_lambda_warmup_steps: 10000  # Steps to reach final value
+  causal_lambda_startingpoint: 0    # Starting iteration for causal lambda scheduling
+  num_batches: 4  # Number of batches K for training
+  # Epsilon greedy parameters for causal data collection
+  epsilon_start: 0.6
+  epsilon_end: 0.0
+  epsilon_decay_steps: 1000
+  # Buffer size limits for FIFO queue behavior
+  max_buffer_size: 10000
+  max_causal_buffer_size: 2000
+
+# Training Configuration
+training:
+  max_iterations: 1000
+  max_steps_per_iteration: 256
+  log_interval: 5
+  save_interval: 200
+  eval_interval: 100
+  eval_episodes: 20
+  save_dir: "./checkpoints"
+  device: "cpu"
+
+# Environment Configuration
+environment:
+  env_name: "SimpleSpread"
+  num_agents: 2
+  local_ratio: 0.5
+  max_cycles: 25
+  continuous_actions: false
+  seed: 0
+
+# Weights & Biases Configuration
+wandb:
+  use_wandb: false
+  project: "pci-mappo-mpe"
+  run_name: "mpe-simple-spread"
+  tags: ["pci", "mappo", "multi-agent", "mpe", "simple-spread"]

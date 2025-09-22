@@ -1,0 +1,23 @@
+{
+  "simulation_info": {
+    "timestamp": "2025-09-17T14:35:21.449419",
+    "environment": "StagHuntEnv",
+    "num_agents": 2,
+    "obs_dim": 40,
+    "action_dim": 5
+  },
+  "training_config": {
+    "max_iterations": 3000,
+    "max_steps_per_iteration": 1024,
+    "log_interval": 5,
+    "save_interval": 100,
+    "eval_interval": 50,
+    "eval_episodes": 10,
+    "device": "cpu"
+  },
+  "directories": {
+    "base_save_dir": "./checkpoints",
+    "simulation_dir": "./checkpoints\\20250917_143521\\staghuntenv\\checkpoints",
+    "checkpoint_dir": "./checkpoints\\20250917_143521\\staghuntenv\\checkpoints"
+  }
+}

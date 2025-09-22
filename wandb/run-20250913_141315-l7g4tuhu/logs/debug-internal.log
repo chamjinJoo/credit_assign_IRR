@@ -1,0 +1,19 @@
+{"time":"2025-09-13T14:13:15.244801762+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250913_141315-l7g4tuhu/logs/debug-core.log"}
+{"time":"2025-09-13T14:13:15.564030579+09:00","level":"INFO","msg":"stream: created new stream","id":"l7g4tuhu"}
+{"time":"2025-09-13T14:13:15.564057083+09:00","level":"INFO","msg":"stream: started","id":"l7g4tuhu"}
+{"time":"2025-09-13T14:13:15.564076058+09:00","level":"INFO","msg":"handler: started","stream_id":"l7g4tuhu"}
+{"time":"2025-09-13T14:13:15.564069772+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"l7g4tuhu"}
+{"time":"2025-09-13T14:13:15.564133974+09:00","level":"INFO","msg":"sender: started","stream_id":"l7g4tuhu"}
+{"time":"2025-09-13T14:13:33.668938185+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-13T14:27:16.771198612+09:00","level":"INFO","msg":"stream: closing","id":"l7g4tuhu"}
+{"time":"2025-09-13T14:27:16.771234069+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-13T14:27:16.7712729+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-13T14:27:17.007386657+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-09-13T14:27:17.007480019+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"run pci-mappo/l7g4tuhu not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-09-13T14:27:17.007776141+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-13T14:27:17.215276878+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/l7g4tuhu/file_stream"}
+{"time":"2025-09-13T14:27:17.215309709+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/l7g4tuhu/file_stream: {\"error\":\"run pci-mappo/l7g4tuhu not found while streaming file\"}"}
+{"time":"2025-09-13T14:27:17.215453159+09:00","level":"INFO","msg":"handler: closed","stream_id":"l7g4tuhu"}
+{"time":"2025-09-13T14:27:17.215463256+09:00","level":"INFO","msg":"sender: closed","stream_id":"l7g4tuhu"}
+{"time":"2025-09-13T14:27:17.215462728+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"l7g4tuhu"}
+{"time":"2025-09-13T14:27:17.215524474+09:00","level":"INFO","msg":"stream: closed","id":"l7g4tuhu"}

@@ -1,0 +1,46 @@
+algorithm:
+  batch_size: 64
+  causal_lambda: 0.2
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  gae_lambda: 0.95
+  gamma: 0.99
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  value_coef: 0.5
+  causal_lambda_schedule: false
+  causal_lambda_start: 0.0
+  causal_lambda_final: 0.2
+  causal_lambda_warmup_steps: 10000
+  num_batches: 4
+  epsilon_start: 0.6
+  epsilon_end: 0.0
+  epsilon_decay_steps: 1000
+  max_buffer_size: 10000
+  max_causal_buffer_size: 2000
+environment:
+  cooperation_bonus: 2.0
+  env_name: simple_cooperative
+  grid_size: 5
+  max_steps: 50
+  num_agents: 4
+network:
+  hidden_dim: 64
+  lr_bridge: 0.0003
+  lr_critic: 0.0003
+  lr_policy: 0.0003
+  lr_value: 0.0003
+training:
+  device: cpu
+  eval_episodes: 10
+  eval_interval: 50
+  log_interval: 10
+  max_iterations: 500
+  max_steps_per_iteration: 2048
+  save_dir: ./checkpoints
+  save_interval: 100
+wandb:
+  project: pci-mappo
+  run_name: null
+  tags: null
+  use_wandb: false

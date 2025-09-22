@@ -1,0 +1,101 @@
+\documentclass{article}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\begin{document}
+\textbf{Key Components (Doubly Robust with RKHS Critics):}
+\begin{itemize}
+    \item \textbf{Outcome Bridge Network ($h_\phi$)}: $h_\phi(\mathbf{a}_t, w_t)$ predicts the outcome.
+    \item \textbf{Action Bridge Network ($q_\theta$)}: $q_\theta(\mathbf{a}_t, z_t)$ provides the IPW-like weight.
+    \item \textbf{Critic Kernel for h ($K_z$)}: A kernel function over $(z, \mathbf{a})$ to define the loss for $h_\phi$.
+    \item \textbf{Critic Kernel for q ($K_w$)}: A kernel function over $(w, \mathbf{a})$ to define the loss for $q_\theta$.
+    \item \textbf{Joint Policy ($\pi(\mathbf{a}_t|\mathbf{o}_t)$)}: The joint probability of an action, defined as $\prod_{i=1}^n \pi_{\theta_i}(a^i_t | o^i_t)$.
+\end{itemize}
+
+\begin{algorithm}
+\caption{PCI-MAPPO: Main Training Loop (DR with RKHS Critics)}
+\label{alg:pci-mappo-dr-rkhs-main}
+\begin{algorithmic}[1]
+\State \textbf{Initialize:}
+\State \quad Policy networks $\pi_{\theta_i}(a^i | o^i_t)$ and Value network $V_{\omega}(\mathbf{o_t})$
+\State \quad \textbf{// Causal Networks}
+\State \quad Outcome Bridge network $h_\phi(\mathbf{a}, w)$
+\State \quad Action Bridge network $q_\theta(z, \mathbf{a})$
+\State \quad Kernel functions $Kernel_z$ and $Kernel_w$
+\State \quad Experience buffer $\mathcal{D} = \emptyset$
+
+\For{iteration $k = 1, 2, \ldots$}
+    \State \textbf{// Data Collection Phase}
+    \State Collect transitions $\{(\mathbf{o}_{t-1}, \mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \ldots)\}$ and store in $\mathcal{D}$
+    
+    \State \textbf{// Training Phase}
+    \For{mini-batch $B_k$ from $\mathcal{D}$}
+        \State \Call{UpdateCausalNetworks}{$B_k$}
+        \State \Call{UpdateAgentPolicies}{$B_k$}
+    \EndFor
+    \State Clear experience buffer: $\mathcal{D} \leftarrow \emptyset$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\newpage
+
+\begin{algorithm}
+\caption{Update Causal Networks (DR with RKHS Critics)}
+\label{alg:causal-networks-dr-rkhs}
+\begin{algorithmic}[1]
+\Require Mini-batch $B_k$
+\Ensure Updated networks $h_\phi, q_\theta$
+\State \textbf{// Part 1: Update Outcome Bridge Network $h_\phi$ via Analytical RKHS Loss}
+\State For each transition $i \in B_k$, compute residual: $res_i \leftarrow h_\phi(w_i, \mathbf{a}_i) - Y_i$
+\State Construct feature vectors $\{\mathbf{f}_{z,i}\}$ from $\{z_i, \mathbf{a}_i\}$ in the mini-batch
+\State Compute Gram matrix: $K_z[i,j] \leftarrow Kernel_z(\mathbf{f}_{z,i}, \mathbf{f}_{z,j})$
+\State Compute loss: $\mathcal{L}_{h} \leftarrow \mathbf{res}^T K_z \mathbf{res}$
+\State Update $\phi$ via gradient descent on $\mathcal{L}_{h}$
+
+\Statex
+\State \textbf{// Part 2: Update Action Bridge Network $q_\theta$ via Analytical RKHS Loss}
+\State For each transition $i \in B_k$, compute IPW term: $\phi_q[i] \leftarrow \pi(\mathbf{a}_i|\mathbf{o}_i) \cdot q_\theta(z_i, \mathbf{a}_i)$
+\State Construct feature vectors $\{\mathbf{f}_{w,i}\}$ from $\{w_i, \mathbf{a}_i\}$ in the mini-batch
+\State Compute Gram matrix $K_{w1}[i,j] \leftarrow Kernel_w(\mathbf{f}_{w,i}, \mathbf{f}_{w,j})$
+\State Compute marginalized Gram matrix $K_{w2}[i,j] \leftarrow \mathbb{E}_{\mathbf{a} \sim \pi(\cdot|\mathbf{o}_j)}[Kernel_w(\mathbf{f}_{w,i}, \mathbf{f}_{w,j}(\mathbf{a}))]$ \Comment{Computationally intensive}
+\State Compute loss $\mathcal{L}_{q}$ from $\phi_q$, $K_{w1}$, and $K_{w2}$
+\State Update $\theta$ via gradient descent on $\mathcal{L}_{q}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Update Agent Policies with Doubly Robust Causal Reward Shaping}
+\label{alg:agent-update-dr-rkhs}
+\begin{algorithmic}[1]
+\Require Mini-batch $B_k$, causal networks $h_\phi, q_\theta$
+\Ensure Updated policies $\{\pi_{\theta_i}\}$ and value function $V_{\omega}$
+\For{transition $(\mathbf{o}_{t-1}, \mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \ldots) \in B_k$}
+    \State $z_t \leftarrow \mathbf{o}_t, w_t \leftarrow \mathbf{o}_{t-1}$
+    \State \textbf{// Compute Doubly Robust Correction Term}
+    \State $r_{pred\_t} \leftarrow h_\phi(w_t, \mathbf{a}_t)$
+    \State $error_t \leftarrow \mathbf{r}_t - r_{pred\_t}$
+    \State $weight_t \leftarrow q_\theta(z_t, \mathbf{a}_t)$
+    \State $DR\_correction_t \leftarrow weight_t \cdot error_t$
+    
+    \State \textbf{// Compute Causal Reward Shaping}
+    \For{agent $i = 1, \ldots, n$}
+        \State Initialize causal effect vector: $\mathbf{c}^i_t \leftarrow \mathbf{0} \in \mathbb{R}^N$
+        \For{each action $a_k \in \mathcal{A}^i$}
+            \State Create counterfactual action vector: $\mathbf{a}' \leftarrow \mathbf{a}_t$; $\mathbf{a}'[i] \leftarrow a_k$
+            \State \textbf{// Estimate counterfactual reward with DR principle}
+            \State $REG\_estimate \leftarrow h_\phi(w_t, \mathbf{a}')$
+            \State $\mathbf{\hat{r}}_{a_k} \leftarrow REG\_estimate + DR\_correction_t$
+            \State $\mathbf{c}^i_t \leftarrow \mathbf{c}^i_t + \pi_{\theta_i}(a_k | o^i_t) \cdot \mathbf{\hat{r}}_{a_k}$
+        \EndFor
+        \State $\Delta^i_t \leftarrow \frac{1}{N-1}\sum_{j \neq i}(\mathbf{c}^{i}_t)_j$
+        \State $\tilde{r}^i_t \leftarrow r^i_t + \lambda \cdot \Delta^i_t$
+    \EndFor
+\EndFor
+\State Compute advantages and returns from shaped rewards using GAE
+\State Perform PPO update for policies $\pi_{\theta_i}$ and value function $V_\omega$
+\end{algorithmic}
+\end{algorithm}
+\end{document}
