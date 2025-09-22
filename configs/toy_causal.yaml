@@ -1,0 +1,68 @@
+# Configuration for PCI-MAPPO training on ToyCausalEnv
+
+# Environment settings
+env:
+  name: "ToyCausalEnv"
+  num_agents: 2
+  episode_length: 5
+
+# Network settings
+network:
+  hidden_dim: 32
+  lr: 0.0003
+  lr_bridge: 0.0003
+  lr_critic: 0.0003
+  # RKHS Kernel parameters for analytical loss
+  rkhs_gamma: 1.0  # Standard gamma value
+
+# Algorithm settings
+algorithm:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  batch_size: 32
+  causal_lambda: 0.1
+  causal_lambda_schedule: false  # Enable causal lambda scheduling
+  causal_lambda_start: 0.0      # Starting causal lambda value
+  causal_lambda_final: 0.2      # Final causal lambda value
+  causal_lambda_warmup_steps: 10000  # Steps to reach final value
+  causal_lambda_startingpoint: 0    # Starting iteration for causal lambda scheduling
+  num_batches: 4  # Number of batches K for training
+  # Epsilon greedy parameters for causal data collection
+  epsilon_start: 0.6
+  epsilon_end: 0.0
+  epsilon_decay_steps: 1000
+  # Buffer size limits for FIFO queue behavior
+  max_buffer_size: 5000
+  max_causal_buffer_size: 1000
+
+# Training settings
+training:
+  max_iterations: 1000
+  max_steps_per_iteration: 128
+  log_interval: 1
+  save_interval: 100
+  eval_interval: 50
+  eval_episodes: 20
+  
+  # Logging
+  save_dir: "./checkpoints/toy_causal"
+  
+  # Device
+  device: "cpu"
+
+# Evaluation settings
+evaluation:
+  num_episodes: 50
+  render: false
+
+# Weights & Biases Configuration
+wandb:
+  use_wandb: false
+  project: "pci-mappo-toy-causal"
+  run_name: "Reasoning Bandit"
+  tags: ["pci", "mappo", "multi-agent", "reasoning-bandit"]

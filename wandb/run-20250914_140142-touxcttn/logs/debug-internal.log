@@ -1,0 +1,19 @@
+{"time":"2025-09-14T14:01:43.169328872+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250914_140142-touxcttn/logs/debug-core.log"}
+{"time":"2025-09-14T14:01:43.491002115+09:00","level":"INFO","msg":"stream: created new stream","id":"touxcttn"}
+{"time":"2025-09-14T14:01:43.491043389+09:00","level":"INFO","msg":"stream: started","id":"touxcttn"}
+{"time":"2025-09-14T14:01:43.491056778+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"touxcttn"}
+{"time":"2025-09-14T14:01:43.491068394+09:00","level":"INFO","msg":"handler: started","stream_id":"touxcttn"}
+{"time":"2025-09-14T14:01:43.491078903+09:00","level":"INFO","msg":"sender: started","stream_id":"touxcttn"}
+{"time":"2025-09-14T14:01:43.745842274+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-14T14:41:29.039330905+09:00","level":"INFO","msg":"stream: closing","id":"touxcttn"}
+{"time":"2025-09-14T14:41:29.039361203+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-14T14:41:29.039396998+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-14T14:41:29.31164164+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/touxcttn/file_stream"}
+{"time":"2025-09-14T14:41:29.311727587+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/touxcttn/file_stream: {\"error\":\"run pci-mappo/touxcttn not found while streaming file\"}"}
+{"time":"2025-09-14T14:41:29.333045455+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-09-14T14:41:29.333150059+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"run pci-mappo/touxcttn not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-09-14T14:41:29.33345854+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-14T14:41:29.333520547+09:00","level":"INFO","msg":"handler: closed","stream_id":"touxcttn"}
+{"time":"2025-09-14T14:41:29.333548204+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"touxcttn"}
+{"time":"2025-09-14T14:41:29.333552843+09:00","level":"INFO","msg":"sender: closed","stream_id":"touxcttn"}
+{"time":"2025-09-14T14:41:29.33359595+09:00","level":"INFO","msg":"stream: closed","id":"touxcttn"}

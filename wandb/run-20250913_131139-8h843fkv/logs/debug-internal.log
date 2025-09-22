@@ -1,0 +1,38 @@
+{"time":"2025-09-13T13:11:40.091798467+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250913_131139-8h843fkv/logs/debug-core.log"}
+{"time":"2025-09-13T13:11:40.40812808+09:00","level":"INFO","msg":"stream: created new stream","id":"8h843fkv"}
+{"time":"2025-09-13T13:11:40.4081642+09:00","level":"INFO","msg":"stream: started","id":"8h843fkv"}
+{"time":"2025-09-13T13:11:40.408241256+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"8h843fkv"}
+{"time":"2025-09-13T13:11:40.40825476+09:00","level":"INFO","msg":"sender: started","stream_id":"8h843fkv"}
+{"time":"2025-09-13T13:11:40.408288904+09:00","level":"INFO","msg":"handler: started","stream_id":"8h843fkv"}
+{"time":"2025-09-13T13:11:40.713220712+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-13T13:36:10.813534497+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T13:36:42.874379338+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T13:37:17.524894479+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T13:37:56.611332561+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T13:38:44.017014107+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T13:39:44.517678791+09:00","level":"INFO","msg":"api: retrying HTTP error","status":500,"url":"https://api.wandb.ai/graphql","body":"{\"errors\":[{\"message\":\"context deadline exceeded\",\"path\":[\"project\",\"run\"]}],\"data\":{\"project\":{\"run\":null}}}"}
+{"time":"2025-09-13T13:41:55.816944521+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T13:52:40.826628957+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T13:55:25.829505805+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T14:04:10.836947928+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T14:05:40.838120157+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T14:34:49.451530375+09:00","level":"INFO","msg":"api: retrying HTTP error","status":500,"url":"https://api.wandb.ai/graphql","body":"{\"errors\":[{\"message\":\"context deadline exceeded\",\"path\":[\"project\",\"run\"]}],\"data\":{\"project\":{\"run\":null}}}"}
+{"time":"2025-09-13T14:52:40.86790395+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T14:59:10.872530489+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T14:59:13.04139814+09:00","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/8h843fkv/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2025-09-13T14:59:43.156028732+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T15:00:18.028283482+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T15:00:57.372721888+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T15:02:25.875238667+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-13T15:03:25.876477241+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T15:03:54.62473546+09:00","level":"INFO","msg":"api: retrying HTTP error","status":500,"url":"https://api.wandb.ai/graphql","body":"{\"errors\":[{\"message\":\"context deadline exceeded\",\"path\":[\"project\",\"run\"]}],\"data\":{\"project\":{\"run\":null}}}"}
+{"time":"2025-09-13T15:04:29.066566687+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded"}
+{"time":"2025-09-13T15:13:16.725972308+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-13T15:13:16.726031023+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-13T15:13:17.6463515+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-13T15:13:17.727203002+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading history steps 149-149, summary, console lines 3012-3023","runtime_seconds":0.080728524}],"total_operations":1}}
+{"time":"2025-09-13T15:13:17.904420679+09:00","level":"INFO","msg":"stream: closing","id":"8h843fkv"}
+{"time":"2025-09-13T15:13:17.904463013+09:00","level":"INFO","msg":"handler: closed","stream_id":"8h843fkv"}
+{"time":"2025-09-13T15:13:17.904487009+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"8h843fkv"}
+{"time":"2025-09-13T15:13:17.904515566+09:00","level":"INFO","msg":"sender: closed","stream_id":"8h843fkv"}
+{"time":"2025-09-13T15:13:17.904568703+09:00","level":"INFO","msg":"stream: closed","id":"8h843fkv"}

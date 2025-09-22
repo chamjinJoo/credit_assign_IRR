@@ -1,0 +1,16 @@
+{"time":"2025-09-17T18:54:18.69663214+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250917_185418-99gdevpk/logs/debug-core.log"}
+{"time":"2025-09-17T18:54:19.022311849+09:00","level":"INFO","msg":"stream: created new stream","id":"99gdevpk"}
+{"time":"2025-09-17T18:54:19.022339569+09:00","level":"INFO","msg":"stream: started","id":"99gdevpk"}
+{"time":"2025-09-17T18:54:19.022357584+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"99gdevpk"}
+{"time":"2025-09-17T18:54:19.022368983+09:00","level":"INFO","msg":"handler: started","stream_id":"99gdevpk"}
+{"time":"2025-09-17T18:54:19.022382065+09:00","level":"INFO","msg":"sender: started","stream_id":"99gdevpk"}
+{"time":"2025-09-17T18:54:19.371171899+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-17T21:13:00.156013781+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-17T21:13:00.156044084+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-17T21:13:01.157488966+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.678463915,"progress":"466.5KB/466.5KB"},{"desc":"uploading config.yaml","runtime_seconds":0.070019227,"progress":"6.1KB/6.1KB"}],"total_operations":2}}
+{"time":"2025-09-17T21:13:01.487623601+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-17T21:13:01.8430578+09:00","level":"INFO","msg":"stream: closing","id":"99gdevpk"}
+{"time":"2025-09-17T21:13:01.843075833+09:00","level":"INFO","msg":"handler: closed","stream_id":"99gdevpk"}
+{"time":"2025-09-17T21:13:01.843085987+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"99gdevpk"}
+{"time":"2025-09-17T21:13:01.843090761+09:00","level":"INFO","msg":"sender: closed","stream_id":"99gdevpk"}
+{"time":"2025-09-17T21:13:01.843150097+09:00","level":"INFO","msg":"stream: closed","id":"99gdevpk"}

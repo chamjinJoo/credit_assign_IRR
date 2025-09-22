@@ -1,0 +1,63 @@
+# PCI-MAPPO Default Configuration
+
+# Neural Network Configuration
+network:
+  hidden_dim: 64
+  lr: 3.0e-4
+  lr_bridge: 3.0e-4
+  lr_critic: 3.0e-4
+  # RKHS Kernel parameters for analytical loss
+  rkhs_gamma: 1.0  # Gamma parameter for RBF kernel
+
+# Algorithm Configuration
+algorithm:
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  batch_size: 64
+  causal_lambda: 0.1
+  causal_lambda_schedule: false
+  causal_lambda_start: 0.0
+  causal_lambda_final: 0.2
+  causal_lambda_warmup_steps: 10000
+  causal_lambda_startingpoint: 0
+  num_batches: 4  # Number of batches K for training
+  # Epsilon greedy parameters for causal data collection
+  epsilon_start: 0.6
+  epsilon_end: 0.0
+  epsilon_decay_steps: 1000
+  # Buffer size limits for FIFO queue behavior
+  max_buffer_size: 10000
+  max_causal_buffer_size: 2000
+
+# Training Configuration
+training:
+  max_iterations: 1000
+  max_steps_per_iteration: 128
+  log_interval: 10
+  save_interval: 100
+  eval_interval: 50
+  eval_episodes: 10
+  save_dir: "./checkpoints"
+  device: "cpu"
+
+# Environment Configuration
+environment:
+  env_name: "simple_cooperative"
+  num_agents: 3
+  grid_size: 5
+  max_steps: 50
+  cooperation_bonus: 2.0
+  # For Stag-Hunt environment
+  stag_move_prob: 0.7
+
+# Weights & Biases Configuration
+wandb:
+  use_wandb: false
+  project: "pci-mappo"
+  run_name: null
+  tags: ["pci", "mappo", "multi-agent"]

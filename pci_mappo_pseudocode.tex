@@ -1,0 +1,113 @@
+\documentclass{article}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\begin{document}
+\textbf{Key Components:}
+\begin{itemize}
+\item \textbf{Confounder Variables}: $z_t=\mathbf{o}_t, w_t =\mathbf{o}_{t-1}$ 
+\item \textbf{Density Network}: $f_\psi(w| z, \mathbf{a})$ models the distribution of confounders $w$ given $z, \mathbf{a}_t$.
+\item \textbf{Bridge Network}: $h_\phi(\mathbf{a}_t, w)$ predicts the causal effect of action $\mathbf{a}_t$ on the result given the confounder $w$.
+\item \textbf{Causal Reward Shaping}: $\Delta^i_t$ quantifies the expected impact of agent $i$'s observations on other agents, computed by counterfactual sampling and marginalization over the action space with policy.
+\end{itemize}
+
+\begin{algorithm}
+\caption{PCI-MAPPO: Main Training Loop}
+\label{alg:pci-mappo-main}
+\begin{algorithmic}[1]
+\Require Environment $\mathcal{E}$, agents $\{1, 2, \ldots, n\}$, hyperparameters $\lambda$, $M$, $\epsilon$, $\gamma$
+\Ensure Trained policies $\{\pi_{\theta_i}\}_{i=1}^n$, centralized value function $V_{\omega}$
+\State \textbf{Initialize:}
+\State \quad Policy networks $\pi_{\theta_i}(a^i | o^i)$ for all agents $i \in \{1, \ldots, n\}$
+\State \quad Value networks $V_{\omega}(\mathbf{o_t})$ 
+\State \quad Bridge network $h_\phi(\mathbf{a}, \mathbf{w}): \mathcal{A}^n \times \mathcal{W} \rightarrow \mathbb{R}$
+\State \quad Density network $f_\psi(w|z,\mathbf{a}): \mathcal{Z} \times \mathcal{A}^n \rightarrow \Delta(\mathcal{W})$
+\State \quad Experience buffer $\mathcal{D} = \emptyset$
+
+\For{iteration $k = 1, 2, \ldots$}
+    \State \textbf{// Data Collection Phase}
+    \For{each episode}
+        \State Reset environment: $\mathbf{o}_0 = \{o^1_0, \ldots, o^n_0\} \leftarrow \mathcal{E}.\text{reset}()$
+        \For{timestep $t = 0, 1, \ldots, T-1$}
+            \For{agent $i = 1, \ldots, n$}
+                \State Sample action: $a^i_t \sim \pi_{\theta_i}(\cdot | o^i_t)$
+            \EndFor
+            \State Execute actions: $\mathbf{o}_{t+1}, \mathbf{r}_t, \mathbf{d}_t \leftarrow \mathcal{E}.\text{step}(\mathbf{a}_t)$
+            \State Store transition: $\mathcal{D} \leftarrow \mathcal{D} \cup \{(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{o}_{t+1}, \mathbf{d}_t)\}$
+        \EndFor
+    \EndFor
+    \State \textbf{// Training Phase}
+    \State Shuffle $\mathcal{D}$; partition into mini-batches $\{B_k\}_{k=1}^K$
+    \For{mini-batch $B_k$}
+        \State \Call{UpdateCausalNetworks}{$B_k$} \Comment{Algorithm~\ref{alg:causal-networks}}
+        \State \Call{UpdateAgentPolicies}{$B_k$} \Comment{Algorithm~\ref{alg:agent-update}}
+    \EndFor
+    \State Clear experience buffer: $\mathcal{D} \leftarrow \emptyset$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Update Causal Networks}
+\label{alg:causal-networks}
+\begin{algorithmic}[1]
+\Require Mini-batch $B_k$, learning rates $\alpha_\phi$, $\alpha_\psi$
+\Ensure Updated bridge network $h_\phi$ and density network $f_\psi$
+\State \textbf{// 1. Update Density Network}
+\For{transition $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{o}_{t+1}, \mathbf{d}_t) \in B_k$ where $t > 0$}
+    \State $z_t \leftarrow \mathbf{o}_t, w_t \leftarrow \mathbf{o}_{t-1}$ \Comment{Proxy variables}
+    \State $\mathcal{L}_{\text{dens}} \leftarrow -\log f_\psi(w_t | z_t, \mathbf{a}_t)$
+    \State Update $\psi$ using $\nabla_\psi \mathcal{L}_{\text{dens}}$ with learning rate $\alpha_\psi$
+\EndFor
+\State \textbf{// 2. Stage 1: Update Auxiliary Network g}
+\For{transition $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \ldots) \in B_k$ where $t > 0$}
+    \State $\mathbf{\hat{r}}_{\text{target}} \leftarrow g_\theta(\mathbf{a}_t, \mathbf{o}_t)$ \Comment{Predict $\mathbb {E}[Y|\mathbf{a},z]$}
+    \State $\mathcal{L}_{g} \leftarrow \|\mathbf{r}_t - \mathbf{\hat{r}}_{\text{target}}\|^2$
+    \State Update $\theta$ using $\nabla_\theta \mathcal{L}_{g}$ with learning rate $\alpha_\theta$
+\EndFor
+\State \textbf{// 3. Stage 2: Update Bridge Network h}
+\For{transition $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \ldots) \in B_k$ where $t > 0$}
+    \State $z_t \leftarrow \mathbf{o}_t$
+    \State Sample $\{w^{(m)}\}_{m=1}^M \sim f_\psi(\cdot | z_t, \mathbf{a}_t)$
+    \State $\mathbf{\hat{r}}_{\text{bridge}} \leftarrow \frac{1}{M} \sum_{m=1}^M h_\phi(\mathbf{a}_t, w^{(m)})$
+    \State $\mathcal{L}_{\text{bridge}} \leftarrow \|g_\theta(\mathbf{a}_t, z_t) -\mathbf{\hat{r}}_{\text{bridge}}\|^2$ \Comment{stop gradient when computing $g$}
+    \State Update $\phi$ using $\nabla_\phi \mathcal{L}_{\text{bridge}}$ with learning rate $\alpha_\phi$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}
+\caption{Update Agent Policies with Causal Reward Shaping}
+\label{alg:agent-update}
+\begin{algorithmic}[1]
+\Require Mini-batch $B_k$, causal networks $h_\phi$, $f_\psi$, hyperparameters $\lambda$, $\epsilon$
+\Ensure Updated policies $\{\pi_{\theta_i}\}$ and value functions $V_{\omega}$
+\For{transition $(\mathbf{o}_t, \mathbf{a}_t, \mathbf{r}_t, \mathbf{o}_{t+1}, \mathbf{d}_t, h_t) \in B_k$}
+    \State $z_t \leftarrow \mathbf{o}_t$ \Comment{Treatment confounding proxy}
+    \State \textbf{// Compute Causal Reward Shaping}
+    \For{agent $i = 1, \ldots, n$}
+        \State Initialize causal effect vector: $\mathbf{c}^i_t \leftarrow \mathbf{0} \in \mathbb{R}^N$
+        \For{each action $a_k \in \mathcal{A}$}
+            \State Create counterfactual action vector: $\mathbf{a}' \leftarrow \mathbf{a}_t$; $\mathbf{a}'[i] \leftarrow a_k$
+            \State Sample $\{w^{(m)}\}_{m=1}^M \sim f_\psi(\cdot | z_t, \mathbf{a}')$
+            \State Estimate counterfactual reward: $\mathbf{\hat{r}}_{a_k} \leftarrow \frac{1}{M} \sum_{m=1}^M h_\phi(\mathbf{a}', w^{(m)})$
+            \State $\mathbf{c}^i_t \leftarrow \mathbf{c}^i_t + \pi_{\theta_i}(a_k | o^i_t) \cdot \mathbf{\hat{r}}_{a_k}$ \Comment{Marginalize over action space}
+        \EndFor
+        \State $\Delta^i_t \leftarrow {1\over{N-1}}\sum(\mathbf{c}^{i}_t)_{-i}$ \Comment{Causal reward shaping}
+        \State $\tilde{r}^i_t \leftarrow r^i_t + \lambda \cdot \Delta^i_t$ \Comment{Shaped reward}
+    \EndFor
+\EndFor
+
+\State Compute advantages $\{\hat{A}^i_t\}$ and returns $\{\tilde{R}^i_t\}$ from $\{\tilde{r}^i_t\}$ using GAE
+\State \textbf{// PPO Update}
+\For{PPO epoch $e = 1, \ldots, E$}
+    \State $\text{ratio}_t \leftarrow \frac{\pi_{\theta_i}(a^i_t | o^i_t)}{\pi_{\theta_i}^{\text{old}}(a^i_t | o^i_t)}$
+    \State $\mathcal{L}^i_{\text{policy}} \leftarrow \mathbb{E}_t[\min(\text{ratio}_t \hat{A}^i_t, \text{clip}(\text{ratio}_t, 1-\epsilon, 1+\epsilon)\hat{A}^i_t)]$
+    \State $\mathcal{L}^i_{\text{value}} \leftarrow \mathbb{E}_t[\|V_{\omega_i}(\mathbf{o}_t) - \tilde{R}_t\|^2]$
+    \State Update $\theta_i$, $\omega_i$ using gradients of $\mathcal{L}^i_{\text{policy}}$, $\mathcal{L}^i_{\text{value}}$
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+\end{document}

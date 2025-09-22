@@ -1,0 +1,56 @@
+2025-09-17 13:08:30,278 - PCI-MAPPO - INFO - Starting training...
+2025-09-17 13:08:30,278 - PCI-MAPPO - INFO - ============================================================
+2025-09-17 13:08:30,278 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-17 13:08:30,278 - PCI-MAPPO - INFO - ============================================================
+2025-09-17 13:08:30,278 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Log interval: 10
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-17 13:08:30,279 - PCI-MAPPO - INFO - Device: cpu
+2025-09-17 13:08:30,280 - PCI-MAPPO - INFO - Wandb: True
+2025-09-17 13:08:30,280 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                                   | 0/3000 [00:03<?, ?iter/s]
+2025-09-17 13:08:33,202 - PCI-MAPPO - INFO - Iteration 0
+2025-09-17 13:08:33,202 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-17 13:08:33,202 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.571
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -   Update Info:
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -     outcome_bridge_loss: 50.725534
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -     action_bridge_loss: 1.287863
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.004520
+2025-09-17 13:08:33,203 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.493825
+2025-09-17 13:08:33,204 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.004307
+2025-09-17 13:08:33,204 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.545655
+2025-09-17 13:08:33,204 - PCI-MAPPO - INFO -     agent_0_value_loss: 0.278943
+2025-09-17 13:08:33,204 - PCI-MAPPO - INFO -     agent_1_value_loss: 1.118095
+2025-09-17 13:08:33,204 - PCI-MAPPO - INFO -     avg_value_loss: 0.698519
+2025-09-17 13:08:33,204 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.081659 (n=1013.0)
+2025-09-17 13:08:33,205 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.102393
+2025-09-17 13:08:33,205 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.429198 (n=11.0)
+2025-09-17 13:08:33,205 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.647061
+2025-09-17 13:08:33,205 - PCI-MAPPO - INFO -     causal_lambda: 0.010000
+2025-09-17 13:08:33,587 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-17 13:08:33,588 - PCI-MAPPO - INFO -   Mean Reward: 1.950 ± 0.150
+2025-09-17 13:08:33,588 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-17 13:08:33,588 - PCI-MAPPO - INFO -   Min/Max Reward: 1.800 / 2.100
+2025-09-17 13:08:33,588 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-17 13:08:33,590 - PCI-MAPPO - ERROR - Training failed with error: 'PCIMAPPOAgent' object has no attribute 'optimizer'
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 245, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 199, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 271, in train
+    self.save_checkpoint()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 552, in save_checkpoint
+    'algorithm_state': self.get_algorithm_state(),
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 612, in get_algorithm_state
+    'optimizer': agent.optimizer.state_dict(),
+AttributeError: 'PCIMAPPOAgent' object has no attribute 'optimizer'

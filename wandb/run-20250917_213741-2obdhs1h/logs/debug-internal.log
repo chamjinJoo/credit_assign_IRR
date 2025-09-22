@@ -1,0 +1,20 @@
+{"time":"2025-09-17T21:37:41.434364835+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250917_213741-2obdhs1h/logs/debug-core.log"}
+{"time":"2025-09-17T21:37:41.75700226+09:00","level":"INFO","msg":"stream: created new stream","id":"2obdhs1h"}
+{"time":"2025-09-17T21:37:41.75706096+09:00","level":"INFO","msg":"stream: started","id":"2obdhs1h"}
+{"time":"2025-09-17T21:37:41.757116757+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"2obdhs1h"}
+{"time":"2025-09-17T21:37:41.757124879+09:00","level":"INFO","msg":"handler: started","stream_id":"2obdhs1h"}
+{"time":"2025-09-17T21:37:41.757141367+09:00","level":"INFO","msg":"sender: started","stream_id":"2obdhs1h"}
+{"time":"2025-09-17T21:37:42.08726286+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-17T23:50:57.260464639+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-17T23:51:29.559710509+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-17T23:52:04.378316168+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-17T23:53:57.262330034+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-17T23:54:40.140047514+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-17T23:54:40.140113789+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-17T23:54:41.141276174+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.718089723,"progress":"464.1KB/464.1KB"}],"total_operations":1}}
+{"time":"2025-09-17T23:54:41.403788289+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-17T23:54:41.927294627+09:00","level":"INFO","msg":"stream: closing","id":"2obdhs1h"}
+{"time":"2025-09-17T23:54:41.927321972+09:00","level":"INFO","msg":"handler: closed","stream_id":"2obdhs1h"}
+{"time":"2025-09-17T23:54:41.927334772+09:00","level":"INFO","msg":"sender: closed","stream_id":"2obdhs1h"}
+{"time":"2025-09-17T23:54:41.927331817+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"2obdhs1h"}
+{"time":"2025-09-17T23:54:41.927382684+09:00","level":"INFO","msg":"stream: closed","id":"2obdhs1h"}

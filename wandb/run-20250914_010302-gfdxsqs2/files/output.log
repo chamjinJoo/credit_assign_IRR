@@ -1,0 +1,73 @@
+2025-09-14 01:03:03,268 - PCI-MAPPO - INFO - Starting training...
+2025-09-14 01:03:03,268 - PCI-MAPPO - INFO - ============================================================
+2025-09-14 01:03:03,268 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - ============================================================
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Max iterations: 1
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Total steps: 1,024
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Log interval: 2
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Device: cuda
+2025-09-14 01:03:03,269 - PCI-MAPPO - INFO - Wandb: True
+2025-09-14 01:03:03,270 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                                      | 0/1 [00:02<?, ?iter/s]
+2025-09-14 01:03:05,885 - PCI-MAPPO - INFO - Training interrupted by user
+2025-09-14 01:03:05,903 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250914_010301/staghuntenv/checkpoints/checkpoint_0.pt
+2025-09-14 01:03:05,903 - PCI-MAPPO - INFO - Checkpoint saved before exit
+2025-09-14 01:03:05,904 - PCI-MAPPO - INFO - Running causal effect evaluation after interruption...
+Causal effect 평가 시작: 100 에피소드
+에피소드 0/100 진행 중...
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 190, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 250, in train
+    update_info = self.algorithm.update()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 767, in update
+    agent_and_value_losses = self.update_agents(batch_data)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 638, in update_agents
+    Delta_t, _ = self.causal_reward_shaping(
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 576, in causal_reward_shaping
+    action_logits = self.agents[agent_id].policy_net(o_t.unsqueeze(0))
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/networks/policy_network.py", line 59, in forward
+    action_logits = self.policy_head(obs_encoded)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+KeyboardInterrupt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 236, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 226, in main
+    run_causal_evaluation(env, algorithm, mock_args, logger)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 83, in run_causal_evaluation
+    statistics = evaluator.evaluate_causal_effects()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 62, in evaluate_causal_effects
+    episode_causal_effects = self._run_single_episode()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 98, in _run_single_episode
+    actions = self.algorithm.get_actions(torch_observations)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 445, in get_actions
+    action, log_prob = self.agents[agent_id].get_action(obs)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 81, in get_action
+    action, log_prob = self.policy_net.get_action_and_log_prob(obs.unsqueeze(0))
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/networks/policy_network.py", line 72, in get_action_and_log_prob
+    log_prob = dist.log_prob(action)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/distributions/categorical.py", line 140, in log_prob
+    self._validate_sample(value)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/distributions/distribution.py", line 316, in _validate_sample
+    if not torch._is_all_true(valid):
+KeyboardInterrupt
