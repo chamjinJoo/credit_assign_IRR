@@ -1,0 +1,18 @@
+{"time":"2025-09-23T22:08:32.127447516+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250923_220831-ox3dams8/logs/debug-core.log"}
+{"time":"2025-09-23T22:08:32.450763877+09:00","level":"INFO","msg":"stream: created new stream","id":"ox3dams8"}
+{"time":"2025-09-23T22:08:32.450787607+09:00","level":"INFO","msg":"stream: started","id":"ox3dams8"}
+{"time":"2025-09-23T22:08:32.45079695+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"ox3dams8"}
+{"time":"2025-09-23T22:08:32.45080787+09:00","level":"INFO","msg":"handler: started","stream_id":"ox3dams8"}
+{"time":"2025-09-23T22:08:32.450822765+09:00","level":"INFO","msg":"sender: started","stream_id":"ox3dams8"}
+{"time":"2025-09-23T22:08:32.782715541+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-23T22:14:02.877558882+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-23T23:58:47.93094324+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": context deadline exceeded (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-24T00:19:06.198839557+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-24T00:19:06.198896191+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-24T00:19:07.20004948+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"updating run metadata","runtime_seconds":1.001526207},{"desc":"uploading output.log","runtime_seconds":0.697720144,"progress":"941.0KB/941.0KB"}],"total_operations":2}}
+{"time":"2025-09-24T00:19:08.607128059+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-24T00:19:09.114311274+09:00","level":"INFO","msg":"stream: closing","id":"ox3dams8"}
+{"time":"2025-09-24T00:19:09.11433646+09:00","level":"INFO","msg":"handler: closed","stream_id":"ox3dams8"}
+{"time":"2025-09-24T00:19:09.114343106+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"ox3dams8"}
+{"time":"2025-09-24T00:19:09.114394356+09:00","level":"INFO","msg":"sender: closed","stream_id":"ox3dams8"}
+{"time":"2025-09-24T00:19:09.11443987+09:00","level":"INFO","msg":"stream: closed","id":"ox3dams8"}

@@ -1,0 +1,17 @@
+{"time":"2025-09-25T17:38:26.373186467+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250925_173826-an4zjdsw/logs/debug-core.log"}
+{"time":"2025-09-25T17:38:26.688782697+09:00","level":"INFO","msg":"stream: created new stream","id":"an4zjdsw"}
+{"time":"2025-09-25T17:38:26.688824602+09:00","level":"INFO","msg":"stream: started","id":"an4zjdsw"}
+{"time":"2025-09-25T17:38:26.688884284+09:00","level":"INFO","msg":"sender: started","stream_id":"an4zjdsw"}
+{"time":"2025-09-25T17:38:26.688877401+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"an4zjdsw"}
+{"time":"2025-09-25T17:38:26.688900482+09:00","level":"INFO","msg":"handler: started","stream_id":"an4zjdsw"}
+{"time":"2025-09-25T17:38:27.046257228+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-25T22:02:12.611304044+09:00","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/an4zjdsw/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2025-09-25T22:08:10.116038967+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-25T22:08:10.116098658+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-25T22:08:11.117240377+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.744834811,"progress":"944.0KB/944.0KB"}],"total_operations":1}}
+{"time":"2025-09-25T22:08:11.555585221+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-25T22:08:11.83137265+09:00","level":"INFO","msg":"stream: closing","id":"an4zjdsw"}
+{"time":"2025-09-25T22:08:11.831387166+09:00","level":"INFO","msg":"handler: closed","stream_id":"an4zjdsw"}
+{"time":"2025-09-25T22:08:11.831394528+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"an4zjdsw"}
+{"time":"2025-09-25T22:08:11.83140174+09:00","level":"INFO","msg":"sender: closed","stream_id":"an4zjdsw"}
+{"time":"2025-09-25T22:08:11.83145176+09:00","level":"INFO","msg":"stream: closed","id":"an4zjdsw"}

@@ -1,0 +1,15 @@
+{"time":"2025-09-23T16:48:20.239537151+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250923_164820-vud775mv/logs/debug-core.log"}
+{"time":"2025-09-23T16:48:20.556506352+09:00","level":"INFO","msg":"stream: created new stream","id":"vud775mv"}
+{"time":"2025-09-23T16:48:20.556562924+09:00","level":"INFO","msg":"stream: started","id":"vud775mv"}
+{"time":"2025-09-23T16:48:20.556579665+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"vud775mv"}
+{"time":"2025-09-23T16:48:20.556627158+09:00","level":"INFO","msg":"sender: started","stream_id":"vud775mv"}
+{"time":"2025-09-23T16:48:20.556646232+09:00","level":"INFO","msg":"handler: started","stream_id":"vud775mv"}
+{"time":"2025-09-23T16:48:20.862512516+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-23T16:52:15.962328245+09:00","level":"INFO","msg":"stream: closing","id":"vud775mv"}
+{"time":"2025-09-23T16:52:15.962355002+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-23T16:52:15.96242841+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-23T16:52:16.603907788+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-23T16:52:17.029627597+09:00","level":"INFO","msg":"handler: closed","stream_id":"vud775mv"}
+{"time":"2025-09-23T16:52:17.029679666+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"vud775mv"}
+{"time":"2025-09-23T16:52:17.029690289+09:00","level":"INFO","msg":"sender: closed","stream_id":"vud775mv"}
+{"time":"2025-09-23T16:52:17.02975346+09:00","level":"INFO","msg":"stream: closed","id":"vud775mv"}

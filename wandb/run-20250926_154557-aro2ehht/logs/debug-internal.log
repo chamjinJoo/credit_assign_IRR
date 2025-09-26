@@ -1,0 +1,16 @@
+{"time":"2025-09-26T15:45:58.032187025+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250926_154557-aro2ehht/logs/debug-core.log"}
+{"time":"2025-09-26T15:45:58.353896312+09:00","level":"INFO","msg":"stream: created new stream","id":"aro2ehht"}
+{"time":"2025-09-26T15:45:58.353946171+09:00","level":"INFO","msg":"stream: started","id":"aro2ehht"}
+{"time":"2025-09-26T15:45:58.35395806+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"aro2ehht"}
+{"time":"2025-09-26T15:45:58.353999333+09:00","level":"INFO","msg":"handler: started","stream_id":"aro2ehht"}
+{"time":"2025-09-26T15:45:58.354008787+09:00","level":"INFO","msg":"sender: started","stream_id":"aro2ehht"}
+{"time":"2025-09-26T15:45:58.694101497+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-26T15:47:58.788806568+09:00","level":"INFO","msg":"stream: closing","id":"aro2ehht"}
+{"time":"2025-09-26T15:47:58.788842764+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-26T15:47:58.788887359+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-26T15:47:59.202674687+09:00","level":"INFO","msg":"api: retrying HTTP error","status":409,"url":"https://api.wandb.ai/graphql","body":"{\"errors\":[{\"message\":\"run aro2ehht was previously created and deleted; try a new run id\",\"path\":[\"upsertBucket\"]}],\"data\":{\"upsertBucket\":null}}"}
+{"time":"2025-09-26T15:47:59.244490507+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-09-26T15:47:59.244561307+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"run pci-mappo/aro2ehht not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-09-26T15:47:59.320068551+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/aro2ehht/file_stream"}
+{"time":"2025-09-26T15:47:59.320092993+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/aro2ehht/file_stream: {\"error\":\"run pci-mappo/aro2ehht not found while streaming file\"}"}
+{"time":"2025-09-26T15:48:01.42055365+09:00","level":"INFO","msg":"api: retrying HTTP error","status":409,"url":"https://api.wandb.ai/graphql","body":"{\"errors\":[{\"message\":\"run aro2ehht was previously created and deleted; try a new run id\",\"path\":[\"upsertBucket\"]}],\"data\":{\"upsertBucket\":null}}"}

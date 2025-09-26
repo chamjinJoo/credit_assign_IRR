@@ -1,0 +1,16 @@
+{"time":"2025-09-25T17:32:59.808810177+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250925_173259-86lkotub/logs/debug-core.log"}
+{"time":"2025-09-25T17:33:00.436591319+09:00","level":"INFO","msg":"stream: created new stream","id":"86lkotub"}
+{"time":"2025-09-25T17:33:00.436612552+09:00","level":"INFO","msg":"stream: started","id":"86lkotub"}
+{"time":"2025-09-25T17:33:00.436655823+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"86lkotub"}
+{"time":"2025-09-25T17:33:00.43666733+09:00","level":"INFO","msg":"handler: started","stream_id":"86lkotub"}
+{"time":"2025-09-25T17:33:00.436690676+09:00","level":"INFO","msg":"sender: started","stream_id":"86lkotub"}
+{"time":"2025-09-25T17:33:00.74652837+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-25T22:53:20.884887927+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-25T22:53:20.884917064+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-25T22:53:21.886077438+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.74109599,"progress":"940.5KB/940.5KB"},{"desc":"uploading config.yaml","runtime_seconds":0.267455814,"progress":"8.5KB/8.5KB"}],"total_operations":2}}
+{"time":"2025-09-25T22:53:22.267853228+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-25T22:53:22.566950729+09:00","level":"INFO","msg":"stream: closing","id":"86lkotub"}
+{"time":"2025-09-25T22:53:22.566982995+09:00","level":"INFO","msg":"handler: closed","stream_id":"86lkotub"}
+{"time":"2025-09-25T22:53:22.566995221+09:00","level":"INFO","msg":"sender: closed","stream_id":"86lkotub"}
+{"time":"2025-09-25T22:53:22.566994839+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"86lkotub"}
+{"time":"2025-09-25T22:53:22.56706601+09:00","level":"INFO","msg":"stream: closed","id":"86lkotub"}

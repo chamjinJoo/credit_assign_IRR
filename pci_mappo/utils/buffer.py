@@ -48,8 +48,8 @@ class ExperienceBuffer:
         """
         # Store complete system state with proper causal structure
         transition = {
-            'bold_o_t_minus_1': prev_observations,  # {o^1_{t-1}, ..., o^n_{t-1}} (w_t)
-            'bold_o_t': observations,                # {o^1_t, ..., o^n_t} (z_t)
+            'bold_o_t_minus_1': prev_observations,  # {o^1_{t-1}, ..., o^n_{t-1}} (z_t)
+            'bold_o_t': observations,                # {o^1_t, ..., o^n_t} (w_t)
             'bold_a_t': actions,                     # {a^1_t, ..., a^n_t}  
             'bold_r_t': rewards,                     # {r^1_t, ..., r^n_t}
             'next_observations': next_observations,  # {o^1_{t+1}, ..., o^n_{t+1}}

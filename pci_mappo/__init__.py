@@ -18,4 +18,4 @@ from .envs import (
 
 from .algorithms import PCIMAPPOAlgorithm
 from .training import PCIMAPPOTrainer
-from .utils import Logger, create_config_from_args
+from .utils import Logger, create_config_from_args, get_causal_evaluator

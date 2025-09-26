@@ -5,3 +5,15 @@
 {"time":"2025-09-22T10:39:32.664481316+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"0quiw5ou"}
 {"time":"2025-09-22T10:39:32.66450246+09:00","level":"INFO","msg":"sender: started","stream_id":"0quiw5ou"}
 {"time":"2025-09-22T10:39:33.009797363+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-22T11:18:08.345233493+09:00","level":"INFO","msg":"stream: closing","id":"0quiw5ou"}
+{"time":"2025-09-22T11:18:08.345256413+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-22T11:18:08.345278413+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-22T11:18:08.591941925+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-09-22T11:18:08.592008232+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"run pci-mappo/0quiw5ou not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-09-22T11:18:08.592362071+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-22T11:18:08.8036107+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/0quiw5ou/file_stream"}
+{"time":"2025-09-22T11:18:08.80363776+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/0quiw5ou/file_stream: {\"error\":\"run pci-mappo/0quiw5ou not found while streaming file\"}"}
+{"time":"2025-09-22T11:18:08.803780157+09:00","level":"INFO","msg":"handler: closed","stream_id":"0quiw5ou"}
+{"time":"2025-09-22T11:18:08.803811802+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"0quiw5ou"}
+{"time":"2025-09-22T11:18:08.803816702+09:00","level":"INFO","msg":"sender: closed","stream_id":"0quiw5ou"}
+{"time":"2025-09-22T11:18:08.803875678+09:00","level":"INFO","msg":"stream: closed","id":"0quiw5ou"}

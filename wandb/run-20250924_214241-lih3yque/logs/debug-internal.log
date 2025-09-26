@@ -1,0 +1,16 @@
+{"time":"2025-09-24T21:42:42.04148575+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250924_214241-lih3yque/logs/debug-core.log"}
+{"time":"2025-09-24T21:42:42.36394408+09:00","level":"INFO","msg":"stream: created new stream","id":"lih3yque"}
+{"time":"2025-09-24T21:42:42.364001527+09:00","level":"INFO","msg":"stream: started","id":"lih3yque"}
+{"time":"2025-09-24T21:42:42.364007715+09:00","level":"INFO","msg":"handler: started","stream_id":"lih3yque"}
+{"time":"2025-09-24T21:42:42.364019306+09:00","level":"INFO","msg":"sender: started","stream_id":"lih3yque"}
+{"time":"2025-09-24T21:42:42.364036035+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"lih3yque"}
+{"time":"2025-09-24T21:42:42.630567749+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-25T00:10:27.957510145+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-25T00:10:27.957555744+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-25T00:10:28.958707044+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"updating run metadata","runtime_seconds":0.491296719},{"desc":"uploading output.log","runtime_seconds":0.174163265,"progress":"943.3KB/943.3KB"},{"desc":"uploading wandb-summary.json","runtime_seconds":0.174140044,"progress":"2.8KB/2.8KB"}],"total_operations":3}}
+{"time":"2025-09-25T00:10:31.331630007+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-25T00:10:32.088498274+09:00","level":"INFO","msg":"stream: closing","id":"lih3yque"}
+{"time":"2025-09-25T00:10:32.088517482+09:00","level":"INFO","msg":"handler: closed","stream_id":"lih3yque"}
+{"time":"2025-09-25T00:10:32.088528148+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"lih3yque"}
+{"time":"2025-09-25T00:10:32.088550618+09:00","level":"INFO","msg":"sender: closed","stream_id":"lih3yque"}
+{"time":"2025-09-25T00:10:32.088581718+09:00","level":"INFO","msg":"stream: closed","id":"lih3yque"}

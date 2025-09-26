@@ -1,0 +1,16 @@
+{"time":"2025-09-22T15:32:06.750594737+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250922_153206-235mnrge/logs/debug-core.log"}
+{"time":"2025-09-22T15:32:07.074654159+09:00","level":"INFO","msg":"stream: created new stream","id":"235mnrge"}
+{"time":"2025-09-22T15:32:07.074679151+09:00","level":"INFO","msg":"stream: started","id":"235mnrge"}
+{"time":"2025-09-22T15:32:07.074692201+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"235mnrge"}
+{"time":"2025-09-22T15:32:07.074750273+09:00","level":"INFO","msg":"handler: started","stream_id":"235mnrge"}
+{"time":"2025-09-22T15:32:07.074759387+09:00","level":"INFO","msg":"sender: started","stream_id":"235mnrge"}
+{"time":"2025-09-22T15:32:07.423271559+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-22T17:45:22.63942793+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-22T17:45:22.639467477+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-22T17:45:23.64076912+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.469553958,"progress":"907.8KB/907.8KB"},{"desc":"uploading config.yaml","runtime_seconds":0.235548108,"progress":"6.1KB/6.1KB"}],"total_operations":2}}
+{"time":"2025-09-22T17:45:24.285708018+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-22T17:45:24.579479379+09:00","level":"INFO","msg":"stream: closing","id":"235mnrge"}
+{"time":"2025-09-22T17:45:24.579492764+09:00","level":"INFO","msg":"handler: closed","stream_id":"235mnrge"}
+{"time":"2025-09-22T17:45:24.579500373+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"235mnrge"}
+{"time":"2025-09-22T17:45:24.579522856+09:00","level":"INFO","msg":"sender: closed","stream_id":"235mnrge"}
+{"time":"2025-09-22T17:45:24.579587673+09:00","level":"INFO","msg":"stream: closed","id":"235mnrge"}

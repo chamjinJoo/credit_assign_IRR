@@ -1,0 +1,171 @@
+2025-09-25 15:12:42,811 - PCI-MAPPO - INFO - Starting training...
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - ============================================================
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - ============================================================
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-25 15:12:42,812 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - Log interval: 5
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - Device: cuda
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - Wandb: True
+2025-09-25 15:12:42,813 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|▏                                                                                                      | 5/3000 [00:30<4:38:17,  5.58s/iter]
+2025-09-25 15:12:48,540 - PCI-MAPPO - INFO - Iteration 0
+2025-09-25 15:12:48,541 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-25 15:12:48,541 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-25 15:12:48,541 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.714
+2025-09-25 15:12:48,541 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-25 15:12:48,541 - PCI-MAPPO - INFO -   Update Info:
+2025-09-25 15:12:48,541 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.241366
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     action_bridge_loss: -0.003257
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.003705
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.484005
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.003551
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.489793
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     value_loss: 0.723408
+2025-09-25 15:12:48,542 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.000160 (n=1012.0)
+2025-09-25 15:12:48,543 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.009439
+2025-09-25 15:12:48,543 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.001244 (n=12.0)
+2025-09-25 15:12:48,543 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.009924
+2025-09-25 15:12:48,543 - PCI-MAPPO - INFO -     causal_lambda: 0.100000
+Causal effect 평가 시작: 10 에피소드
+에피소드 0/10 진행 중...
+Causal effect 평가 완료!
+2025-09-25 15:12:51,867 - PCI-MAPPO - INFO - Causal Effect Statistics:
+2025-09-25 15:12:51,867 - PCI-MAPPO - INFO -   no_reward: mean=-0.0005, std=0.0091, count=986
+2025-09-25 15:12:51,867 - PCI-MAPPO - INFO -   forage_reward: mean=0.0012, std=0.0073, count=13
+2025-09-25 15:12:51,868 - PCI-MAPPO - INFO -   stag_reward: mean=-0.0067, std=0.0000, count=1
+2025-09-25 15:12:51,868 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-25 15:12:51,868 - PCI-MAPPO - INFO -   Mean Reward: 1.500 ± 0.600
+2025-09-25 15:12:51,868 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-25 15:12:51,868 - PCI-MAPPO - INFO -   Min/Max Reward: 0.900 / 2.100
+2025-09-25 15:12:51,868 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-25 15:12:52,380 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250925_151241/staghuntenv/checkpoints/checkpoint_0.pt
+2025-09-25 15:13:18,468 - PCI-MAPPO - INFO - Iteration 5
+2025-09-25 15:13:18,468 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-25 15:13:18,469 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-25 15:13:18,469 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.500
+2025-09-25 15:13:18,469 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-25 15:13:18,469 - PCI-MAPPO - INFO -   Update Info:
+2025-09-25 15:13:18,469 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.197900
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     action_bridge_loss: -0.008224
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001869
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.497902
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000915
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.489729
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     value_loss: 0.505821
+2025-09-25 15:13:18,470 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.000146 (n=1013.5)
+2025-09-25 15:13:18,471 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.011289
+2025-09-25 15:13:18,471 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.002275 (n=10.5)
+2025-09-25 15:13:18,471 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.012825
+2025-09-25 15:13:18,471 - PCI-MAPPO - INFO -     causal_lambda: 0.100000
+2025-09-25 15:13:44,689 - PCI-MAPPO - INFO - Iteration 10
+2025-09-25 15:13:44,689 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-25 15:13:44,689 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-25 15:13:44,689 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.857
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -   Update Info:
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.232054
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     action_bridge_loss: -0.011839
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000585
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.488812
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000754
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.503850
+2025-09-25 15:13:44,690 - PCI-MAPPO - INFO -     value_loss: 0.760826
+2025-09-25 15:13:44,691 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.000363 (n=1011.0)
+2025-09-25 15:13:44,691 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.013276
+2025-09-25 15:13:44,691 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.001576 (n=13.0)
+2025-09-25 15:13:44,691 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.011936
+2025-09-25 15:13:44,691 - PCI-MAPPO - INFO -     causal_lambda: 0.100000
+2025-09-25 15:14:10,535 - PCI-MAPPO - INFO - Iteration 15
+2025-09-25 15:14:10,535 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-25 15:14:10,535 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-25 15:14:10,536 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.524
+2025-09-25 15:14:10,536 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-25 15:14:10,536 - PCI-MAPPO - INFO -   Update Info:
+2025-09-25 15:14:10,536 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.206257
+2025-09-25 15:14:10,536 - PCI-MAPPO - INFO -     action_bridge_loss: -0.014100
+2025-09-25 15:14:10,536 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000865
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.461997
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000985
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.506458
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     value_loss: 0.834865
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.000065 (n=1014.0)
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.015535
+2025-09-25 15:14:10,537 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.001295 (n=9.0)
+2025-09-25 15:14:10,538 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.014775
+2025-09-25 15:14:10,538 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.008915 (n=1.0)
+2025-09-25 15:14:10,538 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.001321
+2025-09-25 15:14:10,538 - PCI-MAPPO - INFO -     causal_lambda: 0.100000
+2025-09-25 15:14:35,944 - PCI-MAPPO - INFO - Iteration 20
+2025-09-25 15:14:35,944 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.071
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -   Update Info:
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.252658
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -     action_bridge_loss: -0.014554
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001349
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.440924
+2025-09-25 15:14:35,945 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000666
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.515511
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     value_loss: 0.796338
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.000278 (n=1009.5)
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.015044
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.002673 (n=14.5)
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.016506
+2025-09-25 15:14:35,946 - PCI-MAPPO - INFO -     causal_lambda: 0.100000
+2025-09-25 15:14:56,307 - PCI-MAPPO - INFO - Training interrupted by user
+2025-09-25 15:14:56,320 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250925_151241/staghuntenv/checkpoints/checkpoint_24.pt
+2025-09-25 15:14:56,332 - PCI-MAPPO - INFO - Checkpoint saved before exit
+2025-09-25 15:14:56,332 - PCI-MAPPO - INFO - Running causal effect evaluation after interruption...
+2025-09-25 15:14:56,332 - PCI-MAPPO - INFO - Loading checkpoint for causal evaluation: ./checkpoints/20250925_151241/staghuntenv/checkpoints/best_model.pt
+2025-09-25 15:14:56,361 - PCI-MAPPO - INFO - Checkpoint loaded: ./checkpoints/20250925_151241/staghuntenv/checkpoints/best_model.pt
+2025-09-25 15:14:56,361 - PCI-MAPPO - INFO - Resuming from iteration 24
+Causal effect 평가 시작: 100 에피소드
+에피소드 0/100 진행 중...
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 206, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 267, in train
+    update_info = self.algorithm.update()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 905, in update
+    agent_and_value_losses = self.update_agents(batch_data)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 740, in update_agents
+    z_t = self._concatenate_observations(transition['bold_o_t'])
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 463, in _concatenate_observations
+    sorted_obs = [observations[i] for i in range(self.num_agents) if i in observations]
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 463, in <listcomp>
+    sorted_obs = [observations[i] for i in range(self.num_agents) if i in observations]
+KeyboardInterrupt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 258, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 249, in main
+    run_causal_evaluation(env, algorithm, mock_args, logger)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 84, in run_causal_evaluation
+    statistics = evaluator.evaluate_causal_effects()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 60, in evaluate_causal_effects
+    episode_causal_effects = self._run_single_episode()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 96, in _run_single_episode
+    actions = self.algorithm.get_actions(torch_observations)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 527, in get_actions
+    action, log_prob = self.agents[agent_id].get_action(obs)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 143, in get_action
+    action, log_prob = self.policy_net.get_action_and_log_prob(obs.unsqueeze(0))
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/networks/policy_network.py", line 69, in get_action_and_log_prob
+    dist = Categorical(logits=action_logits)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/distributions/categorical.py", line 73, in __init__
+    super().__init__(batch_shape, validate_args=validate_args)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/distributions/distribution.py", line 71, in __init__
+    if not torch._is_all_true(valid):
+KeyboardInterrupt

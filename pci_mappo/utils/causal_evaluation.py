@@ -1,12 +1,10 @@
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import seaborn as sns
 from typing import Dict, List, Tuple, Optional, TYPE_CHECKING
 import os
 import json
 from collections import defaultdict
-import pandas as pd
 
 if TYPE_CHECKING:
     from ..algorithms.pci_mappo import PCIMAPPOAlgorithm
@@ -100,7 +98,6 @@ class CausalEffectEvaluator:
             
             # 환경 스텝
             next_observations, rewards, dones, info = self.env.step(action_dict)
-            
             # Causal effect 추정
             causal_effects = self._estimate_causal_effects(
                 prev_observations, observations, action_dict, rewards
@@ -164,8 +161,8 @@ class CausalEffectEvaluator:
                 )
             
             # 관찰을 텐서로 변환
-            w_t = self.algorithm._concatenate_observations(torch_prev_observations)
-            z_t = self.algorithm._concatenate_observations(torch_observations)
+            z_t = self.algorithm._concatenate_observations(torch_prev_observations)
+            w_t = self.algorithm._concatenate_observations(torch_observations)
             
             for agent_id in range(self.algorithm.num_agents):
                 # Causal reward shaping 함수를 사용하여 causal effect 추정
@@ -178,7 +175,7 @@ class CausalEffectEvaluator:
                     current_rewards=rewards
                 )
                 causal_effects[agent_id] = delta_t
-        
+          
         return causal_effects
     
     def _compute_statistics(self) -> Dict[str, Dict[str, float]]:
@@ -217,14 +214,19 @@ class CausalEffectEvaluator:
     def plot_causal_effects(
         self,
         statistics: Dict[str, Dict[str, float]],
-        save_path: Optional[str] = None
-    ) -> None:
+        save_path: Optional[str] = None,
+        return_figure: bool = False
+    ) -> Optional[plt.Figure]:
         """
         Causal effect 추정 결과를 error bar plot으로 시각화합니다.
         
         Args:
             statistics: _compute_statistics()에서 반환된 통계 데이터
-            save_path: 저장할 경로 (None이면 표시만)
+            save_path: 저장할 경로 (None이면 저장하지 않음)
+            return_figure: True이면 Figure 객체를 반환 (wandb 로깅용)
+            
+        Returns:
+            plt.Figure 객체 (return_figure=True일 때만)
         """
         # 데이터 준비
         scenarios = list(statistics.keys())
@@ -245,29 +247,34 @@ class CausalEffectEvaluator:
             sample_count = counts[scenarios.index(scenario)]
             labels.append(f'{base_label}\n(n={sample_count})')
         
-        plt.figure(figsize=(6, 4))
+        fig, ax = plt.subplots(figsize=(6, 4))
         
         # Error bar plot
         x_pos = np.arange(len(scenarios))
-        plt.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7)
+        ax.bar(x_pos, means, yerr=stds, capsize=5, alpha=0.7)
         
         # 플롯 설정
-        plt.xlabel('Reward of the other', fontsize=9)
-        plt.ylabel('Estimated Causal Effect (Δ)', fontsize=9)
-        plt.title('Causal Effect Estimation', fontsize=11)
-        plt.xticks(x_pos, labels, fontsize=9)
+        ax.set_xlabel('Reward of the other', fontsize=9)
+        ax.set_ylabel('Estimated Causal Effect (Δ)', fontsize=9)
+        ax.set_title('Causal Effect Estimation', fontsize=11)
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(labels, fontsize=9)
         
         # 0선 표시
-        plt.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
         
-        # 저장 또는 표시
+        # 저장
         if save_path:
             plt.savefig(save_path, dpi=300, bbox_inches='tight', pad_inches=0.1)
             print(f"Causal effect plot이 저장되었습니다: {save_path}")
+        
+        # Figure 객체 반환 또는 표시
+        if return_figure:
+            return fig
         else:
             plt.show()
-        
-        plt.close()
+            plt.close()
+            return None
     
     def save_results(
         self,
