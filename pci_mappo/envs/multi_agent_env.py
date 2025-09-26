@@ -903,7 +903,7 @@ class StagHuntEnv(MultiAgentEnv):
             'plant_positions': self.plant_positions.copy()
         }
         dones = {agent_id: done for agent_id in self.agents}
-        
+            
         return observations, rewards, dones, info
     
 
@@ -929,8 +929,46 @@ class StagHuntEnv(MultiAgentEnv):
                 # 잘못된 액션인 경우 stay
                 new_x, new_y = current_x, current_y
             
-            # 이동 가능성 확인 (경계 체크만)
+            # 이동 가능성 확인 (경계 체크 + stag 위치 제한)
             if (0 <= new_x < self.grid_size_x and 0 <= new_y < self.grid_size_y):
+                target_pos = (new_x, new_y)
+                
+                # Stag 위치로의 이동 제한: 혼자서 stag 위치로 이동하려 할 경우 방지
+                if target_pos in self.stag_positions.values():
+                    # 목표 위치가 stag 위치인지 확인
+                    stag_at_target = None
+                    for stag_id, stag_pos in self.stag_positions.items():
+                        if stag_pos == target_pos:
+                            stag_at_target = stag_id
+                            break
+                    
+                    if stag_at_target is not None:
+                        # 다른 에이전트가 같은 stag 위치로 이동하는지 확인
+                        other_agent_moving_to_stag = False
+                        for other_agent_id, other_action in actions.items():
+                            if other_agent_id != agent_id:
+                                other_current_x, other_current_y = self.agent_positions[other_agent_id]
+                                other_new_x, other_new_y = other_current_x, other_current_y
+                                
+                                # 다른 에이전트의 이동 계산
+                                if other_action == self.UP:
+                                    other_new_x, other_new_y = other_current_x, other_current_y + 1
+                                elif other_action == self.DOWN:
+                                    other_new_x, other_new_y = other_current_x, other_current_y - 1
+                                elif other_action == self.LEFT:
+                                    other_new_x, other_new_y = other_current_x - 1, other_current_y
+                                elif other_action == self.RIGHT:
+                                    other_new_x, other_new_y = other_current_x + 1, other_current_y
+                                
+                                # 다른 에이전트도 같은 stag 위치로 이동하는지 확인
+                                if (other_new_x, other_new_y) == target_pos:
+                                    other_agent_moving_to_stag = True
+                                    break
+                        
+                        # 혼자서 stag 위치로 이동하려 할 경우 stay로 강제
+                        if not other_agent_moving_to_stag:
+                            new_x, new_y = current_x, current_y  # 이동 차단
+                
                 new_positions[agent_id] = (new_x, new_y)
             else:
                 # 경계 밖으로 이동하려 하면 현재 위치 유지

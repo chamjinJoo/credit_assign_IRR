@@ -1,0 +1,33 @@
+2025-09-25 17:19:48,661 - PCI-MAPPO - INFO - Starting training...
+2025-09-25 17:19:48,661 - PCI-MAPPO - INFO - ============================================================
+2025-09-25 17:19:48,661 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-25 17:19:48,661 - PCI-MAPPO - INFO - ============================================================
+2025-09-25 17:19:48,661 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Log interval: 5
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-25 17:19:48,662 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-25 17:19:48,663 - PCI-MAPPO - INFO - Device: cuda
+2025-09-25 17:19:48,663 - PCI-MAPPO - INFO - Wandb: True
+2025-09-25 17:19:48,663 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                              | 0/3000 [00:04<?, ?iter/s]
+2025-09-25 17:19:52,803 - PCI-MAPPO - ERROR - Training failed with error: CUDA out of memory. Tried to allocate 16.00 MiB. GPU 0 has a total capacity of 10.57 GiB of which 17.12 MiB is free. Process 2634879 has 8.27 GiB memory in use. Including non-PyTorch memory, this process has 2.25 GiB memory in use. Of the allocated memory 43.43 MiB is allocated by PyTorch, and 6.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 258, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 206, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 267, in train
+    update_info = self.algorithm.update()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 919, in update
+    causal_losses = self.update_causal_networks(batch_data)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 425, in update_causal_networks
+    K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_input_features_w, features_w_sampled)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 75, in forward_asymmetric
+    dists_sq = x1_norm_sq - 2 * torch.matmul(x1, x2.T) + x2_norm_sq.T
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 MiB. GPU 0 has a total capacity of 10.57 GiB of which 17.12 MiB is free. Process 2634879 has 8.27 GiB memory in use. Including non-PyTorch memory, this process has 2.25 GiB memory in use. Of the allocated memory 43.43 MiB is allocated by PyTorch, and 6.57 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

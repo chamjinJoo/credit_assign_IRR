@@ -1,0 +1,1100 @@
+2025-09-22 23:49:03,626 - PCI-MAPPO - INFO - Starting training...
+2025-09-22 23:49:03,626 - PCI-MAPPO - INFO - ============================================================
+2025-09-22 23:49:03,626 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - ============================================================
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Log interval: 5
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-22 23:49:03,627 - PCI-MAPPO - INFO - Device: cpu
+2025-09-22 23:49:03,628 - PCI-MAPPO - INFO - Wandb: True
+2025-09-22 23:49:03,628 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                         | 3/3000 [00:08<2:14:58,  2.70s/iter]
+tensor(146.2751, grad_fn=<SqueezeBackward0>) tensor(22.7577, grad_fn=<DotBackward0>)
+tensor(128.9127, grad_fn=<SqueezeBackward0>) tensor(17.9017, grad_fn=<DotBackward0>)
+2025-09-22 23:49:06,261 - PCI-MAPPO - INFO - Iteration 0
+2025-09-22 23:49:06,262 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:49:06,262 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:49:06,262 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.429
+2025-09-22 23:49:06,262 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.101882
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -     action_bridge_loss: 0.189325
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.003087
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.480580
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.003736
+2025-09-22 23:49:06,263 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.492322
+2025-09-22 23:49:06,264 - PCI-MAPPO - INFO -     value_loss: 1.126828
+2025-09-22 23:49:06,264 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.011885 (n=1014.0)
+2025-09-22 23:49:06,264 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.080762
+2025-09-22 23:49:06,264 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.564092 (n=10.0)
+2025-09-22 23:49:06,264 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.864664
+2025-09-22 23:49:06,264 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-22 23:49:06,642 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-22 23:49:06,642 - PCI-MAPPO - INFO -   Mean Reward: 1.650 ± 0.450
+2025-09-22 23:49:06,642 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-22 23:49:06,642 - PCI-MAPPO - INFO -   Min/Max Reward: 1.200 / 2.100
+2025-09-22 23:49:06,642 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-22 23:49:06,652 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250922_234902/staghuntenv/checkpoints/checkpoint_0.pt
+tensor(78.9500, grad_fn=<SqueezeBackward0>) tensor(11.1148, grad_fn=<DotBackward0>)
+tensor(85.3942, grad_fn=<SqueezeBackward0>) tensor(7.5372, grad_fn=<DotBackward0>)
+tensor(77.7123, grad_fn=<SqueezeBackward0>) tensor(9.8441, grad_fn=<DotBackward0>)
+tensor(78.5776, grad_fn=<SqueezeBackward0>) tensor(10.2482, grad_fn=<DotBackward0>)
+tensor(80.5468, grad_fn=<SqueezeBackward0>) tensor(7.9755, grad_fn=<DotBackward0>)
+tensor(71.9161, grad_fn=<SqueezeBackward0>) tensor(5.4532, grad_fn=<DotBackward0>)
+tensor(68.2007, grad_fn=<SqueezeBackward0>) tensor(4.3404, grad_fn=<DotBackward0>)
+tensor(67.9779, grad_fn=<SqueezeBackward0>) tensor(-1.2574, grad_fn=<DotBackward0>)
+tensor(60.6649, grad_fn=<SqueezeBackward0>) tensor(5.0848, grad_fn=<DotBackward0>)
+tensor(53.9214, grad_fn=<SqueezeBackward0>) tensor(1.2729, grad_fn=<DotBackward0>)
+2025-09-22 23:49:19,681 - PCI-MAPPO - INFO - Iteration 5
+2025-09-22 23:49:19,682 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:49:19,682 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:49:19,682 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.952
+2025-09-22 23:49:19,682 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:49:19,682 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:49:19,683 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.136379
+2025-09-22 23:49:19,683 - PCI-MAPPO - INFO -     action_bridge_loss: 0.099483
+2025-09-22 23:49:19,683 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000809
+2025-09-22 23:49:19,683 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.437922
+2025-09-22 23:49:19,683 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000958
+2025-09-22 23:49:19,683 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.522159
+2025-09-22 23:49:19,684 - PCI-MAPPO - INFO -     value_loss: 1.180619
+2025-09-22 23:49:19,684 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.013485 (n=1011.0)
+2025-09-22 23:49:19,684 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.068013
+2025-09-22 23:49:19,684 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.250498 (n=12.0)
+2025-09-22 23:49:19,684 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.567383
+2025-09-22 23:49:19,684 - PCI-MAPPO - INFO -     delta_stag_reward_mean: 0.524202 (n=1.0)
+2025-09-22 23:49:19,685 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.389741
+2025-09-22 23:49:19,685 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(64.5645, grad_fn=<SqueezeBackward0>) tensor(5.3906, grad_fn=<DotBackward0>)
+tensor(52.9165, grad_fn=<SqueezeBackward0>) tensor(2.6482, grad_fn=<DotBackward0>)
+tensor(52.0494, grad_fn=<SqueezeBackward0>) tensor(5.3549, grad_fn=<DotBackward0>)
+tensor(58.5284, grad_fn=<SqueezeBackward0>) tensor(8.7928, grad_fn=<DotBackward0>)
+tensor(53.4557, grad_fn=<SqueezeBackward0>) tensor(2.9412, grad_fn=<DotBackward0>)
+tensor(57.1647, grad_fn=<SqueezeBackward0>) tensor(8.5525, grad_fn=<DotBackward0>)
+tensor(63.4786, grad_fn=<SqueezeBackward0>) tensor(12.0793, grad_fn=<DotBackward0>)
+tensor(55.3038, grad_fn=<SqueezeBackward0>) tensor(13.9504, grad_fn=<DotBackward0>)
+tensor(47.1091, grad_fn=<SqueezeBackward0>) tensor(4.1857, grad_fn=<DotBackward0>)
+tensor(40.7066, grad_fn=<SqueezeBackward0>) tensor(4.1611, grad_fn=<DotBackward0>)
+2025-09-22 23:49:32,770 - PCI-MAPPO - INFO - Iteration 10
+2025-09-22 23:49:32,770 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:49:32,770 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:49:32,771 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.810
+2025-09-22 23:49:32,771 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:49:32,771 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:49:32,771 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.121375
+2025-09-22 23:49:32,771 - PCI-MAPPO - INFO -     action_bridge_loss: 0.069455
+2025-09-22 23:49:32,772 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002447
+2025-09-22 23:49:32,772 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.448429
+2025-09-22 23:49:32,772 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001773
+2025-09-22 23:49:32,772 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.518563
+2025-09-22 23:49:32,772 - PCI-MAPPO - INFO -     value_loss: 0.817502
+2025-09-22 23:49:32,772 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.012855 (n=1012.0)
+2025-09-22 23:49:32,773 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.035271
+2025-09-22 23:49:32,773 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.002870 (n=11.0)
+2025-09-22 23:49:32,773 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.568885
+2025-09-22 23:49:32,773 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.911877 (n=1.0)
+2025-09-22 23:49:32,773 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.682168
+2025-09-22 23:49:32,773 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(43.2153, grad_fn=<SqueezeBackward0>) tensor(6.3642, grad_fn=<DotBackward0>)
+tensor(53.9819, grad_fn=<SqueezeBackward0>) tensor(5.4242, grad_fn=<DotBackward0>)
+tensor(46.8437, grad_fn=<SqueezeBackward0>) tensor(3.2655, grad_fn=<DotBackward0>)
+tensor(38.4093, grad_fn=<SqueezeBackward0>) tensor(5.2475, grad_fn=<DotBackward0>)
+tensor(44.1598, grad_fn=<SqueezeBackward0>) tensor(3.2466, grad_fn=<DotBackward0>)
+tensor(44.6074, grad_fn=<SqueezeBackward0>) tensor(4.7298, grad_fn=<DotBackward0>)
+tensor(41.8173, grad_fn=<SqueezeBackward0>) tensor(2.0769, grad_fn=<DotBackward0>)
+tensor(45.5459, grad_fn=<SqueezeBackward0>) tensor(4.9140, grad_fn=<DotBackward0>)
+tensor(39.4722, grad_fn=<SqueezeBackward0>) tensor(8.3325, grad_fn=<DotBackward0>)
+tensor(38.3255, grad_fn=<SqueezeBackward0>) tensor(6.4961, grad_fn=<DotBackward0>)
+2025-09-22 23:49:45,741 - PCI-MAPPO - INFO - Iteration 15
+2025-09-22 23:49:45,741 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:49:45,741 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:49:45,742 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.571
+2025-09-22 23:49:45,742 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:49:45,742 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:49:45,742 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.097430
+2025-09-22 23:49:45,742 - PCI-MAPPO - INFO -     action_bridge_loss: 0.047012
+2025-09-22 23:49:45,742 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000935
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.438685
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001490
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.488599
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     value_loss: 0.783376
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.018991 (n=1013.0)
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.024433
+2025-09-22 23:49:45,743 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.375926 (n=11.0)
+2025-09-22 23:49:45,744 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.439395
+2025-09-22 23:49:45,744 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(33.7319, grad_fn=<SqueezeBackward0>) tensor(5.2159, grad_fn=<DotBackward0>)
+tensor(42.3432, grad_fn=<SqueezeBackward0>) tensor(6.8854, grad_fn=<DotBackward0>)
+tensor(38.0765, grad_fn=<SqueezeBackward0>) tensor(8.5434, grad_fn=<DotBackward0>)
+tensor(32.2802, grad_fn=<SqueezeBackward0>) tensor(6.6603, grad_fn=<DotBackward0>)
+tensor(24.6746, grad_fn=<SqueezeBackward0>) tensor(12.8284, grad_fn=<DotBackward0>)
+tensor(37.2341, grad_fn=<SqueezeBackward0>) tensor(11.7762, grad_fn=<DotBackward0>)
+tensor(32.3285, grad_fn=<SqueezeBackward0>) tensor(12.6463, grad_fn=<DotBackward0>)
+tensor(31.1936, grad_fn=<SqueezeBackward0>) tensor(8.7620, grad_fn=<DotBackward0>)
+tensor(34.3928, grad_fn=<SqueezeBackward0>) tensor(13.5070, grad_fn=<DotBackward0>)
+tensor(28.6660, grad_fn=<SqueezeBackward0>) tensor(13.7221, grad_fn=<DotBackward0>)
+2025-09-22 23:49:58,733 - PCI-MAPPO - INFO - Iteration 20
+2025-09-22 23:49:58,733 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:49:58,734 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:49:58,734 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.429
+2025-09-22 23:49:58,734 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:49:58,734 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:49:58,734 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.087607
+2025-09-22 23:49:58,734 - PCI-MAPPO - INFO -     action_bridge_loss: 0.008399
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000411
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.364566
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001263
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.486579
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     value_loss: 0.568573
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.022338 (n=1014.0)
+2025-09-22 23:49:58,735 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.017908
+2025-09-22 23:49:58,736 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.374162 (n=10.0)
+2025-09-22 23:49:58,736 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.393571
+2025-09-22 23:49:58,736 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(43.4532, grad_fn=<SqueezeBackward0>) tensor(12.7388, grad_fn=<DotBackward0>)
+tensor(31.1086, grad_fn=<SqueezeBackward0>) tensor(17.0569, grad_fn=<DotBackward0>)
+tensor(45.6089, grad_fn=<SqueezeBackward0>) tensor(14.0376, grad_fn=<DotBackward0>)
+tensor(39.5652, grad_fn=<SqueezeBackward0>) tensor(15.6245, grad_fn=<DotBackward0>)
+tensor(29.4920, grad_fn=<SqueezeBackward0>) tensor(14.1518, grad_fn=<DotBackward0>)
+tensor(26.0198, grad_fn=<SqueezeBackward0>) tensor(11.7789, grad_fn=<DotBackward0>)
+tensor(35.9632, grad_fn=<SqueezeBackward0>) tensor(14.9574, grad_fn=<DotBackward0>)
+tensor(32.2239, grad_fn=<SqueezeBackward0>) tensor(22.6262, grad_fn=<DotBackward0>)
+tensor(31.5110, grad_fn=<SqueezeBackward0>) tensor(18.7399, grad_fn=<DotBackward0>)
+tensor(30.4286, grad_fn=<SqueezeBackward0>) tensor(13.5701, grad_fn=<DotBackward0>)
+2025-09-22 23:50:11,632 - PCI-MAPPO - INFO - Iteration 25
+2025-09-22 23:50:11,632 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:50:11,632 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:50:11,632 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.714
+2025-09-22 23:50:11,632 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.105779
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -     action_bridge_loss: -0.002618
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001993
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.411738
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001521
+2025-09-22 23:50:11,633 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.421329
+2025-09-22 23:50:11,634 - PCI-MAPPO - INFO -     value_loss: 0.675738
+2025-09-22 23:50:11,634 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.022481 (n=1012.0)
+2025-09-22 23:50:11,634 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.020640
+2025-09-22 23:50:11,634 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.338926 (n=12.0)
+2025-09-22 23:50:11,634 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.424522
+2025-09-22 23:50:11,634 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(30.2075, grad_fn=<SqueezeBackward0>) tensor(14.8403, grad_fn=<DotBackward0>)
+tensor(31.5339, grad_fn=<SqueezeBackward0>) tensor(18.3574, grad_fn=<DotBackward0>)
+tensor(32.5998, grad_fn=<SqueezeBackward0>) tensor(17.7511, grad_fn=<DotBackward0>)
+tensor(37.5507, grad_fn=<SqueezeBackward0>) tensor(19.1568, grad_fn=<DotBackward0>)
+tensor(27.4886, grad_fn=<SqueezeBackward0>) tensor(14.8700, grad_fn=<DotBackward0>)
+tensor(28.6056, grad_fn=<SqueezeBackward0>) tensor(13.4092, grad_fn=<DotBackward0>)
+tensor(28.8973, grad_fn=<SqueezeBackward0>) tensor(21.0261, grad_fn=<DotBackward0>)
+tensor(23.9267, grad_fn=<SqueezeBackward0>) tensor(18.4751, grad_fn=<DotBackward0>)
+tensor(33.5725, grad_fn=<SqueezeBackward0>) tensor(16.4367, grad_fn=<DotBackward0>)
+tensor(28.8428, grad_fn=<SqueezeBackward0>) tensor(17.4369, grad_fn=<DotBackward0>)
+2025-09-22 23:50:24,612 - PCI-MAPPO - INFO - Iteration 30
+2025-09-22 23:50:24,613 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:50:24,613 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:50:24,613 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.833
+2025-09-22 23:50:24,613 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:50:24,613 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:50:24,613 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.116236
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     action_bridge_loss: -0.005207
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001313
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.349115
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000925
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.425862
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     value_loss: 0.772977
+2025-09-22 23:50:24,614 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.020438 (n=1011.5)
+2025-09-22 23:50:24,615 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.017422
+2025-09-22 23:50:24,615 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.466083 (n=12.0)
+2025-09-22 23:50:24,615 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.370185
+2025-09-22 23:50:24,615 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.327777 (n=0.5)
+2025-09-22 23:50:24,615 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-22 23:50:24,615 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(29.2385, grad_fn=<SqueezeBackward0>) tensor(17.8621, grad_fn=<DotBackward0>)
+tensor(27.9830, grad_fn=<SqueezeBackward0>) tensor(16.7732, grad_fn=<DotBackward0>)
+tensor(29.5155, grad_fn=<SqueezeBackward0>) tensor(15.6304, grad_fn=<DotBackward0>)
+tensor(26.7957, grad_fn=<SqueezeBackward0>) tensor(13.6630, grad_fn=<DotBackward0>)
+tensor(41.8094, grad_fn=<SqueezeBackward0>) tensor(18.1196, grad_fn=<DotBackward0>)
+tensor(30.2400, grad_fn=<SqueezeBackward0>) tensor(14.0149, grad_fn=<DotBackward0>)
+tensor(33.4923, grad_fn=<SqueezeBackward0>) tensor(18.5645, grad_fn=<DotBackward0>)
+tensor(30.7041, grad_fn=<SqueezeBackward0>) tensor(16.4271, grad_fn=<DotBackward0>)
+tensor(34.1760, grad_fn=<SqueezeBackward0>) tensor(17.1479, grad_fn=<DotBackward0>)
+tensor(23.8288, grad_fn=<SqueezeBackward0>) tensor(12.2752, grad_fn=<DotBackward0>)
+2025-09-22 23:50:37,663 - PCI-MAPPO - INFO - Iteration 35
+2025-09-22 23:50:37,664 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:50:37,664 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:50:37,664 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.929
+2025-09-22 23:50:37,664 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:50:37,664 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.116728
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     action_bridge_loss: -0.000822
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000765
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.373627
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001470
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.440440
+2025-09-22 23:50:37,665 - PCI-MAPPO - INFO -     value_loss: 0.675425
+2025-09-22 23:50:37,666 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.021546 (n=1010.5)
+2025-09-22 23:50:37,666 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.017601
+2025-09-22 23:50:37,666 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.319643 (n=13.5)
+2025-09-22 23:50:37,666 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.442657
+2025-09-22 23:50:37,666 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(26.4100, grad_fn=<SqueezeBackward0>) tensor(18.1934, grad_fn=<DotBackward0>)
+tensor(25.5102, grad_fn=<SqueezeBackward0>) tensor(16.5286, grad_fn=<DotBackward0>)
+tensor(25.4925, grad_fn=<SqueezeBackward0>) tensor(20.0665, grad_fn=<DotBackward0>)
+tensor(25.0650, grad_fn=<SqueezeBackward0>) tensor(18.3604, grad_fn=<DotBackward0>)
+tensor(27.2048, grad_fn=<SqueezeBackward0>) tensor(18.5216, grad_fn=<DotBackward0>)
+tensor(26.3842, grad_fn=<SqueezeBackward0>) tensor(17.4174, grad_fn=<DotBackward0>)
+tensor(28.0918, grad_fn=<SqueezeBackward0>) tensor(17.7114, grad_fn=<DotBackward0>)
+tensor(30.1433, grad_fn=<SqueezeBackward0>) tensor(20.6294, grad_fn=<DotBackward0>)
+tensor(34.0508, grad_fn=<SqueezeBackward0>) tensor(26.8461, grad_fn=<DotBackward0>)
+tensor(34.7313, grad_fn=<SqueezeBackward0>) tensor(23.1805, grad_fn=<DotBackward0>)
+2025-09-22 23:50:50,728 - PCI-MAPPO - INFO - Iteration 40
+2025-09-22 23:50:50,729 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:50:50,729 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:50:50,730 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.786
+2025-09-22 23:50:50,730 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:50:50,730 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:50:50,730 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.108037
+2025-09-22 23:50:50,730 - PCI-MAPPO - INFO -     action_bridge_loss: -0.030538
+2025-09-22 23:50:50,730 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000515
+2025-09-22 23:50:50,731 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.325202
+2025-09-22 23:50:50,731 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000605
+2025-09-22 23:50:50,731 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.409206
+2025-09-22 23:50:50,731 - PCI-MAPPO - INFO -     value_loss: 0.668236
+2025-09-22 23:50:50,731 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.019409 (n=1011.5)
+2025-09-22 23:50:50,731 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.018365
+2025-09-22 23:50:50,732 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.462009 (n=12.5)
+2025-09-22 23:50:50,732 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.346786
+2025-09-22 23:50:50,732 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(44.1267, grad_fn=<SqueezeBackward0>) tensor(27.3520, grad_fn=<DotBackward0>)
+tensor(32.3268, grad_fn=<SqueezeBackward0>) tensor(20.0985, grad_fn=<DotBackward0>)
+tensor(43.1621, grad_fn=<SqueezeBackward0>) tensor(29.3255, grad_fn=<DotBackward0>)
+tensor(37.2776, grad_fn=<SqueezeBackward0>) tensor(27.4499, grad_fn=<DotBackward0>)
+tensor(37.5957, grad_fn=<SqueezeBackward0>) tensor(29.9912, grad_fn=<DotBackward0>)
+tensor(45.6684, grad_fn=<SqueezeBackward0>) tensor(25.7796, grad_fn=<DotBackward0>)
+tensor(45.4840, grad_fn=<SqueezeBackward0>) tensor(40.5675, grad_fn=<DotBackward0>)
+tensor(43.5164, grad_fn=<SqueezeBackward0>) tensor(39.5978, grad_fn=<DotBackward0>)
+tensor(45.4185, grad_fn=<SqueezeBackward0>) tensor(38.5191, grad_fn=<DotBackward0>)
+tensor(36.9460, grad_fn=<SqueezeBackward0>) tensor(26.7153, grad_fn=<DotBackward0>)
+2025-09-22 23:51:03,889 - PCI-MAPPO - INFO - Iteration 45
+2025-09-22 23:51:03,889 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.000
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.123445
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -     action_bridge_loss: -0.046977
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001093
+2025-09-22 23:51:03,890 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.332681
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001392
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.395257
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     value_loss: 0.592257
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.018220 (n=1010.0)
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.018678
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.370695 (n=14.0)
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.442157
+2025-09-22 23:51:03,891 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(56.0881, grad_fn=<SqueezeBackward0>) tensor(64.4009, grad_fn=<DotBackward0>)
+tensor(36.8581, grad_fn=<SqueezeBackward0>) tensor(29.2120, grad_fn=<DotBackward0>)
+tensor(35.0137, grad_fn=<SqueezeBackward0>) tensor(33.7776, grad_fn=<DotBackward0>)
+tensor(41.8821, grad_fn=<SqueezeBackward0>) tensor(24.8885, grad_fn=<DotBackward0>)
+tensor(36.7353, grad_fn=<SqueezeBackward0>) tensor(26.9058, grad_fn=<DotBackward0>)
+tensor(46.7784, grad_fn=<SqueezeBackward0>) tensor(33.8338, grad_fn=<DotBackward0>)
+tensor(52.0223, grad_fn=<SqueezeBackward0>) tensor(44.7196, grad_fn=<DotBackward0>)
+tensor(28.5552, grad_fn=<SqueezeBackward0>) tensor(22.0326, grad_fn=<DotBackward0>)
+tensor(39.6916, grad_fn=<SqueezeBackward0>) tensor(28.1294, grad_fn=<DotBackward0>)
+tensor(36.3786, grad_fn=<SqueezeBackward0>) tensor(33.7910, grad_fn=<DotBackward0>)
+2025-09-22 23:51:16,869 - PCI-MAPPO - INFO - Iteration 50
+2025-09-22 23:51:16,870 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:51:16,870 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:51:16,870 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.357
+2025-09-22 23:51:16,870 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:51:16,870 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.141559
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     action_bridge_loss: -0.046651
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000605
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.350652
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001037
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.358484
+2025-09-22 23:51:16,871 - PCI-MAPPO - INFO -     value_loss: 0.796800
+2025-09-22 23:51:16,872 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.019911 (n=1007.5)
+2025-09-22 23:51:16,872 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.019650
+2025-09-22 23:51:16,872 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.374980 (n=16.5)
+2025-09-22 23:51:16,872 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.280191
+2025-09-22 23:51:16,872 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-22 23:51:17,262 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-22 23:51:17,263 - PCI-MAPPO - INFO -   Mean Reward: 2.600 ± 0.300
+2025-09-22 23:51:17,263 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-22 23:51:17,263 - PCI-MAPPO - INFO -   Min/Max Reward: 2.300 / 2.900
+2025-09-22 23:51:17,263 - PCI-MAPPO - INFO -   *** New best performance! ***
+tensor(43.5821, grad_fn=<SqueezeBackward0>) tensor(34.2638, grad_fn=<DotBackward0>)
+tensor(37.3541, grad_fn=<SqueezeBackward0>) tensor(28.4024, grad_fn=<DotBackward0>)
+tensor(37.2440, grad_fn=<SqueezeBackward0>) tensor(27.5813, grad_fn=<DotBackward0>)
+tensor(54.3810, grad_fn=<SqueezeBackward0>) tensor(46.3439, grad_fn=<DotBackward0>)
+tensor(32.5117, grad_fn=<SqueezeBackward0>) tensor(29.1279, grad_fn=<DotBackward0>)
+tensor(35.3636, grad_fn=<SqueezeBackward0>) tensor(26.9903, grad_fn=<DotBackward0>)
+tensor(36.1041, grad_fn=<SqueezeBackward0>) tensor(24.0821, grad_fn=<DotBackward0>)
+tensor(33.2321, grad_fn=<SqueezeBackward0>) tensor(26.8316, grad_fn=<DotBackward0>)
+tensor(33.7941, grad_fn=<SqueezeBackward0>) tensor(17.7020, grad_fn=<DotBackward0>)
+tensor(43.1055, grad_fn=<SqueezeBackward0>) tensor(26.0678, grad_fn=<DotBackward0>)
+2025-09-22 23:51:30,362 - PCI-MAPPO - INFO - Iteration 55
+2025-09-22 23:51:30,363 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:51:30,363 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:51:30,363 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.071
+2025-09-22 23:51:30,363 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:51:30,364 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:51:30,364 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.125391
+2025-09-22 23:51:30,364 - PCI-MAPPO - INFO -     action_bridge_loss: -0.010390
+2025-09-22 23:51:30,364 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001398
+2025-09-22 23:51:30,364 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.358519
+2025-09-22 23:51:30,365 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000568
+2025-09-22 23:51:30,365 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.356201
+2025-09-22 23:51:30,365 - PCI-MAPPO - INFO -     value_loss: 0.635018
+2025-09-22 23:51:30,365 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.027322 (n=1009.5)
+2025-09-22 23:51:30,365 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.022239
+2025-09-22 23:51:30,365 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.508184 (n=14.5)
+2025-09-22 23:51:30,366 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.353655
+2025-09-22 23:51:30,366 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(34.8393, grad_fn=<SqueezeBackward0>) tensor(23.7754, grad_fn=<DotBackward0>)
+tensor(30.8989, grad_fn=<SqueezeBackward0>) tensor(22.0083, grad_fn=<DotBackward0>)
+tensor(29.6557, grad_fn=<SqueezeBackward0>) tensor(22.8546, grad_fn=<DotBackward0>)
+tensor(30.0430, grad_fn=<SqueezeBackward0>) tensor(18.5129, grad_fn=<DotBackward0>)
+tensor(29.3179, grad_fn=<SqueezeBackward0>) tensor(21.6717, grad_fn=<DotBackward0>)
+tensor(24.7156, grad_fn=<SqueezeBackward0>) tensor(22.6199, grad_fn=<DotBackward0>)
+tensor(28.7885, grad_fn=<SqueezeBackward0>) tensor(21.2556, grad_fn=<DotBackward0>)
+tensor(25.5046, grad_fn=<SqueezeBackward0>) tensor(16.7515, grad_fn=<DotBackward0>)
+tensor(30.3019, grad_fn=<SqueezeBackward0>) tensor(27.8258, grad_fn=<DotBackward0>)
+tensor(32.0797, grad_fn=<SqueezeBackward0>) tensor(25.8870, grad_fn=<DotBackward0>)
+2025-09-22 23:51:43,193 - PCI-MAPPO - INFO - Iteration 60
+2025-09-22 23:51:43,194 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:51:43,194 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:51:43,194 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.929
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.116863
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     action_bridge_loss: -0.043988
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001242
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.301920
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001328
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.324526
+2025-09-22 23:51:43,195 - PCI-MAPPO - INFO -     value_loss: 0.601171
+2025-09-22 23:51:43,196 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.025702 (n=1010.5)
+2025-09-22 23:51:43,196 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021150
+2025-09-22 23:51:43,196 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.408276 (n=13.5)
+2025-09-22 23:51:43,196 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.284984
+2025-09-22 23:51:43,196 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(24.3293, grad_fn=<SqueezeBackward0>) tensor(18.6237, grad_fn=<DotBackward0>)
+tensor(27.4334, grad_fn=<SqueezeBackward0>) tensor(23.2518, grad_fn=<DotBackward0>)
+tensor(38.4159, grad_fn=<SqueezeBackward0>) tensor(26.0312, grad_fn=<DotBackward0>)
+tensor(27.1668, grad_fn=<SqueezeBackward0>) tensor(24.0532, grad_fn=<DotBackward0>)
+tensor(22.8871, grad_fn=<SqueezeBackward0>) tensor(22.1411, grad_fn=<DotBackward0>)
+tensor(26.9341, grad_fn=<SqueezeBackward0>) tensor(19.6075, grad_fn=<DotBackward0>)
+tensor(29.9317, grad_fn=<SqueezeBackward0>) tensor(23.0063, grad_fn=<DotBackward0>)
+tensor(31.0231, grad_fn=<SqueezeBackward0>) tensor(29.8852, grad_fn=<DotBackward0>)
+tensor(23.2967, grad_fn=<SqueezeBackward0>) tensor(18.1266, grad_fn=<DotBackward0>)
+tensor(30.6858, grad_fn=<SqueezeBackward0>) tensor(26.2361, grad_fn=<DotBackward0>)
+2025-09-22 23:51:56,226 - PCI-MAPPO - INFO - Iteration 65
+2025-09-22 23:51:56,226 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:51:56,227 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:51:56,227 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.286
+2025-09-22 23:51:56,227 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:51:56,227 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:51:56,227 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.137187
+2025-09-22 23:51:56,227 - PCI-MAPPO - INFO -     action_bridge_loss: -0.033929
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001630
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.317154
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000704
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.331307
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     value_loss: 0.699516
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.022441 (n=1008.0)
+2025-09-22 23:51:56,228 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021784
+2025-09-22 23:51:56,229 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.459058 (n=16.0)
+2025-09-22 23:51:56,229 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.313070
+2025-09-22 23:51:56,229 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(29.9960, grad_fn=<SqueezeBackward0>) tensor(24.0779, grad_fn=<DotBackward0>)
+tensor(31.6174, grad_fn=<SqueezeBackward0>) tensor(27.9488, grad_fn=<DotBackward0>)
+tensor(33.4461, grad_fn=<SqueezeBackward0>) tensor(28.1187, grad_fn=<DotBackward0>)
+tensor(29.6305, grad_fn=<SqueezeBackward0>) tensor(26.3261, grad_fn=<DotBackward0>)
+tensor(33.5300, grad_fn=<SqueezeBackward0>) tensor(24.4589, grad_fn=<DotBackward0>)
+tensor(29.7950, grad_fn=<SqueezeBackward0>) tensor(26.6366, grad_fn=<DotBackward0>)
+tensor(33.2237, grad_fn=<SqueezeBackward0>) tensor(29.4176, grad_fn=<DotBackward0>)
+tensor(34.6907, grad_fn=<SqueezeBackward0>) tensor(27.4360, grad_fn=<DotBackward0>)
+tensor(30.0954, grad_fn=<SqueezeBackward0>) tensor(29.9812, grad_fn=<DotBackward0>)
+tensor(34.9516, grad_fn=<SqueezeBackward0>) tensor(27.7478, grad_fn=<DotBackward0>)
+2025-09-22 23:52:09,204 - PCI-MAPPO - INFO - Iteration 70
+2025-09-22 23:52:09,204 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.000
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.119736
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -     action_bridge_loss: -0.049230
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002112
+2025-09-22 23:52:09,205 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.321989
+2025-09-22 23:52:09,206 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000840
+2025-09-22 23:52:09,206 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.281129
+2025-09-22 23:52:09,206 - PCI-MAPPO - INFO -     value_loss: 0.542721
+2025-09-22 23:52:09,206 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.022051 (n=1010.0)
+2025-09-22 23:52:09,206 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.022216
+2025-09-22 23:52:09,206 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.356616 (n=14.0)
+2025-09-22 23:52:09,207 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.248564
+2025-09-22 23:52:09,207 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(30.4466, grad_fn=<SqueezeBackward0>) tensor(29.2395, grad_fn=<DotBackward0>)
+tensor(43.9121, grad_fn=<SqueezeBackward0>) tensor(40.7706, grad_fn=<DotBackward0>)
+tensor(33.5106, grad_fn=<SqueezeBackward0>) tensor(28.6711, grad_fn=<DotBackward0>)
+tensor(34.7963, grad_fn=<SqueezeBackward0>) tensor(27.2509, grad_fn=<DotBackward0>)
+tensor(41.3328, grad_fn=<SqueezeBackward0>) tensor(36.8665, grad_fn=<DotBackward0>)
+tensor(33.8400, grad_fn=<SqueezeBackward0>) tensor(31.5811, grad_fn=<DotBackward0>)
+tensor(39.2588, grad_fn=<SqueezeBackward0>) tensor(35.9362, grad_fn=<DotBackward0>)
+tensor(37.3546, grad_fn=<SqueezeBackward0>) tensor(39.9912, grad_fn=<DotBackward0>)
+tensor(43.1080, grad_fn=<SqueezeBackward0>) tensor(45.5743, grad_fn=<DotBackward0>)
+tensor(31.2328, grad_fn=<SqueezeBackward0>) tensor(25.9956, grad_fn=<DotBackward0>)
+2025-09-22 23:52:22,224 - PCI-MAPPO - INFO - Iteration 75
+2025-09-22 23:52:22,224 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:52:22,224 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:52:22,225 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.714
+2025-09-22 23:52:22,225 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:52:22,225 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:52:22,225 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.104551
+2025-09-22 23:52:22,225 - PCI-MAPPO - INFO -     action_bridge_loss: -0.067187
+2025-09-22 23:52:22,226 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000826
+2025-09-22 23:52:22,226 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.278808
+2025-09-22 23:52:22,226 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001485
+2025-09-22 23:52:22,226 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.282181
+2025-09-22 23:52:22,226 - PCI-MAPPO - INFO -     value_loss: 0.542641
+2025-09-22 23:52:22,226 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.018290 (n=1012.0)
+2025-09-22 23:52:22,227 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.018289
+2025-09-22 23:52:22,227 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.476904 (n=12.0)
+2025-09-22 23:52:22,227 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.322447
+2025-09-22 23:52:22,227 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(39.8857, grad_fn=<SqueezeBackward0>) tensor(45.6684, grad_fn=<DotBackward0>)
+tensor(39.7525, grad_fn=<SqueezeBackward0>) tensor(39.9363, grad_fn=<DotBackward0>)
+tensor(46.7792, grad_fn=<SqueezeBackward0>) tensor(45.9668, grad_fn=<DotBackward0>)
+tensor(47.1453, grad_fn=<SqueezeBackward0>) tensor(44.7806, grad_fn=<DotBackward0>)
+tensor(60.6169, grad_fn=<SqueezeBackward0>) tensor(54.3718, grad_fn=<DotBackward0>)
+tensor(39.0250, grad_fn=<SqueezeBackward0>) tensor(33.6909, grad_fn=<DotBackward0>)
+tensor(65.3101, grad_fn=<SqueezeBackward0>) tensor(54.4476, grad_fn=<DotBackward0>)
+tensor(41.4532, grad_fn=<SqueezeBackward0>) tensor(43.2692, grad_fn=<DotBackward0>)
+tensor(58.4399, grad_fn=<SqueezeBackward0>) tensor(58.4533, grad_fn=<DotBackward0>)
+tensor(58.2360, grad_fn=<SqueezeBackward0>) tensor(50.2271, grad_fn=<DotBackward0>)
+2025-09-22 23:52:35,286 - PCI-MAPPO - INFO - Iteration 80
+2025-09-22 23:52:35,286 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:52:35,287 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:52:35,287 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.000
+2025-09-22 23:52:35,287 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:52:35,287 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:52:35,287 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.134136
+2025-09-22 23:52:35,287 - PCI-MAPPO - INFO -     action_bridge_loss: -0.098325
+2025-09-22 23:52:35,288 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001647
+2025-09-22 23:52:35,288 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.257565
+2025-09-22 23:52:35,288 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000386
+2025-09-22 23:52:35,288 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.269908
+2025-09-22 23:52:35,288 - PCI-MAPPO - INFO -     value_loss: 0.563400
+2025-09-22 23:52:35,288 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.018673 (n=1010.0)
+2025-09-22 23:52:35,289 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.020175
+2025-09-22 23:52:35,289 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.417742 (n=14.0)
+2025-09-22 23:52:35,289 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.290022
+2025-09-22 23:52:35,289 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(60.9859, grad_fn=<SqueezeBackward0>) tensor(63.8154, grad_fn=<DotBackward0>)
+tensor(48.5920, grad_fn=<SqueezeBackward0>) tensor(47.3710, grad_fn=<DotBackward0>)
+tensor(48.9910, grad_fn=<SqueezeBackward0>) tensor(47.2447, grad_fn=<DotBackward0>)
+tensor(41.5123, grad_fn=<SqueezeBackward0>) tensor(37.2102, grad_fn=<DotBackward0>)
+tensor(56.3696, grad_fn=<SqueezeBackward0>) tensor(54.0599, grad_fn=<DotBackward0>)
+tensor(51.6824, grad_fn=<SqueezeBackward0>) tensor(42.0341, grad_fn=<DotBackward0>)
+tensor(74.9672, grad_fn=<SqueezeBackward0>) tensor(61.5468, grad_fn=<DotBackward0>)
+tensor(59.8512, grad_fn=<SqueezeBackward0>) tensor(55.3748, grad_fn=<DotBackward0>)
+tensor(53.8045, grad_fn=<SqueezeBackward0>) tensor(44.8867, grad_fn=<DotBackward0>)
+tensor(61.9708, grad_fn=<SqueezeBackward0>) tensor(50.2315, grad_fn=<DotBackward0>)
+2025-09-22 23:52:48,281 - PCI-MAPPO - INFO - Iteration 85
+2025-09-22 23:52:48,282 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:52:48,282 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:52:48,282 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.643
+2025-09-22 23:52:48,282 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.158194
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     action_bridge_loss: -0.072716
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001180
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.210456
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001247
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.213859
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     value_loss: 0.755886
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.019635 (n=1005.5)
+2025-09-22 23:52:48,283 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.020654
+2025-09-22 23:52:48,284 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.515074 (n=18.5)
+2025-09-22 23:52:48,284 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.332491
+2025-09-22 23:52:48,284 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(79.2794, grad_fn=<SqueezeBackward0>) tensor(59.9579, grad_fn=<DotBackward0>)
+tensor(77.0201, grad_fn=<SqueezeBackward0>) tensor(62.0489, grad_fn=<DotBackward0>)
+tensor(50.5608, grad_fn=<SqueezeBackward0>) tensor(39.6407, grad_fn=<DotBackward0>)
+tensor(62.5149, grad_fn=<SqueezeBackward0>) tensor(67.7580, grad_fn=<DotBackward0>)
+tensor(61.0599, grad_fn=<SqueezeBackward0>) tensor(51.0771, grad_fn=<DotBackward0>)
+tensor(56.4456, grad_fn=<SqueezeBackward0>) tensor(52.3425, grad_fn=<DotBackward0>)
+tensor(68.9598, grad_fn=<SqueezeBackward0>) tensor(52.1162, grad_fn=<DotBackward0>)
+tensor(47.8834, grad_fn=<SqueezeBackward0>) tensor(34.9608, grad_fn=<DotBackward0>)
+tensor(59.2390, grad_fn=<SqueezeBackward0>) tensor(50.7781, grad_fn=<DotBackward0>)
+tensor(53.9804, grad_fn=<SqueezeBackward0>) tensor(43.4497, grad_fn=<DotBackward0>)
+2025-09-22 23:53:01,305 - PCI-MAPPO - INFO - Iteration 90
+2025-09-22 23:53:01,306 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:53:01,306 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:53:01,306 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.357
+2025-09-22 23:53:01,306 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:53:01,306 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.145359
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     action_bridge_loss: -0.073473
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002538
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.254445
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001359
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.202015
+2025-09-22 23:53:01,307 - PCI-MAPPO - INFO -     value_loss: 0.884865
+2025-09-22 23:53:01,308 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.024589 (n=1007.5)
+2025-09-22 23:53:01,308 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.020117
+2025-09-22 23:53:01,308 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.440080 (n=16.5)
+2025-09-22 23:53:01,308 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.222266
+2025-09-22 23:53:01,308 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(38.2282, grad_fn=<SqueezeBackward0>) tensor(32.6255, grad_fn=<DotBackward0>)
+tensor(36.0759, grad_fn=<SqueezeBackward0>) tensor(35.5766, grad_fn=<DotBackward0>)
+tensor(41.2363, grad_fn=<SqueezeBackward0>) tensor(39.4189, grad_fn=<DotBackward0>)
+tensor(40.9778, grad_fn=<SqueezeBackward0>) tensor(29.9020, grad_fn=<DotBackward0>)
+tensor(37.4417, grad_fn=<SqueezeBackward0>) tensor(36.4049, grad_fn=<DotBackward0>)
+tensor(34.2669, grad_fn=<SqueezeBackward0>) tensor(29.5366, grad_fn=<DotBackward0>)
+tensor(36.2211, grad_fn=<SqueezeBackward0>) tensor(31.1490, grad_fn=<DotBackward0>)
+tensor(38.8793, grad_fn=<SqueezeBackward0>) tensor(33.2738, grad_fn=<DotBackward0>)
+tensor(37.8212, grad_fn=<SqueezeBackward0>) tensor(36.7086, grad_fn=<DotBackward0>)
+tensor(40.2955, grad_fn=<SqueezeBackward0>) tensor(39.2222, grad_fn=<DotBackward0>)
+2025-09-22 23:53:14,326 - PCI-MAPPO - INFO - Iteration 95
+2025-09-22 23:53:14,327 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:53:14,327 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:53:14,327 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.214
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.132616
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     action_bridge_loss: -0.072017
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002239
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.304268
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000505
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.185581
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     value_loss: 0.735541
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.022672 (n=1008.5)
+2025-09-22 23:53:14,328 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021543
+2025-09-22 23:53:14,329 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.412313 (n=15.5)
+2025-09-22 23:53:14,329 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.298894
+2025-09-22 23:53:14,329 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(42.4649, grad_fn=<SqueezeBackward0>) tensor(40.0110, grad_fn=<DotBackward0>)
+tensor(33.2869, grad_fn=<SqueezeBackward0>) tensor(30.5622, grad_fn=<DotBackward0>)
+tensor(34.8068, grad_fn=<SqueezeBackward0>) tensor(37.2795, grad_fn=<DotBackward0>)
+tensor(41.5558, grad_fn=<SqueezeBackward0>) tensor(39.5842, grad_fn=<DotBackward0>)
+tensor(46.1253, grad_fn=<SqueezeBackward0>) tensor(43.1687, grad_fn=<DotBackward0>)
+tensor(40.0082, grad_fn=<SqueezeBackward0>) tensor(41.0204, grad_fn=<DotBackward0>)
+tensor(40.5274, grad_fn=<SqueezeBackward0>) tensor(41.4655, grad_fn=<DotBackward0>)
+tensor(51.5183, grad_fn=<SqueezeBackward0>) tensor(46.4608, grad_fn=<DotBackward0>)
+tensor(56.7462, grad_fn=<SqueezeBackward0>) tensor(53.7660, grad_fn=<DotBackward0>)
+tensor(47.3125, grad_fn=<SqueezeBackward0>) tensor(45.3491, grad_fn=<DotBackward0>)
+2025-09-22 23:53:27,121 - PCI-MAPPO - INFO - Iteration 100
+2025-09-22 23:53:27,121 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:53:27,122 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:53:27,122 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.429
+2025-09-22 23:53:27,122 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:53:27,122 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:53:27,122 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.145144
+2025-09-22 23:53:27,123 - PCI-MAPPO - INFO -     action_bridge_loss: -0.091964
+2025-09-22 23:53:27,123 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001334
+2025-09-22 23:53:27,123 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.256194
+2025-09-22 23:53:27,123 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001022
+2025-09-22 23:53:27,123 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.129984
+2025-09-22 23:53:27,123 - PCI-MAPPO - INFO -     value_loss: 0.723706
+2025-09-22 23:53:27,124 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.018200 (n=1007.0)
+2025-09-22 23:53:27,124 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.020666
+2025-09-22 23:53:27,124 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.410937 (n=17.0)
+2025-09-22 23:53:27,124 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.196744
+2025-09-22 23:53:27,124 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-22 23:53:27,493 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-22 23:53:27,493 - PCI-MAPPO - INFO -   Mean Reward: 2.850 ± 0.750
+2025-09-22 23:53:27,494 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-22 23:53:27,494 - PCI-MAPPO - INFO -   Min/Max Reward: 2.100 / 3.600
+2025-09-22 23:53:27,494 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-22 23:53:27,503 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250922_234902/staghuntenv/checkpoints/checkpoint_100.pt
+tensor(50.9913, grad_fn=<SqueezeBackward0>) tensor(44.9732, grad_fn=<DotBackward0>)
+tensor(43.8331, grad_fn=<SqueezeBackward0>) tensor(45.0274, grad_fn=<DotBackward0>)
+tensor(53.5609, grad_fn=<SqueezeBackward0>) tensor(49.1020, grad_fn=<DotBackward0>)
+tensor(57.2777, grad_fn=<SqueezeBackward0>) tensor(49.9368, grad_fn=<DotBackward0>)
+tensor(49.7560, grad_fn=<SqueezeBackward0>) tensor(50.2616, grad_fn=<DotBackward0>)
+tensor(58.3877, grad_fn=<SqueezeBackward0>) tensor(54.6306, grad_fn=<DotBackward0>)
+tensor(50.3274, grad_fn=<SqueezeBackward0>) tensor(45.2065, grad_fn=<DotBackward0>)
+tensor(63.4843, grad_fn=<SqueezeBackward0>) tensor(63.4263, grad_fn=<DotBackward0>)
+tensor(67.0955, grad_fn=<SqueezeBackward0>) tensor(63.5513, grad_fn=<DotBackward0>)
+tensor(52.1577, grad_fn=<SqueezeBackward0>) tensor(47.3773, grad_fn=<DotBackward0>)
+2025-09-22 23:53:40,349 - PCI-MAPPO - INFO - Iteration 105
+2025-09-22 23:53:40,350 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:53:40,350 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:53:40,350 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.905
+2025-09-22 23:53:40,351 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:53:40,351 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:53:40,351 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.178998
+2025-09-22 23:53:40,351 - PCI-MAPPO - INFO -     action_bridge_loss: -0.100199
+2025-09-22 23:53:40,351 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000617
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.236532
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001259
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.083036
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     value_loss: 1.102823
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.019865 (n=1004.0)
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021385
+2025-09-22 23:53:40,352 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.407923 (n=19.5)
+2025-09-22 23:53:40,353 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.244789
+2025-09-22 23:53:40,353 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.297994 (n=0.5)
+2025-09-22 23:53:40,353 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-22 23:53:40,353 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(57.6290, grad_fn=<SqueezeBackward0>) tensor(60.1214, grad_fn=<DotBackward0>)
+tensor(47.6371, grad_fn=<SqueezeBackward0>) tensor(44.9233, grad_fn=<DotBackward0>)
+tensor(55.5129, grad_fn=<SqueezeBackward0>) tensor(55.8627, grad_fn=<DotBackward0>)
+tensor(44.1224, grad_fn=<SqueezeBackward0>) tensor(39.0500, grad_fn=<DotBackward0>)
+tensor(54.3740, grad_fn=<SqueezeBackward0>) tensor(48.9270, grad_fn=<DotBackward0>)
+tensor(56.6496, grad_fn=<SqueezeBackward0>) tensor(44.8403, grad_fn=<DotBackward0>)
+tensor(56.1237, grad_fn=<SqueezeBackward0>) tensor(44.7316, grad_fn=<DotBackward0>)
+tensor(56.2586, grad_fn=<SqueezeBackward0>) tensor(51.2208, grad_fn=<DotBackward0>)
+tensor(62.0709, grad_fn=<SqueezeBackward0>) tensor(51.0586, grad_fn=<DotBackward0>)
+tensor(59.1667, grad_fn=<SqueezeBackward0>) tensor(44.7189, grad_fn=<DotBackward0>)
+2025-09-22 23:53:53,139 - PCI-MAPPO - INFO - Iteration 110
+2025-09-22 23:53:53,140 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:53:53,140 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:53:53,140 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.786
+2025-09-22 23:53:53,140 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:53:53,140 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.166309
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     action_bridge_loss: -0.068669
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001909
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.224458
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001520
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.104403
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     value_loss: 0.804702
+2025-09-22 23:53:53,141 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.027402 (n=1004.5)
+2025-09-22 23:53:53,142 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.024076
+2025-09-22 23:53:53,142 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.420428 (n=19.5)
+2025-09-22 23:53:53,142 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.156595
+2025-09-22 23:53:53,142 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(44.2505, grad_fn=<SqueezeBackward0>) tensor(39.6475, grad_fn=<DotBackward0>)
+tensor(61.2172, grad_fn=<SqueezeBackward0>) tensor(53.6364, grad_fn=<DotBackward0>)
+tensor(42.3001, grad_fn=<SqueezeBackward0>) tensor(35.8902, grad_fn=<DotBackward0>)
+tensor(37.5193, grad_fn=<SqueezeBackward0>) tensor(38.6510, grad_fn=<DotBackward0>)
+tensor(47.5512, grad_fn=<SqueezeBackward0>) tensor(37.8218, grad_fn=<DotBackward0>)
+tensor(46.3526, grad_fn=<SqueezeBackward0>) tensor(43.1648, grad_fn=<DotBackward0>)
+tensor(49.7564, grad_fn=<SqueezeBackward0>) tensor(41.2759, grad_fn=<DotBackward0>)
+tensor(41.2035, grad_fn=<SqueezeBackward0>) tensor(38.9638, grad_fn=<DotBackward0>)
+tensor(50.3544, grad_fn=<SqueezeBackward0>) tensor(44.6526, grad_fn=<DotBackward0>)
+tensor(26.5973, grad_fn=<SqueezeBackward0>) tensor(24.5914, grad_fn=<DotBackward0>)
+2025-09-22 23:54:06,011 - PCI-MAPPO - INFO - Iteration 115
+2025-09-22 23:54:06,012 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:54:06,012 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:54:06,012 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.643
+2025-09-22 23:54:06,012 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:54:06,012 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.158171
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     action_bridge_loss: -0.060094
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001298
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.240949
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001462
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.052189
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     value_loss: 0.868207
+2025-09-22 23:54:06,013 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.024518 (n=1005.5)
+2025-09-22 23:54:06,014 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.023985
+2025-09-22 23:54:06,014 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.319559 (n=18.5)
+2025-09-22 23:54:06,014 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.234608
+2025-09-22 23:54:06,014 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(37.5532, grad_fn=<SqueezeBackward0>) tensor(38.2043, grad_fn=<DotBackward0>)
+tensor(45.7351, grad_fn=<SqueezeBackward0>) tensor(39.0022, grad_fn=<DotBackward0>)
+tensor(34.8799, grad_fn=<SqueezeBackward0>) tensor(34.5880, grad_fn=<DotBackward0>)
+tensor(37.0753, grad_fn=<SqueezeBackward0>) tensor(39.3647, grad_fn=<DotBackward0>)
+tensor(68.5135, grad_fn=<SqueezeBackward0>) tensor(55.6304, grad_fn=<DotBackward0>)
+tensor(49.6946, grad_fn=<SqueezeBackward0>) tensor(52.3284, grad_fn=<DotBackward0>)
+tensor(49.2465, grad_fn=<SqueezeBackward0>) tensor(46.6458, grad_fn=<DotBackward0>)
+tensor(50.1542, grad_fn=<SqueezeBackward0>) tensor(44.0246, grad_fn=<DotBackward0>)
+tensor(52.9139, grad_fn=<SqueezeBackward0>) tensor(47.2177, grad_fn=<DotBackward0>)
+tensor(48.6280, grad_fn=<SqueezeBackward0>) tensor(43.3882, grad_fn=<DotBackward0>)
+2025-09-22 23:54:18,794 - PCI-MAPPO - INFO - Iteration 120
+2025-09-22 23:54:18,795 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:54:18,795 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:54:18,795 - PCI-MAPPO - INFO -   Mean Episode Reward: 3.024
+2025-09-22 23:54:18,795 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:54:18,795 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.190204
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     action_bridge_loss: -0.077803
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000721
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.211026
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.002631
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.086437
+2025-09-22 23:54:18,796 - PCI-MAPPO - INFO -     value_loss: 1.095674
+2025-09-22 23:54:18,797 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.021187 (n=1003.5)
+2025-09-22 23:54:18,797 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021582
+2025-09-22 23:54:18,797 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.464727 (n=19.5)
+2025-09-22 23:54:18,797 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.334723
+2025-09-22 23:54:18,797 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -1.020778 (n=1.0)
+2025-09-22 23:54:18,797 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-22 23:54:18,798 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(52.4429, grad_fn=<SqueezeBackward0>) tensor(48.7624, grad_fn=<DotBackward0>)
+tensor(47.8752, grad_fn=<SqueezeBackward0>) tensor(42.9573, grad_fn=<DotBackward0>)
+tensor(55.8488, grad_fn=<SqueezeBackward0>) tensor(50.3834, grad_fn=<DotBackward0>)
+tensor(46.7709, grad_fn=<SqueezeBackward0>) tensor(43.5335, grad_fn=<DotBackward0>)
+tensor(59.3949, grad_fn=<SqueezeBackward0>) tensor(46.8325, grad_fn=<DotBackward0>)
+tensor(49.1236, grad_fn=<SqueezeBackward0>) tensor(44.7079, grad_fn=<DotBackward0>)
+tensor(52.3965, grad_fn=<SqueezeBackward0>) tensor(50.1275, grad_fn=<DotBackward0>)
+tensor(63.1815, grad_fn=<SqueezeBackward0>) tensor(53.5530, grad_fn=<DotBackward0>)
+tensor(65.4322, grad_fn=<SqueezeBackward0>) tensor(47.2041, grad_fn=<DotBackward0>)
+tensor(55.3438, grad_fn=<SqueezeBackward0>) tensor(50.4378, grad_fn=<DotBackward0>)
+2025-09-22 23:54:31,520 - PCI-MAPPO - INFO - Iteration 125
+2025-09-22 23:54:31,520 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:54:31,520 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.643
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.159805
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -     action_bridge_loss: -0.072762
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002426
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.186255
+2025-09-22 23:54:31,521 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000552
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.124415
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     value_loss: 0.991088
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.024769 (n=1005.5)
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.023886
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.431897 (n=18.5)
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.239013
+2025-09-22 23:54:31,522 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(38.2756, grad_fn=<SqueezeBackward0>) tensor(35.1743, grad_fn=<DotBackward0>)
+tensor(39.9284, grad_fn=<SqueezeBackward0>) tensor(30.2513, grad_fn=<DotBackward0>)
+tensor(41.1740, grad_fn=<SqueezeBackward0>) tensor(38.7374, grad_fn=<DotBackward0>)
+tensor(35.5873, grad_fn=<SqueezeBackward0>) tensor(28.9509, grad_fn=<DotBackward0>)
+tensor(34.6150, grad_fn=<SqueezeBackward0>) tensor(29.6824, grad_fn=<DotBackward0>)
+tensor(40.2925, grad_fn=<SqueezeBackward0>) tensor(31.2851, grad_fn=<DotBackward0>)
+tensor(38.6586, grad_fn=<SqueezeBackward0>) tensor(36.8572, grad_fn=<DotBackward0>)
+tensor(41.0889, grad_fn=<SqueezeBackward0>) tensor(37.5303, grad_fn=<DotBackward0>)
+tensor(49.3626, grad_fn=<SqueezeBackward0>) tensor(50.9668, grad_fn=<DotBackward0>)
+tensor(64.3608, grad_fn=<SqueezeBackward0>) tensor(45.3674, grad_fn=<DotBackward0>)
+2025-09-22 23:54:44,448 - PCI-MAPPO - INFO - Iteration 130
+2025-09-22 23:54:44,449 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:54:44,449 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:54:44,449 - PCI-MAPPO - INFO -   Mean Episode Reward: 3.119
+2025-09-22 23:54:44,449 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:54:44,449 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:54:44,450 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.190419
+2025-09-22 23:54:44,450 - PCI-MAPPO - INFO -     action_bridge_loss: -0.077095
+2025-09-22 23:54:44,450 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002535
+2025-09-22 23:54:44,450 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.158668
+2025-09-22 23:54:44,450 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001570
+2025-09-22 23:54:44,450 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.143383
+2025-09-22 23:54:44,451 - PCI-MAPPO - INFO -     value_loss: 1.184765
+2025-09-22 23:54:44,451 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.021133 (n=1002.5)
+2025-09-22 23:54:44,451 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.023631
+2025-09-22 23:54:44,451 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.431775 (n=21.0)
+2025-09-22 23:54:44,451 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.270542
+2025-09-22 23:54:44,451 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.986368 (n=0.5)
+2025-09-22 23:54:44,452 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-22 23:54:44,452 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(45.1154, grad_fn=<SqueezeBackward0>) tensor(46.9265, grad_fn=<DotBackward0>)
+tensor(39.7890, grad_fn=<SqueezeBackward0>) tensor(38.9973, grad_fn=<DotBackward0>)
+tensor(49.6965, grad_fn=<SqueezeBackward0>) tensor(42.8368, grad_fn=<DotBackward0>)
+tensor(48.7665, grad_fn=<SqueezeBackward0>) tensor(49.2161, grad_fn=<DotBackward0>)
+tensor(49.0916, grad_fn=<SqueezeBackward0>) tensor(41.7760, grad_fn=<DotBackward0>)
+tensor(38.8421, grad_fn=<SqueezeBackward0>) tensor(41.5146, grad_fn=<DotBackward0>)
+tensor(43.4603, grad_fn=<SqueezeBackward0>) tensor(52.5891, grad_fn=<DotBackward0>)
+tensor(39.5861, grad_fn=<SqueezeBackward0>) tensor(43.6255, grad_fn=<DotBackward0>)
+tensor(54.4266, grad_fn=<SqueezeBackward0>) tensor(59.0338, grad_fn=<DotBackward0>)
+tensor(58.0472, grad_fn=<SqueezeBackward0>) tensor(47.2628, grad_fn=<DotBackward0>)
+2025-09-22 23:54:57,305 - PCI-MAPPO - INFO - Iteration 135
+2025-09-22 23:54:57,306 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:54:57,306 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:54:57,306 - PCI-MAPPO - INFO -   Mean Episode Reward: 3.000
+2025-09-22 23:54:57,306 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:54:57,307 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:54:57,307 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.175867
+2025-09-22 23:54:57,307 - PCI-MAPPO - INFO -     action_bridge_loss: -0.097773
+2025-09-22 23:54:57,307 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001665
+2025-09-22 23:54:57,307 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.099902
+2025-09-22 23:54:57,307 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000589
+2025-09-22 23:54:57,308 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.052783
+2025-09-22 23:54:57,308 - PCI-MAPPO - INFO -     value_loss: 0.832143
+2025-09-22 23:54:57,308 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.019502 (n=1003.0)
+2025-09-22 23:54:57,308 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.022124
+2025-09-22 23:54:57,308 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.376945 (n=21.0)
+2025-09-22 23:54:57,308 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.256168
+2025-09-22 23:54:57,309 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(66.3841, grad_fn=<SqueezeBackward0>) tensor(50.6133, grad_fn=<DotBackward0>)
+tensor(44.8303, grad_fn=<SqueezeBackward0>) tensor(44.9808, grad_fn=<DotBackward0>)
+tensor(42.4075, grad_fn=<SqueezeBackward0>) tensor(39.8111, grad_fn=<DotBackward0>)
+tensor(51.8855, grad_fn=<SqueezeBackward0>) tensor(42.5834, grad_fn=<DotBackward0>)
+tensor(41.1671, grad_fn=<SqueezeBackward0>) tensor(38.0669, grad_fn=<DotBackward0>)
+tensor(43.8874, grad_fn=<SqueezeBackward0>) tensor(39.3933, grad_fn=<DotBackward0>)
+tensor(49.6043, grad_fn=<SqueezeBackward0>) tensor(41.3172, grad_fn=<DotBackward0>)
+tensor(45.5299, grad_fn=<SqueezeBackward0>) tensor(40.5604, grad_fn=<DotBackward0>)
+tensor(48.9245, grad_fn=<SqueezeBackward0>) tensor(43.6529, grad_fn=<DotBackward0>)
+tensor(50.9273, grad_fn=<SqueezeBackward0>) tensor(48.1813, grad_fn=<DotBackward0>)
+2025-09-22 23:55:10,297 - PCI-MAPPO - INFO - Iteration 140
+2025-09-22 23:55:10,298 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:55:10,298 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:55:10,298 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.857
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.168439
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -     action_bridge_loss: -0.081852
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002176
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.096235
+2025-09-22 23:55:10,299 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.002842
+2025-09-22 23:55:10,300 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.098012
+2025-09-22 23:55:10,300 - PCI-MAPPO - INFO -     value_loss: 0.902224
+2025-09-22 23:55:10,300 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.024230 (n=1004.0)
+2025-09-22 23:55:10,300 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.025641
+2025-09-22 23:55:10,300 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.389808 (n=20.0)
+2025-09-22 23:55:10,300 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.208579
+2025-09-22 23:55:10,301 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(45.2797, grad_fn=<SqueezeBackward0>) tensor(45.6460, grad_fn=<DotBackward0>)
+tensor(51.1477, grad_fn=<SqueezeBackward0>) tensor(54.7826, grad_fn=<DotBackward0>)
+tensor(48.1367, grad_fn=<SqueezeBackward0>) tensor(48.7382, grad_fn=<DotBackward0>)
+tensor(51.8979, grad_fn=<SqueezeBackward0>) tensor(46.4825, grad_fn=<DotBackward0>)
+tensor(50.3984, grad_fn=<SqueezeBackward0>) tensor(49.0183, grad_fn=<DotBackward0>)
+tensor(55.8498, grad_fn=<SqueezeBackward0>) tensor(55.1024, grad_fn=<DotBackward0>)
+tensor(62.6393, grad_fn=<SqueezeBackward0>) tensor(70.5973, grad_fn=<DotBackward0>)
+tensor(55.1846, grad_fn=<SqueezeBackward0>) tensor(61.5914, grad_fn=<DotBackward0>)
+tensor(66.0766, grad_fn=<SqueezeBackward0>) tensor(69.1237, grad_fn=<DotBackward0>)
+tensor(61.4796, grad_fn=<SqueezeBackward0>) tensor(63.7069, grad_fn=<DotBackward0>)
+2025-09-22 23:55:23,051 - PCI-MAPPO - INFO - Iteration 145
+2025-09-22 23:55:23,051 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:55:23,051 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:55:23,051 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.500
+2025-09-22 23:55:23,052 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:55:23,052 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:55:23,052 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.149497
+2025-09-22 23:55:23,052 - PCI-MAPPO - INFO -     action_bridge_loss: -0.134868
+2025-09-22 23:55:23,052 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001263
+2025-09-22 23:55:23,052 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.062021
+2025-09-22 23:55:23,053 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001776
+2025-09-22 23:55:23,053 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.036857
+2025-09-22 23:55:23,053 - PCI-MAPPO - INFO -     value_loss: 0.702787
+2025-09-22 23:55:23,053 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.018973 (n=1006.5)
+2025-09-22 23:55:23,053 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021091
+2025-09-22 23:55:23,053 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.462640 (n=17.5)
+2025-09-22 23:55:23,054 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.323082
+2025-09-22 23:55:23,054 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(65.4226, grad_fn=<SqueezeBackward0>) tensor(72.4364, grad_fn=<DotBackward0>)
+tensor(57.3658, grad_fn=<SqueezeBackward0>) tensor(62.4630, grad_fn=<DotBackward0>)
+tensor(80.7154, grad_fn=<SqueezeBackward0>) tensor(89.2578, grad_fn=<DotBackward0>)
+tensor(64.4246, grad_fn=<SqueezeBackward0>) tensor(60.5882, grad_fn=<DotBackward0>)
+tensor(68.9120, grad_fn=<SqueezeBackward0>) tensor(71.1243, grad_fn=<DotBackward0>)
+tensor(71.9010, grad_fn=<SqueezeBackward0>) tensor(66.4625, grad_fn=<DotBackward0>)
+tensor(80.3889, grad_fn=<SqueezeBackward0>) tensor(72.4625, grad_fn=<DotBackward0>)
+tensor(68.4512, grad_fn=<SqueezeBackward0>) tensor(64.1363, grad_fn=<DotBackward0>)
+tensor(74.7642, grad_fn=<SqueezeBackward0>) tensor(76.9674, grad_fn=<DotBackward0>)
+tensor(75.5947, grad_fn=<SqueezeBackward0>) tensor(68.2198, grad_fn=<DotBackward0>)
+2025-09-22 23:55:35,892 - PCI-MAPPO - INFO - Iteration 150
+2025-09-22 23:55:35,892 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:55:35,892 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:55:35,892 - PCI-MAPPO - INFO -   Mean Episode Reward: 3.167
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.198017
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -     action_bridge_loss: -0.136734
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001387
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.049261
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001146
+2025-09-22 23:55:35,893 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.031210
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     value_loss: 1.075263
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.017350 (n=1002.5)
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.022823
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.423135 (n=20.5)
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.246686
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.203254 (n=1.0)
+2025-09-22 23:55:35,894 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.266461
+2025-09-22 23:55:35,895 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-22 23:55:36,267 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-22 23:55:36,267 - PCI-MAPPO - INFO -   Mean Reward: 2.400 ± 0.000
+2025-09-22 23:55:36,267 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-22 23:55:36,267 - PCI-MAPPO - INFO -   Min/Max Reward: 2.400 / 2.400
+tensor(83.1064, grad_fn=<SqueezeBackward0>) tensor(75.3548, grad_fn=<DotBackward0>)
+tensor(81.8287, grad_fn=<SqueezeBackward0>) tensor(73.6227, grad_fn=<DotBackward0>)
+tensor(73.4665, grad_fn=<SqueezeBackward0>) tensor(64.3326, grad_fn=<DotBackward0>)
+tensor(68.9729, grad_fn=<SqueezeBackward0>) tensor(58.2850, grad_fn=<DotBackward0>)
+tensor(70.8608, grad_fn=<SqueezeBackward0>) tensor(63.5611, grad_fn=<DotBackward0>)
+tensor(66.1259, grad_fn=<SqueezeBackward0>) tensor(68.5188, grad_fn=<DotBackward0>)
+tensor(73.9161, grad_fn=<SqueezeBackward0>) tensor(75.3670, grad_fn=<DotBackward0>)
+tensor(58.7213, grad_fn=<SqueezeBackward0>) tensor(55.9015, grad_fn=<DotBackward0>)
+tensor(92.4855, grad_fn=<SqueezeBackward0>) tensor(91.5886, grad_fn=<DotBackward0>)
+tensor(69.3041, grad_fn=<SqueezeBackward0>) tensor(63.6373, grad_fn=<DotBackward0>)
+2025-09-22 23:55:49,022 - PCI-MAPPO - INFO - Iteration 155
+2025-09-22 23:55:49,023 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:55:49,023 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:55:49,023 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.929
+2025-09-22 23:55:49,023 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:55:49,023 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.173019
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     action_bridge_loss: -0.145178
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001367
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.027136
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000869
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -0.984936
+2025-09-22 23:55:49,024 - PCI-MAPPO - INFO -     value_loss: 1.035838
+2025-09-22 23:55:49,025 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.020795 (n=1003.5)
+2025-09-22 23:55:49,025 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.028210
+2025-09-22 23:55:49,025 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.564078 (n=20.5)
+2025-09-22 23:55:49,025 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.288458
+2025-09-22 23:55:49,025 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(78.0903, grad_fn=<SqueezeBackward0>) tensor(70.8740, grad_fn=<DotBackward0>)
+tensor(78.8682, grad_fn=<SqueezeBackward0>) tensor(76.0359, grad_fn=<DotBackward0>)
+tensor(80.9010, grad_fn=<SqueezeBackward0>) tensor(71.4276, grad_fn=<DotBackward0>)
+tensor(68.0727, grad_fn=<SqueezeBackward0>) tensor(68.7109, grad_fn=<DotBackward0>)
+tensor(82.8169, grad_fn=<SqueezeBackward0>) tensor(93.9545, grad_fn=<DotBackward0>)
+tensor(83.2466, grad_fn=<SqueezeBackward0>) tensor(86.2923, grad_fn=<DotBackward0>)
+tensor(95.3961, grad_fn=<SqueezeBackward0>) tensor(99.1352, grad_fn=<DotBackward0>)
+tensor(78.6162, grad_fn=<SqueezeBackward0>) tensor(78.6785, grad_fn=<DotBackward0>)
+tensor(71.2953, grad_fn=<SqueezeBackward0>) tensor(81.7807, grad_fn=<DotBackward0>)
+tensor(86.9689, grad_fn=<SqueezeBackward0>) tensor(81.8053, grad_fn=<DotBackward0>)
+2025-09-22 23:56:01,753 - PCI-MAPPO - INFO - Iteration 160
+2025-09-22 23:56:01,753 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:56:01,753 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:56:01,754 - PCI-MAPPO - INFO -   Mean Episode Reward: 3.000
+2025-09-22 23:56:01,754 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:56:01,754 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:56:01,754 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.178084
+2025-09-22 23:56:01,754 - PCI-MAPPO - INFO -     action_bridge_loss: -0.164949
+2025-09-22 23:56:01,755 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.003298
+2025-09-22 23:56:01,755 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.035826
+2025-09-22 23:56:01,755 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000930
+2025-09-22 23:56:01,755 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.012254
+2025-09-22 23:56:01,755 - PCI-MAPPO - INFO -     value_loss: 0.912354
+2025-09-22 23:56:01,755 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.016557 (n=1003.0)
+2025-09-22 23:56:01,756 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.022762
+2025-09-22 23:56:01,756 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.540861 (n=21.0)
+2025-09-22 23:56:01,756 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.334678
+2025-09-22 23:56:01,756 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(68.9721, grad_fn=<SqueezeBackward0>) tensor(60.7277, grad_fn=<DotBackward0>)
+tensor(78.2221, grad_fn=<SqueezeBackward0>) tensor(61.0634, grad_fn=<DotBackward0>)
+tensor(80.6439, grad_fn=<SqueezeBackward0>) tensor(71.3441, grad_fn=<DotBackward0>)
+tensor(75.2693, grad_fn=<SqueezeBackward0>) tensor(65.7420, grad_fn=<DotBackward0>)
+tensor(78.9430, grad_fn=<SqueezeBackward0>) tensor(73.0618, grad_fn=<DotBackward0>)
+tensor(74.2459, grad_fn=<SqueezeBackward0>) tensor(68.7594, grad_fn=<DotBackward0>)
+tensor(77.2512, grad_fn=<SqueezeBackward0>) tensor(74.9867, grad_fn=<DotBackward0>)
+tensor(73.6988, grad_fn=<SqueezeBackward0>) tensor(79.0729, grad_fn=<DotBackward0>)
+tensor(87.9232, grad_fn=<SqueezeBackward0>) tensor(97.7237, grad_fn=<DotBackward0>)
+tensor(75.4778, grad_fn=<SqueezeBackward0>) tensor(85.2801, grad_fn=<DotBackward0>)
+2025-09-22 23:56:14,626 - PCI-MAPPO - INFO - Iteration 165
+2025-09-22 23:56:14,626 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:56:14,626 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.929
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.183212
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -     action_bridge_loss: -0.197858
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001094
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -0.968170
+2025-09-22 23:56:14,627 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001773
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -0.964067
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     value_loss: 0.936448
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.020307 (n=1003.5)
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.024900
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.434786 (n=20.5)
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.333911
+2025-09-22 23:56:14,628 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(93.6642, grad_fn=<SqueezeBackward0>) tensor(85.3663, grad_fn=<DotBackward0>)
+tensor(73.2835, grad_fn=<SqueezeBackward0>) tensor(78.9068, grad_fn=<DotBackward0>)
+tensor(91.8135, grad_fn=<SqueezeBackward0>) tensor(100.4922, grad_fn=<DotBackward0>)
+tensor(96.5021, grad_fn=<SqueezeBackward0>) tensor(100.4997, grad_fn=<DotBackward0>)
+tensor(87.8692, grad_fn=<SqueezeBackward0>) tensor(81.8611, grad_fn=<DotBackward0>)
+tensor(63.1099, grad_fn=<SqueezeBackward0>) tensor(64.1133, grad_fn=<DotBackward0>)
+tensor(88.5639, grad_fn=<SqueezeBackward0>) tensor(86.8688, grad_fn=<DotBackward0>)
+tensor(95.1854, grad_fn=<SqueezeBackward0>) tensor(89.0385, grad_fn=<DotBackward0>)
+tensor(65.4914, grad_fn=<SqueezeBackward0>) tensor(67.1894, grad_fn=<DotBackward0>)
+tensor(67.5641, grad_fn=<SqueezeBackward0>) tensor(65.6091, grad_fn=<DotBackward0>)
+2025-09-22 23:56:27,445 - PCI-MAPPO - INFO - Iteration 170
+2025-09-22 23:56:27,445 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:56:27,446 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:56:27,446 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.833
+2025-09-22 23:56:27,446 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:56:27,446 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:56:27,446 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.172135
+2025-09-22 23:56:27,446 - PCI-MAPPO - INFO -     action_bridge_loss: -0.129435
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002703
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -0.998182
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001303
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.004325
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     value_loss: 0.903612
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.016952 (n=1004.5)
+2025-09-22 23:56:27,447 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021572
+2025-09-22 23:56:27,448 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.496334 (n=19.0)
+2025-09-22 23:56:27,448 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.315804
+2025-09-22 23:56:27,448 - PCI-MAPPO - INFO -     delta_stag_reward_mean: 0.049231 (n=0.5)
+2025-09-22 23:56:27,448 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-22 23:56:27,448 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(75.7591, grad_fn=<SqueezeBackward0>) tensor(85.4623, grad_fn=<DotBackward0>)
+tensor(80.3478, grad_fn=<SqueezeBackward0>) tensor(80.7526, grad_fn=<DotBackward0>)
+tensor(77.5015, grad_fn=<SqueezeBackward0>) tensor(83.7418, grad_fn=<DotBackward0>)
+tensor(74.3564, grad_fn=<SqueezeBackward0>) tensor(73.7433, grad_fn=<DotBackward0>)
+tensor(98.7647, grad_fn=<SqueezeBackward0>) tensor(89.8510, grad_fn=<DotBackward0>)
+tensor(95.4422, grad_fn=<SqueezeBackward0>) tensor(91.4857, grad_fn=<DotBackward0>)
+tensor(91.8792, grad_fn=<SqueezeBackward0>) tensor(98.7667, grad_fn=<DotBackward0>)
+tensor(97.0351, grad_fn=<SqueezeBackward0>) tensor(94.9448, grad_fn=<DotBackward0>)
+tensor(96.1858, grad_fn=<SqueezeBackward0>) tensor(102.3195, grad_fn=<DotBackward0>)
+tensor(95.1745, grad_fn=<SqueezeBackward0>) tensor(100.2264, grad_fn=<DotBackward0>)
+2025-09-22 23:56:40,331 - PCI-MAPPO - INFO - Iteration 175
+2025-09-22 23:56:40,331 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-22 23:56:40,331 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -   Mean Episode Reward: 3.000
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -   Update Info:
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.175374
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -     action_bridge_loss: -0.208722
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000992
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -0.926039
+2025-09-22 23:56:40,332 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000639
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -0.933234
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     value_loss: 0.690710
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.016168 (n=1003.0)
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.022025
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.477137 (n=21.0)
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.307040
+2025-09-22 23:56:40,333 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+tensor(85.1700, grad_fn=<SqueezeBackward0>) tensor(80.2155, grad_fn=<DotBackward0>)
+tensor(81.5904, grad_fn=<SqueezeBackward0>) tensor(83.1919, grad_fn=<DotBackward0>)
+tensor(98.7583, grad_fn=<SqueezeBackward0>) tensor(97.5301, grad_fn=<DotBackward0>)
+tensor(90.6380, grad_fn=<SqueezeBackward0>) tensor(81.9119, grad_fn=<DotBackward0>)
+tensor(117.2050, grad_fn=<SqueezeBackward0>) tensor(107.8772, grad_fn=<DotBackward0>)
+tensor(112.9714, grad_fn=<SqueezeBackward0>) tensor(108.3367, grad_fn=<DotBackward0>)
+tensor(97.4681, grad_fn=<SqueezeBackward0>) tensor(95.2859, grad_fn=<DotBackward0>)
+tensor(109.4347, grad_fn=<SqueezeBackward0>) tensor(101.2780, grad_fn=<DotBackward0>)
+tensor(109.4976, grad_fn=<SqueezeBackward0>) tensor(111.5069, grad_fn=<DotBackward0>)
+2025-09-22 23:56:51,899 - PCI-MAPPO - INFO - Training interrupted by user
+2025-09-22 23:56:51,909 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250922_234902/staghuntenv/checkpoints/checkpoint_180.pt
+2025-09-22 23:56:51,918 - PCI-MAPPO - INFO - Checkpoint saved before exit
+2025-09-22 23:56:51,919 - PCI-MAPPO - INFO - Running causal effect evaluation after interruption...
+2025-09-22 23:56:51,919 - PCI-MAPPO - INFO - Loading checkpoint for causal evaluation: ./checkpoints/20250922_234902/staghuntenv/checkpoints/best_model.pt
+2025-09-22 23:56:51,931 - PCI-MAPPO - INFO - Checkpoint loaded: ./checkpoints/20250922_234902/staghuntenv/checkpoints/best_model.pt
+2025-09-22 23:56:51,931 - PCI-MAPPO - INFO - Resuming from iteration 180
+Causal effect 평가 시작: 100 에피소드
+에피소드 0/100 진행 중...
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 205, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 258, in train
+    update_info = self.algorithm.update()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 884, in update
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 718, in update_agents
+    agent_id, w_t, z_t, agent_obs[t],
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 628, in causal_intrinsic_reward
+KeyboardInterrupt
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 257, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 248, in main
+    run_causal_evaluation(env, algorithm, mock_args, logger)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 84, in run_causal_evaluation
+    statistics = evaluator.evaluate_causal_effects()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 60, in evaluate_causal_effects
+    episode_causal_effects = self._run_single_episode()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 102, in _run_single_episode
+    causal_effects = self._estimate_causal_effects(
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/utils/causal_evaluation.py", line 156, in _estimate_causal_effects
+    torch_prev_observations[agent_id] = torch.tensor(
+KeyboardInterrupt

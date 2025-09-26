@@ -1,0 +1,17 @@
+{"time":"2025-09-24T21:42:57.092591026+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250924_214256-e08g0tj5/logs/debug-core.log"}
+{"time":"2025-09-24T21:42:57.412911555+09:00","level":"INFO","msg":"stream: created new stream","id":"e08g0tj5"}
+{"time":"2025-09-24T21:42:57.412953242+09:00","level":"INFO","msg":"stream: started","id":"e08g0tj5"}
+{"time":"2025-09-24T21:42:57.412961945+09:00","level":"INFO","msg":"handler: started","stream_id":"e08g0tj5"}
+{"time":"2025-09-24T21:42:57.412970481+09:00","level":"INFO","msg":"sender: started","stream_id":"e08g0tj5"}
+{"time":"2025-09-24T21:42:57.41297961+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"e08g0tj5"}
+{"time":"2025-09-24T21:42:57.769359962+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-24T23:24:28.395856275+09:00","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/e08g0tj5/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
+{"time":"2025-09-25T00:10:35.292237351+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-25T00:10:35.292270534+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-25T00:10:36.293371197+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading history steps 598-598, summary, console lines 12658-12687","runtime_seconds":1.118350015},{"desc":"uploading output.log","runtime_seconds":0.620113132,"progress":"942.1KB/942.1KB"}],"total_operations":2}}
+{"time":"2025-09-25T00:10:36.886817474+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-25T00:10:37.451654836+09:00","level":"INFO","msg":"stream: closing","id":"e08g0tj5"}
+{"time":"2025-09-25T00:10:37.451670534+09:00","level":"INFO","msg":"handler: closed","stream_id":"e08g0tj5"}
+{"time":"2025-09-25T00:10:37.451681815+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"e08g0tj5"}
+{"time":"2025-09-25T00:10:37.451693007+09:00","level":"INFO","msg":"sender: closed","stream_id":"e08g0tj5"}
+{"time":"2025-09-25T00:10:37.45172561+09:00","level":"INFO","msg":"stream: closed","id":"e08g0tj5"}

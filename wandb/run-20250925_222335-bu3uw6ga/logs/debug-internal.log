@@ -1,0 +1,17 @@
+{"time":"2025-09-25T22:23:35.993463619+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250925_222335-bu3uw6ga/logs/debug-core.log"}
+{"time":"2025-09-25T22:23:36.320559445+09:00","level":"INFO","msg":"stream: created new stream","id":"bu3uw6ga"}
+{"time":"2025-09-25T22:23:36.320627398+09:00","level":"INFO","msg":"stream: started","id":"bu3uw6ga"}
+{"time":"2025-09-25T22:23:36.320636007+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"bu3uw6ga"}
+{"time":"2025-09-25T22:23:36.320644378+09:00","level":"INFO","msg":"handler: started","stream_id":"bu3uw6ga"}
+{"time":"2025-09-25T22:23:36.320678271+09:00","level":"INFO","msg":"sender: started","stream_id":"bu3uw6ga"}
+{"time":"2025-09-25T22:23:36.588072207+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-26T01:26:06.81562278+09:00","level":"INFO","msg":"api: retrying error","error":"Post \"https://api.wandb.ai/graphql\": net/http: request canceled (Client.Timeout exceeded while awaiting headers)"}
+{"time":"2025-09-26T02:45:00.01539524+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-26T02:45:00.015479326+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-26T02:45:01.016647507+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.71880378,"progress":"941.5KB/941.5KB"}],"total_operations":1}}
+{"time":"2025-09-26T02:45:01.657239923+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-26T02:45:01.943132202+09:00","level":"INFO","msg":"stream: closing","id":"bu3uw6ga"}
+{"time":"2025-09-26T02:45:01.943144196+09:00","level":"INFO","msg":"handler: closed","stream_id":"bu3uw6ga"}
+{"time":"2025-09-26T02:45:01.943151015+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"bu3uw6ga"}
+{"time":"2025-09-26T02:45:01.943158622+09:00","level":"INFO","msg":"sender: closed","stream_id":"bu3uw6ga"}
+{"time":"2025-09-26T02:45:01.943202145+09:00","level":"INFO","msg":"stream: closed","id":"bu3uw6ga"}

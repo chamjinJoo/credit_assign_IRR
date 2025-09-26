@@ -1,0 +1,16 @@
+{"time":"2025-09-25T09:43:51.564732145+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250925_094351-2t2femzi/logs/debug-core.log"}
+{"time":"2025-09-25T09:43:51.882849355+09:00","level":"INFO","msg":"stream: created new stream","id":"2t2femzi"}
+{"time":"2025-09-25T09:43:51.882893733+09:00","level":"INFO","msg":"stream: started","id":"2t2femzi"}
+{"time":"2025-09-25T09:43:51.88290599+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"2t2femzi"}
+{"time":"2025-09-25T09:43:51.882915217+09:00","level":"INFO","msg":"handler: started","stream_id":"2t2femzi"}
+{"time":"2025-09-25T09:43:51.882932344+09:00","level":"INFO","msg":"sender: started","stream_id":"2t2femzi"}
+{"time":"2025-09-25T09:43:52.142310284+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-25T14:58:27.064465142+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-25T14:58:27.064528549+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-25T14:58:28.065633008+09:00","level":"INFO","msg":"handler: operation stats","stats":{"operations":[{"desc":"uploading output.log","runtime_seconds":0.725106381,"progress":"940.7KB/940.7KB"}],"total_operations":1}}
+{"time":"2025-09-25T14:58:28.608713152+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-25T14:58:28.88198437+09:00","level":"INFO","msg":"stream: closing","id":"2t2femzi"}
+{"time":"2025-09-25T14:58:28.88199982+09:00","level":"INFO","msg":"handler: closed","stream_id":"2t2femzi"}
+{"time":"2025-09-25T14:58:28.88200947+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"2t2femzi"}
+{"time":"2025-09-25T14:58:28.882056123+09:00","level":"INFO","msg":"sender: closed","stream_id":"2t2femzi"}
+{"time":"2025-09-25T14:58:28.882116405+09:00","level":"INFO","msg":"stream: closed","id":"2t2femzi"}

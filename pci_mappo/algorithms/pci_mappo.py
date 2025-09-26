@@ -148,7 +148,7 @@ class PCIMAPPOAgent:
 class PCIMAPPOAlgorithm:
     """
     PCI-MAPPO Algorithm implementation following the pseudocode.
-    z_t = \mathbf{o}_t, w_t = \mathbf{o}_{t-1}
+    z_t = \mathbf{o}_{t-1}, w_t = \mathbf{o}_t
     """
     
     def __init__(
@@ -273,6 +273,10 @@ class PCIMAPPOAlgorithm:
         # self.critic_kernel_z = LinearKernel().to(self.device)
         # self.critic_kernel_w = LinearKernel().to(self.device)
         
+        # Stabilizer
+        self.stabilizer_lambda = 1.0  # Minimax 게임의 안정화 항 강도
+        self.tikhonov_gamma = 1e-4    # 역행렬 계산 시 수치적 안정성을 위한 정규화 항
+
         # Action embedding for kernel input
         self.action_embedding_for_kernel = nn.Embedding(action_dim, 8)
         
@@ -325,7 +329,7 @@ class PCIMAPPOAlgorithm:
             progress = effective_steps / self.causal_lambda_warmup_steps
             return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
     
-    def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 10) -> Dict[str, float]:
+    def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 16) -> Dict[str, float]:
         """
         - The Outcome Bridge loss (for h_φ) correctly extends Eq. (24) to the multi-agent case.
         - The Action Bridge loss (for q_θ) is corrected to include a Monte Carlo approximation
@@ -340,21 +344,29 @@ class PCIMAPPOAlgorithm:
         """
         batch_size = len(batch_data)
         # === Vectorized Data Preparation ===
-        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data])
-        w_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data])
+        # Swap: o_{t-1} becomes z_t, o_t becomes w_t
+        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data])
+        w_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data])
         a_t_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
         r_t_batch = torch.tensor([[t['bold_r_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
 
         # === Part 1: Update Outcome Bridge Network h_φ ===
         r_hat_outcome = self.outcome_bridge_net(a_t_batch, w_t_batch)
-        residuals = r_hat_outcome - r_t_batch
-        
+        residuals = r_t_batch - r_hat_outcome
+    
         action_embeds = self.action_embedding_for_kernel(a_t_batch).view(batch_size, -1)
         kernel_input_features_z = torch.cat([z_t_batch, action_embeds], dim=1)
         # self.critic_kernel_z.set_gamma(kernel_input_features_z) # for RBF kernel
         K_z = self.critic_kernel_z(kernel_input_features_z) # Shape: [batch_size, batch_size]
-        quadratic_forms = torch.matmul(residuals.T, torch.matmul(K_z, residuals))
-        outcome_bridge_loss = torch.trace(quadratic_forms) / (self.num_agents * batch_size)
+
+        # 1-1. Loss without Stabilizer
+        # quadratic_forms = torch.matmul(residuals.T, torch.matmul(K_z, residuals))
+        # outcome_bridge_loss = torch.trace(quadratic_forms) / (self.num_agents * batch_size)
+
+        # 1-2. Loss with Stabilizer
+        reg_K_z_inv = torch.inverse(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
+        loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
+        outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
 
         # === Part 2: Update Action Bridge Network q_θ ===
         # 1. Compute joint policy probabilities π(a_t|o_t)
@@ -365,11 +377,10 @@ class PCIMAPPOAlgorithm:
             joint_probs = torch.exp(torch.stack(log_probs_list, dim=1).sum(dim=1))
 
         # 2. Compute the weighted IPW term φ_q
-        action_bridge_output = self.action_bridge_net(z_t_batch, a_t_batch)
-        phi_q = joint_probs * action_bridge_output.squeeze()
-
+        action_bridge_output = self.action_bridge_net(z_t_batch, a_t_batch) # Shape: [batch_size, num_agents]
+        phi_q = joint_probs * action_bridge_output.squeeze() # Shape: [batch_size]
         # 3. Calculate Gram matrix K_w1 (Quadratic term)
-        kernel_input_features_w = torch.cat([w_t_batch, action_embeds], dim=1) # Detach to stop grads from h-update
+        kernel_input_features_w = torch.cat([w_t_batch, action_embeds], dim=1)
         # self.critic_kernel_w.set_gamma(kernel_input_features_w) # for RBF kernel
         K_w1 = self.critic_kernel_w(kernel_input_features_w)
 
@@ -411,9 +422,16 @@ class PCIMAPPOAlgorithm:
 
         # 5. Compute the full Action Bridge loss (as before)
         phi_q_col = phi_q.unsqueeze(1)
-        quadratic_term = torch.matmul(phi_q_col.T, torch.matmul(K_w1, phi_q_col)).squeeze()
-        linear_term = torch.matmul(phi_q, K_w2.sum(dim=1))
-        action_bridge_loss = quadratic_term - 2.0 * linear_term / batch_size
+        # 5-1. Without Stabilizer
+        # quadratic_term = torch.matmul(phi_q_col.T, torch.matmul(K_w1, phi_q_col)).squeeze()
+        # linear_term = torch.matmul(phi_q, K_w2.sum(dim=1))
+        # action_bridge_loss = (quadratic_term - 2.0 * linear_term) / batch_size
+
+        # 5-2. With Stabilizer
+        reg_K_w1_inv = torch.inverse(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
+        quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
+        linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
+        action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
 
         # --- Combine Losses and Backward Pass ---
         # We now have two distinct loss terms for the shared action embedding.
@@ -585,8 +603,8 @@ class PCIMAPPOAlgorithm:
     def causal_intrinsic_reward(
         self,
         agent_id: int,
-        w_t: torch.Tensor,      # Observed proxy variable w_t = o_{t-1}
-        z_t: torch.Tensor,      # Context variable z_t = o_t
+        w_t: torch.Tensor,      # Observed proxy variable w_t = o_t
+        z_t: torch.Tensor,      # Context variable z_t = o_{t-1}
         o_t: torch.Tensor,      # Observation for agent i
         current_actions: Dict[int, int],  # Current joint action a_t
         current_rewards: Dict[int, float],  # Current joint reward r_t
@@ -619,17 +637,18 @@ class PCIMAPPOAlgorithm:
                                                 dtype=torch.float32, device=self.device)
             error_t = current_rewards_tensor - r_pred_t.squeeze()
             weight_t = self.action_bridge_net(z_t.unsqueeze(0), current_actions_tensor.unsqueeze(0))
+            
             DR_correction_t = weight_t * error_t # DR_correction_t: [1, num_agents]
+            
             # Create a matrix of all possible counterfactual joint actions for agent i
             action_matrix = current_actions_tensor.unsqueeze(0).repeat(self.action_dim, 1)
             action_matrix[:, agent_id] = torch.arange(self.action_dim, device=self.device)
-            
             w_t_expanded = w_t.unsqueeze(0).expand(self.action_dim, -1)
-            
             # r_hat_all contains predicted reward vectors for each of agent i's possible actions.
             reg_estimates = self.outcome_bridge_net(action_matrix, w_t_expanded) # Shape: [action_dim, num_agents]
+            
             r_hat_all = reg_estimates + DR_correction_t  # Shape: [action_dim, num_agents]
-     
+
             # === 2. Weight Predictions by Policy Probabilities ===
             # Get agent i's current policy probabilities for each action
             action_logits = self.agents[agent_id].policy_net(o_t.unsqueeze(0))
@@ -640,30 +659,31 @@ class PCIMAPPOAlgorithm:
 
             # a) Get the weighted reward prediction for the action that was actually taken
             prob_factual = action_probs[factual_action_idx]
+            r_hat_factual = r_hat_all[factual_action_idx] # Shape: [num_agents]
             r_hat_factual_weighted = prob_factual * r_hat_all[factual_action_idx] # Shape: [num_agents]
-  
+            
             # b) Get the weighted average reward prediction for all other possible actions
             # Create a mask to select all actions EXCEPT the factual one
             mask = torch.ones(self.action_dim, dtype=torch.bool, device=self.device)
             mask[factual_action_idx] = False
             
             r_hat_counterfactuals = r_hat_all[mask] # Shape: [action_dim - 1, num_agents]
+            
+            # Opition 1) Weighted counterfactual baseline
             probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
             # === 3. Compute the Difference-Based Causal Effect ===
-            if r_hat_counterfactuals.shape[0] == 0:
-                # If there are no other actions, the causal effect is just the weighted factual outcome.
-                # This is a design choice; another option is to return zero.
-                causal_effect_vector = r_hat_factual_weighted
+            sum_probs_counterfactuals = probs_counterfactuals.sum()
+            if sum_probs_counterfactuals > 1e-8:
+                # weighted_sum = (확률 * 보상).sum()
+                weighted_sum_counterfactuals = (probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals).sum(dim=0)
+                # baseline = weighted_sum / 확률의 합
+                baseline = weighted_sum_counterfactuals / sum_probs_counterfactuals
             else:
-                # Weight the counterfactual rewards by their probabilities
-                # Shape: [action_dim - 1, num_agents]
-                weighted_r_hat_counterfactuals = probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals
+                # 비교할 반사실적 행동이 없는 경우 (행동이 1개뿐인 경우 등)
+                baseline = torch.zeros_like(r_hat_factual)
                 
-                # Normalize to get the expected value over the counterfactual action distribution
-                sum_probs_counterfactuals = probs_counterfactuals.sum()
-                r_hat_counterfactuals_mean_weighted = weighted_r_hat_counterfactuals.sum(dim=0) / (sum_probs_counterfactuals + 1e-8)
-                # The causal effect is the difference between the weighted factual outcome and the weighted counterfactual average
-                causal_effect_vector = r_hat_factual_weighted - r_hat_counterfactuals_mean_weighted # Shape: [num_agents]
+            # === 3. 최종 인과 효과 벡터 계산 === #
+            causal_effect_vector = r_hat_factual - baseline # Shape: [num_agents]
             
             # === 4. Calculate Final Shaping Term Δ^i_t ===
             # Average the causal effects over all *other* agents.
@@ -672,7 +692,14 @@ class PCIMAPPOAlgorithm:
                 Delta_i_t = causal_effect_vector[other_agents].mean().item()
             else:
                 Delta_i_t = 0.0
-                
+
+        # if current_rewards[agent_id] != 0 or current_rewards[1 - agent_id] != 0:
+        #     print(f"current_rewards: {current_rewards}")
+        #     print(f"DR_corrections (q): {DR_correction_t}", weight_t.squeeze(), error_t.squeeze())
+        #     print(f"reg_estimates (h): {reg_estimates}")
+        #     print(f"r_hat_all: {r_hat_all}")
+        #     print(f"Delta_i_t: {Delta_i_t}")
+        
         return Delta_i_t, r_hat_all.cpu().numpy()
 
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
@@ -712,8 +739,8 @@ class PCIMAPPOAlgorithm:
             shaped_rewards = []
             with torch.no_grad():
                 for t, transition in enumerate(batch_data):
-                    w_t = self._concatenate_observations(transition['bold_o_t_minus_1'])
-                    z_t = self._concatenate_observations(transition['bold_o_t'])
+                    z_t = self._concatenate_observations(transition['bold_o_t_minus_1'])
+                    w_t = self._concatenate_observations(transition['bold_o_t'])
                     Delta_t, _ = self.causal_intrinsic_reward(
                         agent_id, w_t, z_t, agent_obs[t],
                         transition['bold_a_t'], transition['bold_r_t']
@@ -853,9 +880,7 @@ class PCIMAPPOAlgorithm:
                 agent_losses[f'delta_{scenario}_mean'] = np.mean(deltas)
                 agent_losses[f'delta_{scenario}_std'] = np.std(deltas)
                 agent_losses[f'delta_{scenario}_count'] = len(deltas)
-            
         return dict(agent_losses)
-
 
     def update(self, **kwargs):
         """
@@ -899,6 +924,102 @@ class PCIMAPPOAlgorithm:
         final_losses['causal_lambda'] = self.get_current_causal_lambda()
 
         return final_losses
+
+    ############### causal intrinsic reward original ###############
+    '''
+    def causal_intrinsic_reward(
+        self,
+        agent_id: int,
+        w_t: torch.Tensor,      # Observed proxy variable w_t = o_t
+        z_t: torch.Tensor,      # Context variable z_t = o_{t-1}
+        o_t: torch.Tensor,      # Observation for agent i
+        current_actions: Dict[int, int],  # Current joint action a_t
+        current_rewards: Dict[int, float],  # Current joint reward r_t
+    ) -> Tuple[float, np.ndarray]:
+        """
+        Computes a causal reward shaping term Δ^i_t using a policy-weighted difference method.
+
+        This method weights both the factual and counterfactual reward predictions by their
+        respective policy probabilities before calculating the difference.
+
+        Args:
+            agent_id: ID of the agent i for whom the shaping term is calculated.
+            w_t: Proxy w_t, typically the concatenated previous observation o_{t-1}.
+            z_t: Proxy z_t, typically the concatenated current observation o_t.
+            o_t: The individual observation for agent i.
+            current_actions: The joint action a_t actually taken at the timestep.
+            current_rewards: The joint reward r_t actually received.
+
+        Returns:
+            Delta_i_t: The final scalar causal reward shaping term for agent i.
+            r_hat_all_numpy: A numpy array of all counterfactual reward predictions for monitoring.
+        """
+        with torch.no_grad():
+            # === 1. Compute All Counterfactual Outcomes (including the factual one) ===
+            # DR Correction Term (calculated once based on the factual action)
+            current_actions_tensor = torch.tensor([current_actions[j] for j in range(self.num_agents)],
+                                                dtype=torch.long, device=self.device)
+            r_pred_t = self.outcome_bridge_net(current_actions_tensor.unsqueeze(0), w_t.unsqueeze(0))
+            current_rewards_tensor = torch.tensor([current_rewards[j] for j in range(self.num_agents)],
+                                                dtype=torch.float32, device=self.device)
+            error_t = current_rewards_tensor - r_pred_t.squeeze()
+            weight_t = self.action_bridge_net(z_t.unsqueeze(0), current_actions_tensor.unsqueeze(0))
+            DR_correction_t = weight_t * error_t # DR_correction_t: [1, num_agents]
+            # Create a matrix of all possible counterfactual joint actions for agent i
+            action_matrix = current_actions_tensor.unsqueeze(0).repeat(self.action_dim, 1)
+            action_matrix[:, agent_id] = torch.arange(self.action_dim, device=self.device)
+            
+            w_t_expanded = w_t.unsqueeze(0).expand(self.action_dim, -1)
+            
+            # r_hat_all contains predicted reward vectors for each of agent i's possible actions.
+            reg_estimates = self.outcome_bridge_net(action_matrix, w_t_expanded) # Shape: [action_dim, num_agents]
+            r_hat_all = reg_estimates + DR_correction_t  # Shape: [action_dim, num_agents]
+     
+            # === 2. Weight Predictions by Policy Probabilities ===
+            # Get agent i's current policy probabilities for each action
+            action_logits = self.agents[agent_id].policy_net(o_t.unsqueeze(0))
+            action_probs = torch.softmax(action_logits, dim=-1).squeeze()  # Shape: [action_dim]
+
+            # Identify the action agent i actually took
+            factual_action_idx = current_actions[agent_id]
+
+            # a) Get the weighted reward prediction for the action that was actually taken
+            prob_factual = action_probs[factual_action_idx]
+            r_hat_factual_weighted = prob_factual * r_hat_all[factual_action_idx] # Shape: [num_agents]
+  
+            # b) Get the weighted average reward prediction for all other possible actions
+            # Create a mask to select all actions EXCEPT the factual one
+            mask = torch.ones(self.action_dim, dtype=torch.bool, device=self.device)
+            mask[factual_action_idx] = False
+            
+            r_hat_counterfactuals = r_hat_all[mask] # Shape: [action_dim - 1, num_agents]
+            probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
+            # === 3. Compute the Difference-Based Causal Effect ===
+            if r_hat_counterfactuals.shape[0] == 0:
+                # If there are no other actions, the causal effect is just the weighted factual outcome.
+                # This is a design choice; another option is to return zero.
+                causal_effect_vector = r_hat_factual_weighted
+            else:
+                # Weight the counterfactual rewards by their probabilities
+                # Shape: [action_dim - 1, num_agents]
+                weighted_r_hat_counterfactuals = probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals
+                
+                # Normalize to get the expected value over the counterfactual action distribution
+                sum_probs_counterfactuals = probs_counterfactuals.sum()
+                r_hat_counterfactuals_mean_weighted = weighted_r_hat_counterfactuals.sum(dim=0) / (sum_probs_counterfactuals + 1e-8)
+                # The causal effect is the difference between the weighted factual outcome and the weighted counterfactual average
+                causal_effect_vector = r_hat_factual_weighted - r_hat_counterfactuals_mean_weighted # Shape: [num_agents]
+            
+            # === 4. Calculate Final Shaping Term Δ^i_t ===
+            # Average the causal effects over all *other* agents.
+            other_agents = [j for j in range(self.num_agents) if j != agent_id]
+            if other_agents:
+                Delta_i_t = causal_effect_vector[other_agents].mean().item()
+            else:
+                Delta_i_t = 0.0
+                
+        return Delta_i_t, r_hat_all.cpu().numpy()
+        '''
 
     # Buffer management
     def clear_buffer(self):

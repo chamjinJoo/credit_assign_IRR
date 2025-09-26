@@ -7,7 +7,7 @@ network:
   lr_bridge: 3.0e-4
   lr_critic: 3.0e-4
   # RKHS Kernel parameters for analytical loss
-  rkhs_gamma: 0.5  # Smaller gamma for more localized kernels
+  rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
 
 # Algorithm Configuration
 algorithm:
@@ -22,9 +22,9 @@ algorithm:
   causal_lambda: 0.05
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_start: 0.0      # Starting causal lambda value
-  causal_lambda_final: 0.05      # Final causal lambda value
+  causal_lambda_final: 0.8     # Final causal lambda value
   causal_lambda_warmup_steps: 1000  # Steps to reach final value
-  causal_lambda_startingpoint: 1500    # Starting iteration for causal lambda scheduling
+  causal_lambda_startingpoint: 200    # Starting iteration for causal lambda scheduling
   num_batches: 2  # Number of batches K for training
   # Epsilon greedy parameters for causal data collection
   epsilon_start: 0.6

@@ -1,0 +1,31 @@
+2025-09-23 11:57:39,051 - PCI-MAPPO - INFO - Starting training...
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - ============================================================
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - ============================================================
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-23 11:57:39,052 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Log interval: 5
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Device: cpu
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - Wandb: True
+2025-09-23 11:57:39,053 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                       | 0/3000 [00:00<?, ?iter/s]
+2025-09-23 11:57:39,901 - PCI-MAPPO - ERROR - Training failed with error: The size of tensor a (512) must match the size of tensor b (32) at non-singleton dimension 1
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 257, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 205, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 258, in train
+    update_info = self.algorithm.update()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 885, in update
+    causal_losses = self.update_causal_networks(batch_data)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 369, in update_causal_networks
+    phi_q = joint_probs * action_bridge_output.squeeze()
+RuntimeError: The size of tensor a (512) must match the size of tensor b (32) at non-singleton dimension 1
