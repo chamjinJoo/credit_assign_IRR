@@ -1,0 +1,455 @@
+2025-09-23 00:48:13,426 - PCI-MAPPO - INFO - Starting training...
+2025-09-23 00:48:13,426 - PCI-MAPPO - INFO - ============================================================
+2025-09-23 00:48:13,426 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-23 00:48:13,426 - PCI-MAPPO - INFO - ============================================================
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-23 00:48:13,427 - PCI-MAPPO - INFO - Log interval: 5
+2025-09-23 00:48:13,428 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-23 00:48:13,428 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-23 00:48:13,428 - PCI-MAPPO - INFO - Device: cpu
+2025-09-23 00:48:13,428 - PCI-MAPPO - INFO - Wandb: True
+2025-09-23 00:48:13,428 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|▏                                                                                               | 5/3000 [00:14<2:19:13,  2.79s/iter]
+2025-09-23 00:48:16,256 - PCI-MAPPO - INFO - Iteration 0
+2025-09-23 00:48:16,257 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:48:16,257 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:48:16,257 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.643
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.117671
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -     action_bridge_loss: 0.003954
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.003086
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.502793
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.003289
+2025-09-23 00:48:16,258 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.513713
+2025-09-23 00:48:16,259 - PCI-MAPPO - INFO -     value_loss: 1.636745
+2025-09-23 00:48:16,259 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.016869 (n=1012.5)
+2025-09-23 00:48:16,259 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.108002
+2025-09-23 00:48:16,259 - PCI-MAPPO - INFO -     delta_forage_reward_mean: 0.319189 (n=11.5)
+2025-09-23 00:48:16,259 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.548085
+2025-09-23 00:48:16,259 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:48:16,645 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-23 00:48:16,645 - PCI-MAPPO - INFO -   Mean Reward: 1.350 ± 0.150
+2025-09-23 00:48:16,645 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-23 00:48:16,645 - PCI-MAPPO - INFO -   Min/Max Reward: 1.200 / 1.500
+2025-09-23 00:48:16,645 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-23 00:48:16,655 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250923_004811/staghuntenv/checkpoints/checkpoint_0.pt
+2025-09-23 00:48:30,435 - PCI-MAPPO - INFO - Iteration 5
+2025-09-23 00:48:30,435 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:48:30,435 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:48:30,436 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.976
+2025-09-23 00:48:30,436 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:48:30,436 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:48:30,436 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.134581
+2025-09-23 00:48:30,436 - PCI-MAPPO - INFO -     action_bridge_loss: 0.001106
+2025-09-23 00:48:30,436 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001941
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.453176
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000616
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.511359
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     value_loss: 1.069378
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.015804 (n=1010.5)
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.068978
+2025-09-23 00:48:30,437 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.053735 (n=13.0)
+2025-09-23 00:48:30,438 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.493306
+2025-09-23 00:48:30,438 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.165691 (n=0.5)
+2025-09-23 00:48:30,438 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:48:30,438 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:48:44,528 - PCI-MAPPO - INFO - Iteration 10
+2025-09-23 00:48:44,529 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:48:44,529 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:48:44,529 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.905
+2025-09-23 00:48:44,529 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:48:44,529 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:48:44,529 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.122924
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     action_bridge_loss: -0.006979
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001677
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.384714
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.002223
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.485524
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     value_loss: 0.906321
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.011541 (n=1011.0)
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.027433
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.221771 (n=12.5)
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.512015
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.374295 (n=0.5)
+2025-09-23 00:48:44,530 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:48:44,531 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:48:58,137 - PCI-MAPPO - INFO - Iteration 15
+2025-09-23 00:48:58,137 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:48:58,138 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:48:58,138 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.905
+2025-09-23 00:48:58,138 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:48:58,138 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:48:58,138 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.122901
+2025-09-23 00:48:58,138 - PCI-MAPPO - INFO -     action_bridge_loss: -0.011504
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001549
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.393005
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001475
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.448437
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     value_loss: 0.782372
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.014259 (n=1011.0)
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.024126
+2025-09-23 00:48:58,139 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -0.721220 (n=12.5)
+2025-09-23 00:48:58,140 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.364188
+2025-09-23 00:48:58,140 - PCI-MAPPO - INFO -     delta_stag_reward_mean: 0.037273 (n=0.5)
+2025-09-23 00:48:58,140 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:48:58,140 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:49:11,572 - PCI-MAPPO - INFO - Iteration 20
+2025-09-23 00:49:11,572 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:49:11,572 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:49:11,573 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.714
+2025-09-23 00:49:11,573 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:49:11,573 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:49:11,573 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.104297
+2025-09-23 00:49:11,573 - PCI-MAPPO - INFO -     action_bridge_loss: -0.031475
+2025-09-23 00:49:11,573 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001021
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.384308
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000926
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.379932
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     value_loss: 0.564925
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.013480 (n=1012.0)
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.017899
+2025-09-23 00:49:11,574 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -1.063019 (n=12.0)
+2025-09-23 00:49:11,575 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.435717
+2025-09-23 00:49:11,575 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:49:25,255 - PCI-MAPPO - INFO - Iteration 25
+2025-09-23 00:49:25,255 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:49:25,256 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:49:25,256 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.857
+2025-09-23 00:49:25,256 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:49:25,256 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:49:25,256 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.113088
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     action_bridge_loss: -0.034507
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000877
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.351351
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000963
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.436031
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     value_loss: 0.751852
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.008240 (n=1011.0)
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.012994
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -1.531290 (n=13.0)
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.558743
+2025-09-23 00:49:25,257 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:49:38,925 - PCI-MAPPO - INFO - Iteration 30
+2025-09-23 00:49:38,926 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:49:38,926 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:49:38,926 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.857
+2025-09-23 00:49:38,926 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:49:38,926 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:49:38,926 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.112114
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     action_bridge_loss: -0.051143
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001062
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.316022
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000940
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.434043
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     value_loss: 0.859257
+2025-09-23 00:49:38,927 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.003089 (n=1011.0)
+2025-09-23 00:49:38,928 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.011096
+2025-09-23 00:49:38,928 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -1.925167 (n=13.0)
+2025-09-23 00:49:38,928 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.618402
+2025-09-23 00:49:38,928 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:49:52,589 - PCI-MAPPO - INFO - Iteration 35
+2025-09-23 00:49:52,589 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:49:52,590 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:49:52,590 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.262
+2025-09-23 00:49:52,590 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:49:52,590 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:49:52,590 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.140916
+2025-09-23 00:49:52,590 - PCI-MAPPO - INFO -     action_bridge_loss: -0.079338
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000904
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.307506
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000530
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.388674
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     value_loss: 1.182066
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     delta_no_reward_mean: -0.000039 (n=1008.5)
+2025-09-23 00:49:52,591 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.012447
+2025-09-23 00:49:52,592 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -1.948995 (n=15.0)
+2025-09-23 00:49:52,592 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.744618
+2025-09-23 00:49:52,592 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -0.927193 (n=0.5)
+2025-09-23 00:49:52,592 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:49:52,592 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:50:06,344 - PCI-MAPPO - INFO - Iteration 40
+2025-09-23 00:50:06,344 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:50:06,345 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:50:06,345 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.833
+2025-09-23 00:50:06,345 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:50:06,345 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:50:06,345 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.118978
+2025-09-23 00:50:06,345 - PCI-MAPPO - INFO -     action_bridge_loss: -0.127655
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000621
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.347561
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000997
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.381966
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     value_loss: 0.761799
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.001916 (n=1011.5)
+2025-09-23 00:50:06,346 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.012718
+2025-09-23 00:50:06,347 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -1.856728 (n=12.0)
+2025-09-23 00:50:06,347 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.958323
+2025-09-23 00:50:06,347 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -3.036622 (n=0.5)
+2025-09-23 00:50:06,347 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:50:06,347 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:50:20,112 - PCI-MAPPO - INFO - Iteration 45
+2025-09-23 00:50:20,112 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:50:20,112 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:50:20,113 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.405
+2025-09-23 00:50:20,113 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:50:20,113 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:50:20,113 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.149642
+2025-09-23 00:50:20,113 - PCI-MAPPO - INFO -     action_bridge_loss: -0.161791
+2025-09-23 00:50:20,113 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001149
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.348452
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001253
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.336861
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     value_loss: 1.357953
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.006897 (n=1007.5)
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.014106
+2025-09-23 00:50:20,114 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.192185 (n=16.0)
+2025-09-23 00:50:20,115 - PCI-MAPPO - INFO -     delta_forage_reward_std: 1.036998
+2025-09-23 00:50:20,115 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -2.217706 (n=0.5)
+2025-09-23 00:50:20,115 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:50:20,115 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:50:33,703 - PCI-MAPPO - INFO - Iteration 50
+2025-09-23 00:50:33,703 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:50:33,703 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.262
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.143820
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -     action_bridge_loss: -0.140490
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000891
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.338170
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000982
+2025-09-23 00:50:33,704 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.268244
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     value_loss: 1.181258
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.008419 (n=1008.5)
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.013359
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.451349 (n=15.0)
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.767684
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -1.248024 (n=0.5)
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:50:33,705 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:50:34,094 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-23 00:50:34,094 - PCI-MAPPO - INFO -   Mean Reward: 2.400 ± 0.300
+2025-09-23 00:50:34,094 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-23 00:50:34,094 - PCI-MAPPO - INFO -   Min/Max Reward: 2.100 / 2.700
+2025-09-23 00:50:34,095 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-23 00:50:47,928 - PCI-MAPPO - INFO - Iteration 55
+2025-09-23 00:50:47,929 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:50:47,929 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:50:47,929 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.714
+2025-09-23 00:50:47,929 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:50:47,929 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.104714
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     action_bridge_loss: -0.127055
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001951
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.381743
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000890
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.261380
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     value_loss: 1.123815
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.006414 (n=1012.0)
+2025-09-23 00:50:47,930 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.013407
+2025-09-23 00:50:47,931 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.374305 (n=12.0)
+2025-09-23 00:50:47,931 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.779247
+2025-09-23 00:50:47,931 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:51:01,887 - PCI-MAPPO - INFO - Iteration 60
+2025-09-23 00:51:01,888 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:51:01,888 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:51:01,888 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.214
+2025-09-23 00:51:01,888 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:51:01,888 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:51:01,889 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.133541
+2025-09-23 00:51:01,889 - PCI-MAPPO - INFO -     action_bridge_loss: -0.083117
+2025-09-23 00:51:01,889 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002311
+2025-09-23 00:51:01,889 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.362977
+2025-09-23 00:51:01,889 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000702
+2025-09-23 00:51:01,889 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.241753
+2025-09-23 00:51:01,890 - PCI-MAPPO - INFO -     value_loss: 1.266677
+2025-09-23 00:51:01,890 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.007379 (n=1008.5)
+2025-09-23 00:51:01,890 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.013704
+2025-09-23 00:51:01,890 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.430931 (n=15.5)
+2025-09-23 00:51:01,890 - PCI-MAPPO - INFO -     delta_forage_reward_std: 1.023293
+2025-09-23 00:51:01,890 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:51:15,913 - PCI-MAPPO - INFO - Iteration 65
+2025-09-23 00:51:15,913 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.929
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.125931
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -     action_bridge_loss: -0.101690
+2025-09-23 00:51:15,914 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001095
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.392616
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000628
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.157695
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     value_loss: 1.035458
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.009356 (n=1010.5)
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.017261
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.367299 (n=13.5)
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.991779
+2025-09-23 00:51:15,915 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:51:29,730 - PCI-MAPPO - INFO - Iteration 70
+2025-09-23 00:51:29,730 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:51:29,730 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:51:29,730 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.214
+2025-09-23 00:51:29,730 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.133878
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     action_bridge_loss: -0.065233
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001836
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.361607
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001090
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.208214
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     value_loss: 1.145170
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.009441 (n=1008.5)
+2025-09-23 00:51:29,731 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.016431
+2025-09-23 00:51:29,732 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.600486 (n=15.5)
+2025-09-23 00:51:29,732 - PCI-MAPPO - INFO -     delta_forage_reward_std: 1.030105
+2025-09-23 00:51:29,732 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:51:43,740 - PCI-MAPPO - INFO - Iteration 75
+2025-09-23 00:51:43,741 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:51:43,741 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:51:43,741 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.071
+2025-09-23 00:51:43,741 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:51:43,741 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.125400
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     action_bridge_loss: -0.070844
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002751
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.404510
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001685
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.178400
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     value_loss: 1.182620
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.009504 (n=1009.5)
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.015421
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.478577 (n=14.5)
+2025-09-23 00:51:43,742 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.988755
+2025-09-23 00:51:43,743 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:51:57,727 - PCI-MAPPO - INFO - Iteration 80
+2025-09-23 00:51:57,728 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:51:57,728 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:51:57,728 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.786
+2025-09-23 00:51:57,729 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:51:57,729 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:51:57,729 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.108166
+2025-09-23 00:51:57,729 - PCI-MAPPO - INFO -     action_bridge_loss: -0.060566
+2025-09-23 00:51:57,729 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000676
+2025-09-23 00:51:57,729 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.356999
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001189
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.277084
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     value_loss: 0.925134
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.012513 (n=1011.5)
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.020349
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -3.216385 (n=12.5)
+2025-09-23 00:51:57,730 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.933137
+2025-09-23 00:51:57,731 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:52:11,783 - PCI-MAPPO - INFO - Iteration 85
+2025-09-23 00:52:11,783 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:52:11,784 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:52:11,784 - PCI-MAPPO - INFO -   Mean Episode Reward: 1.976
+2025-09-23 00:52:11,784 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:52:11,784 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:52:11,784 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.124380
+2025-09-23 00:52:11,784 - PCI-MAPPO - INFO -     action_bridge_loss: -0.057034
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001250
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.307012
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000831
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.313357
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     value_loss: 1.640391
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.014063 (n=1010.5)
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021176
+2025-09-23 00:52:11,785 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -3.012281 (n=13.0)
+2025-09-23 00:52:11,786 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.981727
+2025-09-23 00:52:11,786 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -3.090467 (n=0.5)
+2025-09-23 00:52:11,786 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:52:11,786 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:52:25,674 - PCI-MAPPO - INFO - Iteration 90
+2025-09-23 00:52:25,674 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:52:25,674 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.405
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.150329
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -     action_bridge_loss: -0.045792
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001806
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.322601
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.000881
+2025-09-23 00:52:25,675 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.330476
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     value_loss: 1.808937
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.011162 (n=1007.5)
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.019392
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -3.018989 (n=16.0)
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.954471
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -3.102344 (n=0.5)
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.000000
+2025-09-23 00:52:25,676 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:52:39,600 - PCI-MAPPO - INFO - Iteration 95
+2025-09-23 00:52:39,601 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:52:39,601 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:52:39,601 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.452
+2025-09-23 00:52:39,601 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.160486
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     action_bridge_loss: -0.035013
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.001226
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.310063
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001053
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.354297
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     value_loss: 1.807379
+2025-09-23 00:52:39,602 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.017147 (n=1007.5)
+2025-09-23 00:52:39,603 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.021407
+2025-09-23 00:52:39,603 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -3.050999 (n=15.5)
+2025-09-23 00:52:39,603 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.749249
+2025-09-23 00:52:39,603 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -3.718712 (n=1.0)
+2025-09-23 00:52:39,603 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.334976
+2025-09-23 00:52:39,603 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:52:53,460 - PCI-MAPPO - INFO - Iteration 100
+2025-09-23 00:52:53,460 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.429
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.161093
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -     action_bridge_loss: -0.045420
+2025-09-23 00:52:53,461 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.002764
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.286181
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.001578
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.348894
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     value_loss: 1.345381
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.014637 (n=1008.0)
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.019492
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -2.689008 (n=14.5)
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.748184
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -3.979842 (n=1.5)
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.041127
+2025-09-23 00:52:53,462 - PCI-MAPPO - INFO -     causal_lambda: 0.800000
+2025-09-23 00:52:53,870 - PCI-MAPPO - INFO - Evaluation Results:
+2025-09-23 00:52:53,870 - PCI-MAPPO - INFO -   Mean Reward: 2.550 ± 1.050
+2025-09-23 00:52:53,870 - PCI-MAPPO - INFO -   Mean Length: 50.0
+2025-09-23 00:52:53,870 - PCI-MAPPO - INFO -   Min/Max Reward: 1.500 / 3.600
+2025-09-23 00:52:53,870 - PCI-MAPPO - INFO -   *** New best performance! ***
+2025-09-23 00:52:53,881 - PCI-MAPPO - INFO - Checkpoint saved: ./checkpoints/20250923_004811/staghuntenv/checkpoints/checkpoint_100.pt
+2025-09-23 00:53:07,883 - PCI-MAPPO - INFO - Iteration 105
+2025-09-23 00:53:07,884 - PCI-MAPPO - INFO -   Steps: 1024
+2025-09-23 00:53:07,884 - PCI-MAPPO - INFO -   Episodes: 21
+2025-09-23 00:53:07,885 - PCI-MAPPO - INFO -   Mean Episode Reward: 2.548
+2025-09-23 00:53:07,885 - PCI-MAPPO - INFO -   Mean Episode Length: 48.8
+2025-09-23 00:53:07,885 - PCI-MAPPO - INFO -   Update Info:
+2025-09-23 00:53:07,885 - PCI-MAPPO - INFO -     outcome_bridge_loss: 0.173081
+2025-09-23 00:53:07,885 - PCI-MAPPO - INFO -     action_bridge_loss: -0.045598
+2025-09-23 00:53:07,885 - PCI-MAPPO - INFO -     agent_0_policy_loss: -0.000748
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     agent_0_entropy_loss: -1.273160
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     agent_1_policy_loss: -0.002300
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     agent_1_entropy_loss: -1.403488
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     value_loss: 2.016711
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     delta_no_reward_mean: 0.017437 (n=1007.5)
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     delta_no_reward_std: 0.019868
+2025-09-23 00:53:07,886 - PCI-MAPPO - INFO -     delta_forage_reward_mean: -3.237924 (n=14.5)
+2025-09-23 00:53:07,887 - PCI-MAPPO - INFO -     delta_forage_reward_std: 0.997896
+2025-09-23 00:53:07,887 - PCI-MAPPO - INFO -     delta_stag_reward_mean: -4.756725 (n=2.0)
+2025-09-23 00:53:07,887 - PCI-MAPPO - INFO -     delta_stag_reward_std: 0.283059
+2025-09-23 00:53:07,887 - PCI-MAPPO - INFO -     causal_lambda: 0.800000

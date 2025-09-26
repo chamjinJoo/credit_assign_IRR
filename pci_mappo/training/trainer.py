@@ -11,7 +11,7 @@ from datetime import datetime
 
 from ..algorithms import PCIMAPPOAlgorithm
 from ..envs import MultiAgentEnv, dict_to_tensor
-from ..utils import Logger, MetricsTracker
+from ..utils import Logger, MetricsTracker, get_causal_evaluator
 
 
 class PCIMAPPOTrainer:
@@ -55,6 +55,15 @@ class PCIMAPPOTrainer:
         # Initialize logging first
         self.logger = Logger()
         self.metrics_tracker = MetricsTracker()
+        
+        # Initialize causal effect evaluator
+        CausalEffectEvaluator = get_causal_evaluator()
+        self.causal_evaluator = CausalEffectEvaluator(
+            algorithm=algorithm,
+            env=env,
+            num_eval_episodes=eval_episodes,
+            device=device
+        )
         
         # Create structured save directory for this simulation (only if save_dir is provided)
         if save_dir is not None:
@@ -341,8 +350,8 @@ class PCIMAPPOTrainer:
                 
                 # Store transition with proper causal structure (o_{t-1}, o_t, a_t, r_t, o_{t+1})
                 self.algorithm.store_transition(
-                    prev_observations=prev_observations,  # o_{t-1} (w_t)
-                    observations=observations,            # o_t (z_t)
+                    prev_observations=prev_observations,  # o_{t-1} (z_t)
+                    observations=observations,            # o_t (w_t)
                     actions=env_actions,                  # a_t
                     rewards=rewards,                      # r_t
                     next_observations=next_observations,  # o_{t+1}
@@ -447,6 +456,20 @@ class PCIMAPPOTrainer:
         else:
             eval_info['is_best'] = False
         
+        # Perform causal effect evaluation
+        try:
+            causal_stats = self.causal_evaluator.evaluate_causal_effects()
+            eval_info['causal_effects'] = causal_stats
+            
+            # Log causal effect statistics
+            self.logger.info("Causal Effect Statistics:")
+            for scenario, stats in causal_stats.items():
+                self.logger.info(f"  {scenario}: mean={stats['mean']:.4f}, std={stats['std']:.4f}, count={stats['count']}")
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to perform causal effect evaluation: {e}")
+            eval_info['causal_effects'] = None
+        
         return eval_info
     
     def log_training_metrics(self, rollout_data: Dict[str, Any], update_info: Dict[str, float]):
@@ -537,6 +560,28 @@ class PCIMAPPOTrainer:
                 'eval/max_reward': eval_info['eval_max_reward'],
                 'eval/best_reward': self.best_eval_reward
             }
+            
+            # Add causal effect metrics to wandb
+            if 'causal_effects' in eval_info and eval_info['causal_effects'] is not None:
+                causal_stats = eval_info['causal_effects']
+                for scenario, stats in causal_stats.items():
+                    wandb_data[f'eval/causal_effect_{scenario}_mean'] = stats['mean']
+                    wandb_data[f'eval/causal_effect_{scenario}_std'] = stats['std']
+                    wandb_data[f'eval/causal_effect_{scenario}_count'] = stats['count']
+                
+                # Create and log causal effect plot to wandb
+                try:
+                    import matplotlib.pyplot as plt
+                    fig = self.causal_evaluator.plot_causal_effects(
+                        causal_stats, 
+                        return_figure=True
+                    )
+                    if fig is not None:
+                        wandb_data[f'eval/causal_effect_plot'] = wandb.Image(fig)
+                        plt.close(fig)  # Clean up memory
+                except Exception as e:
+                    self.logger.warning(f"Failed to create causal effect plot for wandb: {e}")
+            
             wandb.log(wandb_data, step=self.iteration)
     
     def save_checkpoint(self, is_final: bool = False):
@@ -635,7 +680,7 @@ class PCIMAPPOTrainer:
         self.algorithm.action_bridge_optimizer.load_state_dict(algorithm_state['action_bridge_optimizer'])
         self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
         
-        # # Load agent states
+        # Load agent states
         for agent_id, agent_state in algorithm_state['agents'].items():
             agent = self.algorithm.agents[int(agent_id)]
             agent.policy_net.load_state_dict(agent_state['policy_net'])

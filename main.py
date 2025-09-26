@@ -188,8 +188,9 @@ def main():
         
         logger.info("Running test...")
         test_results = trainer.test_policy(
-            num_episodes=10,
-            render=getattr(args, 'render', False)
+            num_episodes=50,
+            render=getattr(args, 'render', False),
+            evaluate_causal_effects=True
         )
         logger.info(f"Test results: {test_results}")
         return
@@ -211,6 +212,10 @@ def main():
             # Use the latest checkpoint for evaluation
             latest_checkpoint = trainer.get_latest_checkpoint_path()
             if latest_checkpoint:
+                # Load checkpoint before evaluation
+                logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
+                trainer.load_checkpoint(latest_checkpoint)
+
                 # Create a mock args object for causal evaluation
                 class MockArgs:
                     def __init__(self, checkpoint_path, eval_episodes=50):
@@ -232,6 +237,9 @@ def main():
             logger.info("Running causal effect evaluation after interruption...")
             latest_checkpoint = trainer.get_latest_checkpoint_path()
             if latest_checkpoint:
+                logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
+                trainer.load_checkpoint(latest_checkpoint)
+
                 class MockArgs:
                     def __init__(self, checkpoint_path, eval_episodes=50):
                         self.checkpoint = checkpoint_path
@@ -245,7 +253,6 @@ def main():
     except Exception as e:
         logger.error(f"Training failed with error: {e}")
         raise
-
 
 if __name__ == "__main__":
     main()

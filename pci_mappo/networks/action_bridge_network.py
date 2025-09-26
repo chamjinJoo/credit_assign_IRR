@@ -46,11 +46,12 @@ class ActionBridgeNetwork(nn.Module):
         )
         
         # Output layer for scalar action bridge value
-        self.output_layer = nn.Sequential(
-            nn.Linear(hidden_dim, 1),
-            nn.Sigmoid()
-        )
-        
+        # self.output_layer = nn.Sequential(
+        #     nn.Linear(hidden_dim, 1),
+        #     nn.ReLU(),
+        # )
+        self.output_layer = nn.Linear(hidden_dim, 1)
+
     def forward(
         self, 
         z: torch.Tensor, 

@@ -1,1 +1,0 @@
-{"reward_scenarios":{"no_reward":"Other agent receives no reward (0.0)","forage_reward":"Other agent receives forage reward (3.0)","stag_reward":"Other agent receives stag reward (5.0)"},"reproducibility":{"seed":null,"deterministic":true},"_wandb":{"runtime":11},"causal_effect_description":"Delta values for different reward scenarios in StagHunt environment"}

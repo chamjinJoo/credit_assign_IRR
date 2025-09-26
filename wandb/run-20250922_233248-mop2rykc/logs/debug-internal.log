@@ -1,0 +1,15 @@
+{"time":"2025-09-22T23:32:49.021426205+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250922_233248-mop2rykc/logs/debug-core.log"}
+{"time":"2025-09-22T23:32:49.333119247+09:00","level":"INFO","msg":"stream: created new stream","id":"mop2rykc"}
+{"time":"2025-09-22T23:32:49.333162043+09:00","level":"INFO","msg":"stream: started","id":"mop2rykc"}
+{"time":"2025-09-22T23:32:49.333178338+09:00","level":"INFO","msg":"sender: started","stream_id":"mop2rykc"}
+{"time":"2025-09-22T23:32:49.333171664+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"mop2rykc"}
+{"time":"2025-09-22T23:32:49.333185355+09:00","level":"INFO","msg":"handler: started","stream_id":"mop2rykc"}
+{"time":"2025-09-22T23:32:49.659146518+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-22T23:41:13.793513707+09:00","level":"INFO","msg":"stream: closing","id":"mop2rykc"}
+{"time":"2025-09-22T23:41:13.793581006+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-09-22T23:41:13.793603295+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-09-22T23:41:14.491900035+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-09-22T23:41:14.76183611+09:00","level":"INFO","msg":"handler: closed","stream_id":"mop2rykc"}
+{"time":"2025-09-22T23:41:14.761864366+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"mop2rykc"}
+{"time":"2025-09-22T23:41:14.761886909+09:00","level":"INFO","msg":"sender: closed","stream_id":"mop2rykc"}
+{"time":"2025-09-22T23:41:14.761948282+09:00","level":"INFO","msg":"stream: closed","id":"mop2rykc"}

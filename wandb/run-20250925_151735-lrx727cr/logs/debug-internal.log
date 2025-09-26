@@ -1,0 +1,9 @@
+{"time":"2025-09-25T15:17:35.98389796+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250925_151735-lrx727cr/logs/debug-core.log"}
+{"time":"2025-09-25T15:17:36.316150485+09:00","level":"INFO","msg":"stream: created new stream","id":"lrx727cr"}
+{"time":"2025-09-25T15:17:36.316188588+09:00","level":"INFO","msg":"stream: started","id":"lrx727cr"}
+{"time":"2025-09-25T15:17:36.316196325+09:00","level":"INFO","msg":"handler: started","stream_id":"lrx727cr"}
+{"time":"2025-09-25T15:17:36.316247748+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"lrx727cr"}
+{"time":"2025-09-25T15:17:36.316250689+09:00","level":"INFO","msg":"sender: started","stream_id":"lrx727cr"}
+{"time":"2025-09-25T15:17:36.628902727+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-09-25T17:35:52.273345049+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/lrx727cr/file_stream"}
+{"time":"2025-09-25T17:35:52.27340276+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/lrx727cr/file_stream: {\"error\":\"run pci-mappo/lrx727cr not found while streaming file\"}"}

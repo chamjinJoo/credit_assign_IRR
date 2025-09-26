@@ -1,0 +1,7 @@
+{"time":"2025-09-23T15:25:20.576681796+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250923_152520-yskwy98j/logs/debug-core.log"}
+{"time":"2025-09-23T15:25:20.890744265+09:00","level":"INFO","msg":"stream: created new stream","id":"yskwy98j"}
+{"time":"2025-09-23T15:25:20.890799448+09:00","level":"INFO","msg":"stream: started","id":"yskwy98j"}
+{"time":"2025-09-23T15:25:20.890842123+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"yskwy98j"}
+{"time":"2025-09-23T15:25:20.890905835+09:00","level":"INFO","msg":"handler: started","stream_id":"yskwy98j"}
+{"time":"2025-09-23T15:25:20.890919184+09:00","level":"INFO","msg":"sender: started","stream_id":"yskwy98j"}
+{"time":"2025-09-23T15:25:21.171126871+09:00","level":"INFO","msg":"Starting system monitor"}

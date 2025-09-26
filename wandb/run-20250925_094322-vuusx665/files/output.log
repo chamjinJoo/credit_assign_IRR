@@ -1,0 +1,61 @@
+2025-09-25 09:43:23,184 - PCI-MAPPO - INFO - Starting training...
+2025-09-25 09:43:23,184 - PCI-MAPPO - INFO - ============================================================
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - ============================================================
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Number of agents: 2
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Observation dimension: 40
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Action dimension: 5
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-09-25 09:43:23,185 - PCI-MAPPO - INFO - Log interval: 5
+2025-09-25 09:43:23,186 - PCI-MAPPO - INFO - Eval interval: 50
+2025-09-25 09:43:23,186 - PCI-MAPPO - INFO - Save interval: 100
+2025-09-25 09:43:23,186 - PCI-MAPPO - INFO - Device: cuda
+2025-09-25 09:43:23,186 - PCI-MAPPO - INFO - Wandb: True
+2025-09-25 09:43:23,186 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                                    | 0/3000 [00:04<?, ?iter/s]
+2025-09-25 09:43:27,221 - PCI-MAPPO - ERROR - Training failed with error: CUDA out of memory. Tried to allocate 2.00 MiB. GPU 0 has a total capacity of 10.57 GiB of which 3.12 MiB is free. Process 2460728 has 8.26 GiB memory in use. Including non-PyTorch memory, this process has 2.27 GiB memory in use. Of the allocated memory 22.46 MiB is allocated by PyTorch, and 9.54 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 258, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 206, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 267, in train
+    update_info = self.algorithm.update()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 903, in update
+    causal_losses = self.update_causal_networks(batch_data)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/algorithms/pci_mappo.py", line 398, in update_causal_networks
+    logits = self.agents[i].policy_net(expanded_obs_per_agent[i])
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/networks/policy_network.py", line 56, in forward
+    obs_encoded = self.policy_network(obs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/networks/mlp.py", line 130, in forward
+    x = self.mlp(x)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/networks/mlp.py", line 78, in forward
+    x = layer(x)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/container.py", line 240, in forward
+    input = module(input)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1751, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1762, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/chamjin/miniconda3/envs/jaxmarl/lib/python3.10/site-packages/torch/nn/modules/linear.py", line 125, in forward
+    return F.linear(input, self.weight, self.bias)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 2.00 MiB. GPU 0 has a total capacity of 10.57 GiB of which 3.12 MiB is free. Process 2460728 has 8.26 GiB memory in use. Including non-PyTorch memory, this process has 2.27 GiB memory in use. Of the allocated memory 22.46 MiB is allocated by PyTorch, and 9.54 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

@@ -1,0 +1,7 @@
+{"time":"2025-09-26T16:29:51.066325155+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250926_162950-jloft57h/logs/debug-core.log"}
+{"time":"2025-09-26T16:29:51.384913383+09:00","level":"INFO","msg":"stream: created new stream","id":"jloft57h"}
+{"time":"2025-09-26T16:29:51.384948557+09:00","level":"INFO","msg":"stream: started","id":"jloft57h"}
+{"time":"2025-09-26T16:29:51.384965979+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"jloft57h"}
+{"time":"2025-09-26T16:29:51.384970713+09:00","level":"INFO","msg":"sender: started","stream_id":"jloft57h"}
+{"time":"2025-09-26T16:29:51.38499922+09:00","level":"INFO","msg":"handler: started","stream_id":"jloft57h"}
+{"time":"2025-09-26T16:29:51.651328655+09:00","level":"INFO","msg":"Starting system monitor"}
