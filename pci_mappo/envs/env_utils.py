@@ -47,10 +47,11 @@ def create_environment(env_config) -> MultiAgentEnv:
     elif env_name == 'StagHunt' or env_name == 'StagHuntEnv':
         from .multi_agent_env import StagHuntEnv
         return StagHuntEnv(
+            num_agents=config_dict.get('num_agents', 2),
             max_steps=config_dict.get('max_steps', 50),
             stag_follows=config_dict.get('stag_follows', False),
             run_away_after_maul=config_dict.get('run_away_after_maul', False),
-            forage_quantity=config_dict.get('forage_quantity', 2),
+            forage_quantity=config_dict.get('forage_quantity', None),
             forage_reward=config_dict.get('forage_reward', 3.0),
             stag_reward=config_dict.get('stag_reward', 5.0),
             mauling_punishment=config_dict.get('mauling_punishment', 0.0),

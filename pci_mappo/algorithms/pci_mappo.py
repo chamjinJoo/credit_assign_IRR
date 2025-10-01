@@ -550,7 +550,8 @@ class PCIMAPPOAlgorithm:
         actions: Dict[int, int],                     # a_t
         rewards: Dict[int, float],                   # r_t
         next_observations: Dict[int, torch.Tensor],  # o_{t+1}
-        dones: Dict[int, bool]
+        dones: Dict[int, bool],
+        info: Dict = None
     ):
         """Store transition in buffer with proper causal structure."""
         # Store transition using buffer manager with (o_{t-1}, o_t, a_t, r_t, o_{t+1}) structure
@@ -561,7 +562,8 @@ class PCIMAPPOAlgorithm:
             rewards=rewards,
             next_observations=next_observations,
             dones=dones,
-            hidden_states={i: None for i in range(self.num_agents)}  # No hidden states needed
+            hidden_states={i: None for i in range(self.num_agents)},
+            info=info  # No hidden states needed
         )
     
     def compute_gae(
@@ -600,6 +602,58 @@ class PCIMAPPOAlgorithm:
         
         return advantages, returns
     
+    def _classify_delta_scenario(self, transition: Dict, agent_id: int) -> str:
+        """
+        Delta statistics를 분류하기 위해 현재 transition의 상황을 분석합니다.
+        
+        n명의 agent 환경에서 정확한 협력 상황을 구분하여:
+        - 'stag_reward': 현재 agent가 협력에 참여해서 다른 agent가 stag reward를 받음
+        - 'forage_reward': 다른 agent가 hare를 사냥함 (협력 없음)
+        - 'no_reward': 아무도 reward를 받지 않음
+        
+        Args:
+            transition: 현재 transition 데이터
+            agent_id: 분석 대상 agent ID
+            
+        Returns:
+            scenario: 'stag_reward', 'forage_reward', 또는 'no_reward'
+        """
+        info = transition.get('info', {})
+        stag_hunts = info.get('stag_hunts', {})  # {stag_id: [participating_agent_ids]}
+        hare_hunts = info.get('hare_hunts', [])   # [agent_ids]
+        
+        # 현재 agent가 협력 사냥에 참여했는지 확인
+        participated_in_stag_hunt = False
+        for stag_id, participants in stag_hunts.items():
+            if agent_id in participants:
+                participated_in_stag_hunt = True
+                break
+        
+        # 다른 agent들이 stag 사냥에 성공했는지 확인
+        other_agents_stag_reward = False
+        for other_agent_id in range(self.num_agents):
+            if other_agent_id != agent_id and transition['bold_r_t'][other_agent_id] == 5.0:
+                other_agents_stag_reward = True
+                break
+        
+        # 다른 agent들이 hare를 사냥했는지 확인
+        other_agents_forage_reward = False
+        for other_agent_id in range(self.num_agents):
+            if other_agent_id != agent_id and transition['bold_r_t'][other_agent_id] == 3.0:
+                other_agents_forage_reward = True
+                break
+        
+        # Delta 분류: 현재 agent가 협력에 참여했는지에 따라 구분
+        if participated_in_stag_hunt and other_agents_stag_reward:
+            # 현재 agent가 협력에 참여해서 다른 agent가 stag reward를 받음
+            return 'stag_reward'
+        elif other_agents_forage_reward:
+            # 다른 agent가 hare를 사냥함 (협력 없음)
+            return 'forage_reward'
+        else:
+            # 아무도 reward를 받지 않음
+            return 'no_reward'
+    
     def causal_intrinsic_reward(
         self,
         agent_id: int,
@@ -609,7 +663,7 @@ class PCIMAPPOAlgorithm:
         current_actions: Dict[int, int],  # Current joint action a_t
         current_rewards: Dict[int, float],  # Current joint reward r_t
     ) -> Tuple[float, np.ndarray]:
-        """
+        f"""
         Computes a causal reward shaping term Δ^i_t using a policy-weighted difference method.
 
         This method weights both the factual and counterfactual reward predictions by their
@@ -617,8 +671,8 @@ class PCIMAPPOAlgorithm:
 
         Args:
             agent_id: ID of the agent i for whom the shaping term is calculated.
-            w_t: Proxy w_t, typically the concatenated previous observation o_{t-1}.
-            z_t: Proxy z_t, typically the concatenated current observation o_t.
+            w_t: Proxy w_t, typically the concatenated current observation o_t.
+            z_t: Proxy z_t, typically the concatenated previous observation o_(t-1).
             o_t: The individual observation for agent i.
             current_actions: The joint action a_t actually taken at the timestep.
             current_rewards: The joint reward r_t actually received.
@@ -749,16 +803,8 @@ class PCIMAPPOAlgorithm:
                     shaped_rewards.append(shaped_reward)
                     
                     # Collect delta statistics for wandb logging
-                    other_agent_id = 1 - agent_id  # 2-agent environment
-                    other_reward = transition['bold_r_t'][other_agent_id]
-                    
-                    # Classify reward scenario
-                    if other_reward == 0.0:
-                        delta_stats['no_reward'].append(Delta_t)
-                    elif other_reward == 3.0:
-                        delta_stats['forage_reward'].append(Delta_t)
-                    elif other_reward == 5.0:
-                        delta_stats['stag_reward'].append(Delta_t)
+                    scenario = self._classify_delta_scenario(transition, agent_id)
+                    delta_stats[scenario].append(Delta_t)
             
             all_agent_shaped_rewards[agent_id] = torch.tensor(shaped_rewards, dtype=torch.float32, device=self.device)
             all_agent_dones[agent_id] = agent_dones
@@ -924,102 +970,6 @@ class PCIMAPPOAlgorithm:
         final_losses['causal_lambda'] = self.get_current_causal_lambda()
 
         return final_losses
-
-    ############### causal intrinsic reward original ###############
-    '''
-    def causal_intrinsic_reward(
-        self,
-        agent_id: int,
-        w_t: torch.Tensor,      # Observed proxy variable w_t = o_t
-        z_t: torch.Tensor,      # Context variable z_t = o_{t-1}
-        o_t: torch.Tensor,      # Observation for agent i
-        current_actions: Dict[int, int],  # Current joint action a_t
-        current_rewards: Dict[int, float],  # Current joint reward r_t
-    ) -> Tuple[float, np.ndarray]:
-        """
-        Computes a causal reward shaping term Δ^i_t using a policy-weighted difference method.
-
-        This method weights both the factual and counterfactual reward predictions by their
-        respective policy probabilities before calculating the difference.
-
-        Args:
-            agent_id: ID of the agent i for whom the shaping term is calculated.
-            w_t: Proxy w_t, typically the concatenated previous observation o_{t-1}.
-            z_t: Proxy z_t, typically the concatenated current observation o_t.
-            o_t: The individual observation for agent i.
-            current_actions: The joint action a_t actually taken at the timestep.
-            current_rewards: The joint reward r_t actually received.
-
-        Returns:
-            Delta_i_t: The final scalar causal reward shaping term for agent i.
-            r_hat_all_numpy: A numpy array of all counterfactual reward predictions for monitoring.
-        """
-        with torch.no_grad():
-            # === 1. Compute All Counterfactual Outcomes (including the factual one) ===
-            # DR Correction Term (calculated once based on the factual action)
-            current_actions_tensor = torch.tensor([current_actions[j] for j in range(self.num_agents)],
-                                                dtype=torch.long, device=self.device)
-            r_pred_t = self.outcome_bridge_net(current_actions_tensor.unsqueeze(0), w_t.unsqueeze(0))
-            current_rewards_tensor = torch.tensor([current_rewards[j] for j in range(self.num_agents)],
-                                                dtype=torch.float32, device=self.device)
-            error_t = current_rewards_tensor - r_pred_t.squeeze()
-            weight_t = self.action_bridge_net(z_t.unsqueeze(0), current_actions_tensor.unsqueeze(0))
-            DR_correction_t = weight_t * error_t # DR_correction_t: [1, num_agents]
-            # Create a matrix of all possible counterfactual joint actions for agent i
-            action_matrix = current_actions_tensor.unsqueeze(0).repeat(self.action_dim, 1)
-            action_matrix[:, agent_id] = torch.arange(self.action_dim, device=self.device)
-            
-            w_t_expanded = w_t.unsqueeze(0).expand(self.action_dim, -1)
-            
-            # r_hat_all contains predicted reward vectors for each of agent i's possible actions.
-            reg_estimates = self.outcome_bridge_net(action_matrix, w_t_expanded) # Shape: [action_dim, num_agents]
-            r_hat_all = reg_estimates + DR_correction_t  # Shape: [action_dim, num_agents]
-     
-            # === 2. Weight Predictions by Policy Probabilities ===
-            # Get agent i's current policy probabilities for each action
-            action_logits = self.agents[agent_id].policy_net(o_t.unsqueeze(0))
-            action_probs = torch.softmax(action_logits, dim=-1).squeeze()  # Shape: [action_dim]
-
-            # Identify the action agent i actually took
-            factual_action_idx = current_actions[agent_id]
-
-            # a) Get the weighted reward prediction for the action that was actually taken
-            prob_factual = action_probs[factual_action_idx]
-            r_hat_factual_weighted = prob_factual * r_hat_all[factual_action_idx] # Shape: [num_agents]
-  
-            # b) Get the weighted average reward prediction for all other possible actions
-            # Create a mask to select all actions EXCEPT the factual one
-            mask = torch.ones(self.action_dim, dtype=torch.bool, device=self.device)
-            mask[factual_action_idx] = False
-            
-            r_hat_counterfactuals = r_hat_all[mask] # Shape: [action_dim - 1, num_agents]
-            probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
-            # === 3. Compute the Difference-Based Causal Effect ===
-            if r_hat_counterfactuals.shape[0] == 0:
-                # If there are no other actions, the causal effect is just the weighted factual outcome.
-                # This is a design choice; another option is to return zero.
-                causal_effect_vector = r_hat_factual_weighted
-            else:
-                # Weight the counterfactual rewards by their probabilities
-                # Shape: [action_dim - 1, num_agents]
-                weighted_r_hat_counterfactuals = probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals
-                
-                # Normalize to get the expected value over the counterfactual action distribution
-                sum_probs_counterfactuals = probs_counterfactuals.sum()
-                r_hat_counterfactuals_mean_weighted = weighted_r_hat_counterfactuals.sum(dim=0) / (sum_probs_counterfactuals + 1e-8)
-                # The causal effect is the difference between the weighted factual outcome and the weighted counterfactual average
-                causal_effect_vector = r_hat_factual_weighted - r_hat_counterfactuals_mean_weighted # Shape: [num_agents]
-            
-            # === 4. Calculate Final Shaping Term Δ^i_t ===
-            # Average the causal effects over all *other* agents.
-            other_agents = [j for j in range(self.num_agents) if j != agent_id]
-            if other_agents:
-                Delta_i_t = causal_effect_vector[other_agents].mean().item()
-            else:
-                Delta_i_t = 0.0
-                
-        return Delta_i_t, r_hat_all.cpu().numpy()
-        '''
 
     # Buffer management
     def clear_buffer(self):

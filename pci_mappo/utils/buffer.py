@@ -31,7 +31,8 @@ class ExperienceBuffer:
         rewards: Dict[int, float],                   # r_t
         next_observations: Dict[int, torch.Tensor],  # o_{t+1}
         dones: Dict[int, bool],
-        hidden_states: Dict[int, torch.Tensor]
+        hidden_states: Dict[int, torch.Tensor],
+        info: Dict = None
     ):
         """
         Store transition in buffer with FIFO queue behavior.
@@ -45,6 +46,7 @@ class ExperienceBuffer:
             next_observations: Dict mapping agent_id to next observation tensor (o_{t+1})
             dones: Dict mapping agent_id to done flag
             hidden_states: Dict mapping agent_id to hidden state tensor
+            info: Additional information from environment (e.g., cooperation info)
         """
         # Store complete system state with proper causal structure
         transition = {
@@ -55,6 +57,7 @@ class ExperienceBuffer:
             'next_observations': next_observations,  # {o^1_{t+1}, ..., o^n_{t+1}}
             'dones': dones,
             'hidden_states': hidden_states,
+            'info': info if info is not None else {},  # Environment info (e.g., stag_hunts, hare_hunts)
         }
         
         # Store in main buffer with FIFO queue behavior

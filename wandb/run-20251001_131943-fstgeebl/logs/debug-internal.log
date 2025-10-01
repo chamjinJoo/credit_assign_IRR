@@ -1,0 +1,15 @@
+{"time":"2025-10-01T13:19:44.076136406+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20251001_131943-fstgeebl/logs/debug-core.log"}
+{"time":"2025-10-01T13:19:44.38455492+09:00","level":"INFO","msg":"stream: created new stream","id":"fstgeebl"}
+{"time":"2025-10-01T13:19:44.384592549+09:00","level":"INFO","msg":"stream: started","id":"fstgeebl"}
+{"time":"2025-10-01T13:19:44.384724543+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"fstgeebl"}
+{"time":"2025-10-01T13:19:44.384735203+09:00","level":"INFO","msg":"handler: started","stream_id":"fstgeebl"}
+{"time":"2025-10-01T13:19:44.384748187+09:00","level":"INFO","msg":"sender: started","stream_id":"fstgeebl"}
+{"time":"2025-10-01T13:19:44.652849835+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-10-01T13:19:47.97434598+09:00","level":"INFO","msg":"stream: closing","id":"fstgeebl"}
+{"time":"2025-10-01T13:19:47.97439696+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-10-01T13:19:47.97444989+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-10-01T13:19:48.691782262+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-01T13:19:48.933441203+09:00","level":"INFO","msg":"handler: closed","stream_id":"fstgeebl"}
+{"time":"2025-10-01T13:19:48.933490595+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"fstgeebl"}
+{"time":"2025-10-01T13:19:48.933517221+09:00","level":"INFO","msg":"sender: closed","stream_id":"fstgeebl"}
+{"time":"2025-10-01T13:19:48.9335479+09:00","level":"INFO","msg":"stream: closed","id":"fstgeebl"}

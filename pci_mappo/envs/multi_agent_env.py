@@ -751,10 +751,11 @@ class StagHuntEnv(MultiAgentEnv):
     
     def __init__(
         self, 
+        num_agents: int = 2,
         max_steps: int = 30,
         stag_follows: bool = False,
         run_away_after_maul: bool = False,
-        forage_quantity: int = 2,
+        forage_quantity: int = None,
         forage_reward: float = 3.0,
         stag_reward: float = 5.0,
         mauling_punishment: float = 0.0,
@@ -764,21 +765,23 @@ class StagHuntEnv(MultiAgentEnv):
         Stag-Hunt 환경 초기화 (원본 게임 로직 기반)
         
         Args:
+            num_agents: 에이전트 수 (기본 2, n명으로 설정 가능)
             max_steps: 최대 스텝 수 (기본 50)
             stag_follows: Stag가 가장 가까운 에이전트를 추적할지 여부 (True) 또는 랜덤 이동 (False)
             run_away_after_maul: Stag가 에이전트를 공격한 후 도망갈지 여부
-            forage_quantity: 식물(개별 사냥 대상)의 개수
+            forage_quantity: 식물(개별 사냥 대상)의 개수 (None이면 num_agents와 동일하게 설정)
             forage_reward: 식물 수확 시 보상
             stag_reward: Stag 협력 사냥 시 보상
             mauling_punishment: 혼자 Stag를 사냥하려 할 때 페널티
         """
-        # 에이전트 수는 항상 2
-        super().__init__(num_agents=2, seed=seed)
+        # 에이전트 수를 유연하게 설정
+        super().__init__(num_agents=num_agents, seed=seed)
         
         self.max_steps = max_steps
         self.stag_follows = stag_follows
         self.run_away_after_maul = run_away_after_maul
-        self.forage_quantity = forage_quantity
+        # forage_quantity가 None이면 num_agents와 동일하게 설정
+        self.forage_quantity = forage_quantity if forage_quantity is not None else num_agents
         self.step_count = 0
         
         # Grid size (7x7)
@@ -788,8 +791,9 @@ class StagHuntEnv(MultiAgentEnv):
         # Action space: 0=stay, 1=up, 2=down, 3=left, 4=right
         self.action_dim = 5
         
-        # Observation space: coordinate(2) + 3x3 grid(9*4) + relative_positions(2*1) = 40
-        self.obs_dim = 40
+        # Observation space: coordinate(2) + 3x3 grid(9*4) + relative_positions(2*(num_agents-1))
+        # 동적으로 계산: 2 + 36 + 2*(num_agents-1)
+        self.obs_dim = 2 + 36 + 2 * (num_agents - 1)
         
         # Environment state
         self.agent_positions = {}  # {agent_id: (x, y)}
@@ -797,7 +801,7 @@ class StagHuntEnv(MultiAgentEnv):
         self.plant_positions = []  # [(x, y), ...] - plants for individual hunting
         
         # Top corner spawn positions for agents
-        self.agent_spawn_positions = [(0, 4), (4, 4)]  # top corners
+        self.agent_spawn_positions = [(0, 6), (6, 6), (6, 0)]  # corners of the grid
         
         # Rewards
         self.forage_reward = forage_reward
@@ -848,13 +852,19 @@ class StagHuntEnv(MultiAgentEnv):
         self.step_count = 0
         self.tagged_plants = []
         
-        # 에이전트 초기 위치 설정 (top corners)
-        for i, agent_id in enumerate(self.agents):
-            self.agent_positions[agent_id] = self.agent_spawn_positions[i]
+        agent_spawn_positions = self.agent_spawn_positions.copy()
+        if self._np_random is not None:
+            self._np_random.shuffle(agent_spawn_positions)
+        else:
+            np.random.shuffle(agent_spawn_positions)
         
-        # Stag 1과 Stag 2를 랜덤 위치에 배치 (이동하지 않음)
+        for i, agent_id in enumerate(self.agents):
+            # self.agent_positions[agent_id] = self._spawn_object_randomly() # fully random spawn
+            self.agent_positions[agent_id] = agent_spawn_positions[i] # shuffled fixed spawn
+        
+        # n개의 Stag를 랜덤 위치에 배치 (이동하지 않음)
         self.stag_positions = {}
-        for stag_id in range(2):  # stag 0과 stag 1
+        for stag_id in range(self.num_agents):  # num_agents만큼의 stag 생성
             stag_pos = self._spawn_object_randomly()
             self.stag_positions[stag_id] = stag_pos
         
@@ -887,7 +897,7 @@ class StagHuntEnv(MultiAgentEnv):
         
         # 사냥 처리 및 보상 계산
         rewards = {agent_id: 0.0 for agent_id in self.agents}
-        self._process_hunting(rewards)
+        hunting_info = self._process_hunting(rewards)
         
         # 에피소드 종료 조건 확인
         done = (self.step_count >= self.max_steps or 
@@ -895,12 +905,14 @@ class StagHuntEnv(MultiAgentEnv):
         
         # 관찰 획득
         observations = self._get_observations()
-        # Info
+        # Info - 협력 사냥 정보 포함
         info = {
             'step_count': self.step_count,
             'agent_positions': self.agent_positions.copy(),
             'stag_positions': self.stag_positions.copy(),
-            'plant_positions': self.plant_positions.copy()
+            'plant_positions': self.plant_positions.copy(),
+            'stag_hunts': hunting_info['stag_hunts'],  # {stag_id: [participating_agent_ids]}
+            'hare_hunts': hunting_info['hare_hunts']   # [agent_ids who hunted hares]
         }
         dones = {agent_id: done for agent_id in self.agents}
             
@@ -1005,10 +1017,22 @@ class StagHuntEnv(MultiAgentEnv):
         # 위치 업데이트
         self.agent_positions.update(final_positions)
 
-    def _process_hunting(self, rewards: Dict[int, float]):
-        """사냥 처리: 새로운 로직 - 각 stag별로 특정 agent에게만 reward 제공"""
+    def _process_hunting(self, rewards: Dict[int, float]) -> Dict:
+        """사냥 처리: 새로운 로직 - 각 stag별로 특정 agent에게만 reward 제공
+        
+        Returns:
+            hunting_info: 사냥 정보 딕셔너리
+                - 'stag_hunts': {stag_id: [participating_agent_ids]}
+                - 'hare_hunts': [agent_ids who hunted hares]
+        """
+        # 사냥 정보 추적
+        hunting_info = {
+            'stag_hunts': {},  # {stag_id: [agents who participated]}
+            'hare_hunts': []   # [agents who hunted hares]
+        }
+        
         # 각 에이전트가 식물을 수확했는지 추적
-        agent_foraged = {0: False, 1: False}
+        agent_foraged = {agent_id: False for agent_id in self.agents}
         
         # 식물 수확 체크
         for agent_id in self.agents:
@@ -1017,6 +1041,7 @@ class StagHuntEnv(MultiAgentEnv):
                     rewards[agent_id] += self.forage_reward
                     self.tagged_plants.append(i)
                     agent_foraged[agent_id] = True
+                    hunting_info['hare_hunts'].append(agent_id)
                     break  # 하나의 에이전트만 한 번에 하나의 식물만 수확 가능
         
         # Stag 사냥 체크 (새로운 로직)
@@ -1030,13 +1055,12 @@ class StagHuntEnv(MultiAgentEnv):
             
             if len(agents_at_stag) >= 2:
                 # 두 명 이상의 에이전트가 stag 위치에 있음 - 협력 사냥 성공
-                # stag 0은 agent 0에게만, stag 1은 agent 1에게만 reward 제공
-                if stag_id == 0:  # stag 1
-                    if 0 in agents_at_stag:
-                        rewards[0] += 5.0  # agent 1에게 +5
-                elif stag_id == 1:  # stag 2
-                    if 1 in agents_at_stag:
-                        rewards[1] += 5.0  # agent 2에게 +5
+                # stag i는 agent i에게만 reward 제공
+                if stag_id in agents_at_stag:
+                    rewards[stag_id] += self.stag_reward
+                
+                # 협력 사냥 정보 기록
+                hunting_info['stag_hunts'][stag_id] = agents_at_stag.copy()
                 
                 # 사냥된 stag 제거
                 del self.stag_positions[stag_id]
@@ -1056,6 +1080,8 @@ class StagHuntEnv(MultiAgentEnv):
                 if plant_idx < len(self.plant_positions):
                     self.plant_positions.pop(plant_idx)
             self.tagged_plants = []
+        
+        return hunting_info
     
     def _get_observations(self) -> Dict[int, np.ndarray]:
         """각 에이전트의 관찰을 반환합니다 (좌표 + 3x3 그리드)."""
@@ -1129,46 +1155,237 @@ class StagHuntEnv(MultiAgentEnv):
     
     def render(self, mode='human'):
         """환경 상태를 렌더링합니다."""
+        if not MATPLOTLIB_AVAILABLE:
+            print("Matplotlib이 설치되지 않아 렌더링을 할 수 없습니다.")
+            return None
+            
         if mode == 'human':
-            grid = [[' ' for _ in range(self.grid_size_x)] for _ in range(self.grid_size_y)]
+            self._render_human()
+        elif mode == 'rgb_array':
+            return self._render_rgb_array()
+        else:
+            raise ValueError(f"지원하지 않는 렌더링 모드: {mode}")
+    
+    def _render_human(self):
+        """인간이 볼 수 있는 형태로 렌더링합니다."""
+        if not hasattr(self, '_fig') or self._fig is None:
+            # 초기 설정
+            self._fig, self._ax = plt.subplots(figsize=(8, 8))
+            self._ax.set_xlim(-0.5, self.grid_size_x - 0.5)
+            self._ax.set_ylim(-0.5, self.grid_size_y - 0.5)
+            self._ax.set_aspect('equal')
+            self._ax.grid(True, alpha=0.3)
+            self._ax.set_title('Stag Hunt Environment', fontsize=14, fontweight='bold')
             
-            # Plant 그리기 (식물들)
-            for plant_pos in self.plant_positions:
-                plant_x, plant_y = plant_pos
-                if grid[plant_y][plant_x] == ' ':
-                    grid[plant_y][plant_x] = 'P'
-                else:
-                    grid[plant_y][plant_x] += 'P'
+            # 축 레이블 설정
+            self._ax.set_xlabel('X 좌표')
+            self._ax.set_ylabel('Y 좌표')
             
-            # Stag 그리기 (stag 1과 stag 2)
-            for stag_id, stag_pos in self.stag_positions.items():
-                stag_x, stag_y = stag_pos
-                stag_symbol = 'S1' if stag_id == 0 else 'S2'
-                if grid[stag_y][stag_x] == ' ':
-                    grid[stag_y][stag_x] = stag_symbol
-                else:
-                    grid[stag_y][stag_x] += stag_symbol
+            # 격자 표시
+            self._ax.set_xticks(range(self.grid_size_x))
+            self._ax.set_yticks(range(self.grid_size_y))
             
-            # 에이전트 그리기 (위치 충돌 처리)
-            for agent_id, (x, y) in self.agent_positions.items():
-                if grid[y][x] == ' ':
-                    grid[y][x] = str(agent_id)
-                else:
-                    grid[y][x] += str(agent_id)
+            # 범례를 위한 빈 플롯 요소들
+            self._legend_elements = []
             
-            print(f"Step: {self.step_count}/{self.max_steps}")
-            print("Stag-Hunt Environment (5x5):")
-            print("Legend: P=Plant, S1=Stag1, S2=Stag2, 0,1=Agents")
-            print("-" * (self.grid_size_x * 3 + 1))
-            for row in reversed(grid):  # y축을 위에서부터 표시
-                print('|' + ' '.join(f'{cell:>2}' for cell in row) + '|')
-            print("-" * (self.grid_size_x * 3 + 1))
+        # 기존 플롯 요소들 제거
+        for element in self._ax.collections + self._ax.patches + self._ax.texts:
+            if hasattr(element, 'remove') and element is not None:
+                try:
+                    element.remove()
+                except:
+                    pass  # 제거 실패 시 무시
+        
+        # 축 범위 재설정
+        self._ax.set_xlim(-0.5, self.grid_size_x - 0.5)
+        self._ax.set_ylim(-0.5, self.grid_size_y - 0.5)
+        
+        # 색상 팔레트 정의 (agent-stag pair별)
+        colors = ['red', 'blue', 'green', 'orange', 'purple', 'brown', 'pink', 'gray']
+        
+        # Agent 렌더링 (원형, 번호 표시)
+        for agent_id in self.agents:
+            if agent_id in self.agent_positions:
+                x, y = self.agent_positions[agent_id]
+                color = colors[agent_id % len(colors)]
+                
+                # Agent 원형 그리기
+                circle = plt.Circle((x, y), 0.3, color=color, alpha=0.8, ec='black', linewidth=2)
+                self._ax.add_patch(circle)
+                
+                # Agent 번호 표시
+                self._ax.text(x, y, f'A{agent_id}', ha='center', va='center', 
+                            fontsize=10, fontweight='bold', color='white')
+        
+        # Stag 렌더링 (삼각형, 번호 표시)
+        for stag_id in self.stag_positions:
+            x, y = self.stag_positions[stag_id]
+            color = colors[stag_id % len(colors)]  # 같은 색상 사용
             
-            # 추가 정보 표시
-            print(f"Agent positions: {dict(self.agent_positions)}")
-            print(f"Stag positions: {dict(self.stag_positions)}")
-            print(f"Plant positions: {self.plant_positions}")
-            print()
+            # Stag 삼각형 그리기
+            triangle = plt.Polygon([(x, y-0.3), (x-0.3, y+0.3), (x+0.3, y+0.3)], 
+                                 color=color, alpha=0.8, ec='black', linewidth=2)
+            self._ax.add_patch(triangle)
+            
+            # Stag 번호 표시
+            self._ax.text(x, y+0.1, f'S{stag_id}', ha='center', va='center', 
+                        fontsize=10, fontweight='bold', color='white')
+        
+        # Plant (Rabbit) 렌더링 (사각형)
+        for i, (x, y) in enumerate(self.plant_positions):
+            # Plant는 회색 사각형으로 표시
+            rect = plt.Rectangle((x-0.25, y-0.25), 0.5, 0.5, 
+                               color='gray', alpha=0.7, ec='black', linewidth=1)
+            self._ax.add_patch(rect)
+            
+            # Plant 번호 표시
+            self._ax.text(x, y, f'P{i}', ha='center', va='center', 
+                        fontsize=8, fontweight='bold', color='white')
+        
+        # 범례 생성
+        legend_elements = [
+            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor='red', 
+                      markersize=10, label='Agent (원형)'),
+            plt.Line2D([0], [0], marker='^', color='w', markerfacecolor='red', 
+                      markersize=10, label='Stag (삼각형)'),
+            plt.Line2D([0], [0], marker='s', color='w', markerfacecolor='gray', 
+                      markersize=10, label='Plant (사각형)')
+        ]
+        
+        # 기존 범례 제거
+        if hasattr(self._ax, 'legend_') and self._ax.legend_ is not None:
+            self._ax.legend_.remove()
+        
+        # 새 범례 추가
+        self._ax.legend(handles=legend_elements, loc='upper right', bbox_to_anchor=(1.0, 1.0))
+        
+        # 스텝 정보 표시
+        info_text = f"Step: {self.step_count}/{self.max_steps}"
+        self._ax.text(0.02, 0.98, info_text, transform=self._ax.transAxes, 
+                    fontsize=12, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+        
+        # Agent-Stag pair 정보 표시
+        pair_info = "Agent-Stag Pairs:\n"
+        for i in range(min(len(self.agents), len(self.stag_positions))):
+            pair_info += f"A{i}-S{i}: {colors[i % len(colors)]}\n"
+        
+        self._ax.text(0.02, 0.85, pair_info, transform=self._ax.transAxes, 
+                    fontsize=10, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.8))
+        
+        # Agent-Stag pair 연결선 표시 (같은 색상으로)
+        for i in range(min(len(self.agents), len(self.stag_positions))):
+            if i in self.agent_positions and i in self.stag_positions:
+                agent_x, agent_y = self.agent_positions[i]
+                stag_x, stag_y = self.stag_positions[i]
+                color = colors[i % len(colors)]
+                
+                # 점선으로 연결선 그리기
+                self._ax.plot([agent_x, stag_x], [agent_y, stag_y], 
+                           color=color, linestyle='--', alpha=0.5, linewidth=2)
+        
+        # 거리 정보 표시
+        distance_info = "Distances:\n"
+        for i in range(min(len(self.agents), len(self.stag_positions))):
+            if i in self.agent_positions and i in self.stag_positions:
+                agent_x, agent_y = self.agent_positions[i]
+                stag_x, stag_y = self.stag_positions[i]
+                distance = np.sqrt((agent_x - stag_x)**2 + (agent_y - stag_y)**2)
+                distance_info += f"A{i}-S{i}: {distance:.2f}\n"
+        
+        self._ax.text(0.02, 0.65, distance_info, transform=self._ax.transAxes, 
+                    fontsize=9, verticalalignment='top',
+                    bbox=dict(boxstyle='round', facecolor='lightgreen', alpha=0.8))
+        
+        plt.draw()
+        plt.pause(0.05)  # 부드러운 실시간 업데이트를 위한 지연
+    
+    def _render_rgb_array(self):
+        """RGB 배열 형태로 렌더링합니다."""
+        if not hasattr(self, '_fig') or self._fig is None:
+            self._fig, self._ax = plt.subplots(figsize=(8, 8))
+        
+        # 렌더링 수행
+        self._render_human()
+        
+        # RGB 배열로 변환
+        self._fig.canvas.draw()
+        buf = self._fig.canvas.buffer_rgba()
+        arr = np.asarray(buf)
+        
+        return arr[:, :, :3]  # Alpha 채널 제거
+    
+    def close_render(self):
+        """렌더링 창을 닫습니다."""
+        if hasattr(self, '_fig') and self._fig is not None:
+            plt.close(self._fig)
+            self._fig = None
+            self._ax = None
+    
+    def start_animation(self, max_frames=100, interval=100):
+        """애니메이션을 시작합니다."""
+        if not MATPLOTLIB_AVAILABLE:
+            print("Matplotlib이 설치되지 않아 애니메이션을 할 수 없습니다.")
+            return None
+            
+        if not hasattr(self, '_fig') or self._fig is None:
+            self._fig, self._ax = plt.subplots(figsize=(10, 8))
+            self._ax.set_xlim(-0.5, self.grid_size_x - 0.5)
+            self._ax.set_ylim(-0.5, self.grid_size_y - 0.5)
+            self._ax.set_aspect('equal')
+            self._ax.grid(True, alpha=0.3)
+            self._ax.set_title('Stag Hunt Environment - Animation', fontsize=14, fontweight='bold')
+            self._ax.set_xlabel('X 좌표')
+            self._ax.set_ylabel('Y 좌표')
+            self._ax.set_xticks(range(self.grid_size_x))
+            self._ax.set_yticks(range(self.grid_size_y))
+        
+        # 애니메이션 프레임 카운터
+        self._frame_count = 0
+        self._max_frames = max_frames
+        
+        def animate(frame):
+            """애니메이션 프레임을 업데이트합니다."""
+            if self._frame_count >= self._max_frames:
+                return
+            
+            # 랜덤 액션으로 환경 스텝 실행
+            actions = {}
+            for agent_id in self.agents:
+                actions[agent_id] = np.random.randint(0, self.get_action_dim())
+            
+            observations, rewards, dones, info = self.step(actions)
+            
+            # 렌더링 업데이트
+            self._render_human()
+            
+            self._frame_count += 1
+            
+            # 에피소드 종료 시 리셋
+            if any(dones.values()):
+                self.reset()
+                self._frame_count = 0
+        
+        # 애니메이션 시작
+        from matplotlib.animation import FuncAnimation
+        self._animation = FuncAnimation(
+            self._fig, animate, 
+            frames=max_frames,  # 명시적으로 프레임 수 지정
+            interval=interval, 
+            blit=False,
+            cache_frame_data=False,  # 캐시 비활성화로 메모리 절약
+            repeat=False  # 반복하지 않음
+        )
+        
+        return self._animation
+    
+    def stop_animation(self):
+        """애니메이션을 중지합니다."""
+        if hasattr(self, '_animation') and self._animation is not None:
+            self._animation.event_source.stop()
+            self._animation = None
+
 
 class MPESimpleSpreadEnv(MultiAgentEnv):
     """

@@ -355,7 +355,8 @@ class PCIMAPPOTrainer:
                     actions=env_actions,                  # a_t
                     rewards=rewards,                      # r_t
                     next_observations=next_observations,  # o_{t+1}
-                    dones=dones
+                    dones=dones,
+                    info=info  # Environment info (e.g., stag_hunts, hare_hunts)
                 )
                 
                 # Update episode statistics
@@ -713,7 +714,7 @@ class PCIMAPPOTrainer:
                 with torch.no_grad():
                     actions = {}
                     for agent_id, obs in observations.items():
-                        action, _, _ = self.algorithm.agents[agent_id].get_action(obs)
+                        action, _ = self.algorithm.agents[agent_id].get_action(obs)
                         actions[agent_id] = action
                 
                 # Take step

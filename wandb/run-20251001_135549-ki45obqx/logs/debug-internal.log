@@ -1,0 +1,19 @@
+{"time":"2025-10-01T13:55:49.664539571+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20251001_135549-ki45obqx/logs/debug-core.log"}
+{"time":"2025-10-01T13:55:49.963538756+09:00","level":"INFO","msg":"stream: created new stream","id":"ki45obqx"}
+{"time":"2025-10-01T13:55:49.963565503+09:00","level":"INFO","msg":"stream: started","id":"ki45obqx"}
+{"time":"2025-10-01T13:55:49.963574119+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"ki45obqx"}
+{"time":"2025-10-01T13:55:49.963583181+09:00","level":"INFO","msg":"handler: started","stream_id":"ki45obqx"}
+{"time":"2025-10-01T13:55:49.963593093+09:00","level":"INFO","msg":"sender: started","stream_id":"ki45obqx"}
+{"time":"2025-10-01T13:55:50.224771634+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-10-01T14:00:31.339839839+09:00","level":"INFO","msg":"stream: closing","id":"ki45obqx"}
+{"time":"2025-10-01T14:00:31.339870393+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-10-01T14:00:31.339895979+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-10-01T14:00:31.554535192+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-10-01T14:00:31.554608744+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"run pci-mappo/ki45obqx not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-10-01T14:00:31.554931182+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-01T14:00:31.745632403+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/ki45obqx/file_stream"}
+{"time":"2025-10-01T14:00:31.745717839+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/ki45obqx/file_stream: {\"error\":\"run pci-mappo/ki45obqx not found while streaming file\"}"}
+{"time":"2025-10-01T14:00:31.746138385+09:00","level":"INFO","msg":"handler: closed","stream_id":"ki45obqx"}
+{"time":"2025-10-01T14:00:31.746174171+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"ki45obqx"}
+{"time":"2025-10-01T14:00:31.746217599+09:00","level":"INFO","msg":"sender: closed","stream_id":"ki45obqx"}
+{"time":"2025-10-01T14:00:31.746260734+09:00","level":"INFO","msg":"stream: closed","id":"ki45obqx"}

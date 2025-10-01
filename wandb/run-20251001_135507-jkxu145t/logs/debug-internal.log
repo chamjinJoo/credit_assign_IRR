@@ -1,0 +1,19 @@
+{"time":"2025-10-01T13:55:07.457865987+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20251001_135507-jkxu145t/logs/debug-core.log"}
+{"time":"2025-10-01T13:55:07.771592707+09:00","level":"INFO","msg":"stream: created new stream","id":"jkxu145t"}
+{"time":"2025-10-01T13:55:07.771642916+09:00","level":"INFO","msg":"stream: started","id":"jkxu145t"}
+{"time":"2025-10-01T13:55:07.77171095+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"jkxu145t"}
+{"time":"2025-10-01T13:55:07.771735328+09:00","level":"INFO","msg":"sender: started","stream_id":"jkxu145t"}
+{"time":"2025-10-01T13:55:07.771746209+09:00","level":"INFO","msg":"handler: started","stream_id":"jkxu145t"}
+{"time":"2025-10-01T13:55:08.086139676+09:00","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-10-01T14:00:32.200062442+09:00","level":"INFO","msg":"stream: closing","id":"jkxu145t"}
+{"time":"2025-10-01T14:00:32.200107197+09:00","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-10-01T14:00:32.200158049+09:00","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-10-01T14:00:32.424882172+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/graphql"}
+{"time":"2025-10-01T14:00:32.424995403+09:00","level":"ERROR","msg":"runfiles: CreateRunFiles returned error: returned error 404: {\"data\":{\"createRunFiles\":null},\"errors\":[{\"message\":\"run pci-mappo/jkxu145t not found during createRunFiles\",\"path\":[\"createRunFiles\"]}]}"}
+{"time":"2025-10-01T14:00:32.425531921+09:00","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-01T14:00:32.620114882+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/jkxu145t/file_stream"}
+{"time":"2025-10-01T14:00:32.620151015+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/jkxu145t/file_stream: {\"error\":\"run pci-mappo/jkxu145t not found while streaming file\"}"}
+{"time":"2025-10-01T14:00:32.620509597+09:00","level":"INFO","msg":"handler: closed","stream_id":"jkxu145t"}
+{"time":"2025-10-01T14:00:32.62052096+09:00","level":"INFO","msg":"writer: Close: closed","stream_id":"jkxu145t"}
+{"time":"2025-10-01T14:00:32.620526338+09:00","level":"INFO","msg":"sender: closed","stream_id":"jkxu145t"}
+{"time":"2025-10-01T14:00:32.620587421+09:00","level":"INFO","msg":"stream: closed","id":"jkxu145t"}

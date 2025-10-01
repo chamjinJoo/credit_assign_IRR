@@ -1,0 +1,31 @@
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - Starting training...
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - ============================================================
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - PCI-MAPPO Training Configuration
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - ============================================================
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - Environment: StagHuntEnv
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - Number of agents: 3
+2025-10-01 13:17:54,478 - PCI-MAPPO - INFO - Observation dimension: 42
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Action dimension: 5
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Max iterations: 3000
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Steps per iteration: 1024
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Total steps: 3,072,000
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Log interval: 5
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Eval interval: 50
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Save interval: 100
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Device: cpu
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - Wandb: True
+2025-10-01 13:17:54,479 - PCI-MAPPO - INFO - ============================================================
+Training Progress:   0%|                                                                                                                                                           | 0/3000 [00:00<?, ?iter/s]
+2025-10-01 13:17:54,481 - PCI-MAPPO - ERROR - Training failed with error: 'list' object has no attribute 'shuffle'
+Traceback (most recent call last):
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 258, in <module>
+    main()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/main.py", line 206, in main
+    trainer.train()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 264, in train
+    rollout_data = self.collect_rollouts()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/training/trainer.py", line 326, in collect_rollouts
+    observations = self.env.reset()
+  File "/home/chamjin/research/pci-mappo-DoublyRobust/pci_mappo/envs/multi_agent_env.py", line 858, in reset
+    self.agent_spawn_positions.shuffle()
+AttributeError: 'list' object has no attribute 'shuffle'

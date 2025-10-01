@@ -1,0 +1,43 @@
+{
+  "training_completed": "2025-09-29T16:11:37.815934",
+  "total_time_seconds": 15904.689237594604,
+  "total_time_hours": 4.417969232665168,
+  "iterations_completed": 3000,
+  "total_steps": 3072000,
+  "average_time_per_iteration": 5.301563079198202,
+  "best_eval_reward": 7.6,
+  "final_evaluation": {
+    "eval_mean_reward": 7.0,
+    "eval_std_reward": 0.20000000000000018,
+    "eval_mean_length": 36.0,
+    "eval_min_reward": 6.8,
+    "eval_max_reward": 7.2,
+    "is_best": false,
+    "causal_effects": {
+      "no_reward": {
+        "mean": 0.004299830285688539,
+        "std": 0.14767487679802674,
+        "count": 50091,
+        "min": -4.018727779388428,
+        "max": 2.1865499019622803,
+        "median": 0.002002427354454994
+      },
+      "forage_reward": {
+        "mean": 0.1776046564312697,
+        "std": 0.495150970780057,
+        "count": 1156,
+        "min": -1.5193164348602295,
+        "max": 2.6274538040161133,
+        "median": 0.09303152561187744
+      },
+      "stag_reward": {
+        "mean": 1.9867789345115978,
+        "std": 1.304542418548908,
+        "count": 697,
+        "min": -0.18694257736206055,
+        "max": 5.051960468292236,
+        "median": 1.7228987216949463
+      }
+    }
+  }
+}
