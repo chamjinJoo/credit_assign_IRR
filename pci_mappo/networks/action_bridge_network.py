@@ -36,7 +36,7 @@ class ActionBridgeNetwork(nn.Module):
 
         # Action bridge network using MLPBase
         self.action_bridge_network = MLPBase(
-            obs_dim=input_dim,
+            input_dim=input_dim,
             hidden_size=hidden_dim,
             layer_N=2,  # 2 hidden layers
             use_feature_normalization=True,

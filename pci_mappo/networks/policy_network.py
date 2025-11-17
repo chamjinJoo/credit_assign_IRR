@@ -26,7 +26,7 @@ class PolicyNetwork(nn.Module):
         
         # Policy network using MLPBase
         self.policy_network = MLPBase(
-            obs_dim=obs_dim,
+            input_dim=obs_dim,
             hidden_size=hidden_dim,
             layer_N=2,  # 2 hidden layers
             use_feature_normalization=True,
@@ -89,30 +89,25 @@ class PolicyNetwork(nn.Module):
         return log_probs, entropy
 
 
-class CentralizedValueNetwork(nn.Module):
+class ValueNetwork(nn.Module):
     """
-    Centralized Value Network that takes individual agent observations as input.
+    Value Network that takes individual agent observations as input.
     All agents share the same network parameters (parameter sharing).
     """
     
     def __init__(
         self,
         obs_dim: int,
-        num_agents: int,
         hidden_dim: int = 64
     ):
-        super(CentralizedValueNetwork, self).__init__()
+        super(ValueNetwork, self).__init__()
         
         self.obs_dim = obs_dim
-        self.num_agents = num_agents
         self.hidden_dim = hidden_dim
-        
-        # Input dimension: individual agent observation
-        input_dim = obs_dim
         
         # Value network using MLPBase (shared across all agents)
         self.value_network = MLPBase(
-            obs_dim=input_dim,
+            input_dim=obs_dim,
             hidden_size=hidden_dim,
             layer_N=2,  # 2 hidden layers
             use_feature_normalization=True,
@@ -120,15 +115,20 @@ class CentralizedValueNetwork(nn.Module):
             use_ReLU=True,
             use_layer_norm=True
         )
-        
+
         # Value head
         self.value_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim//2),
             nn.ReLU(),
             nn.Linear(hidden_dim//2, 1)
         )
         
-    def forward(self, obs: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, 
+        obs: torch.Tensor
+    ) -> torch.Tensor:
         """
         Forward pass with individual agent observation.
         
@@ -138,10 +138,8 @@ class CentralizedValueNetwork(nn.Module):
         Returns:
             value: State value for the agent [batch_size, 1]
         """
-        # Encode observations
-        obs_encoded = self.value_network(obs)
-        
-        # Apply value head
-        value = self.value_head(obs_encoded)
+        # Forward through value network
+        obs_encoded = self.value_network(obs)  # [batch_size, hidden_dim]
+        value = self.value_head(obs_encoded)  # [batch_size, 1]
         
         return value

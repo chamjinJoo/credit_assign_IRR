@@ -1,9 +1,0 @@
-{"time":"2025-09-30T10:48:51.125445172+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250930_104850-74sxhof8/logs/debug-core.log"}
-{"time":"2025-09-30T10:48:51.423150941+09:00","level":"INFO","msg":"stream: created new stream","id":"74sxhof8"}
-{"time":"2025-09-30T10:48:51.423187728+09:00","level":"INFO","msg":"stream: started","id":"74sxhof8"}
-{"time":"2025-09-30T10:48:51.423197044+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"74sxhof8"}
-{"time":"2025-09-30T10:48:51.423253252+09:00","level":"INFO","msg":"sender: started","stream_id":"74sxhof8"}
-{"time":"2025-09-30T10:48:51.423262906+09:00","level":"INFO","msg":"handler: started","stream_id":"74sxhof8"}
-{"time":"2025-09-30T10:48:51.671669263+09:00","level":"INFO","msg":"Starting system monitor"}
-{"time":"2025-09-30T13:15:22.274742797+09:00","level":"ERROR","msg":"HTTP error","status":404,"method":"POST","url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/74sxhof8/file_stream"}
-{"time":"2025-09-30T13:15:22.274788991+09:00","level":"ERROR+4","msg":"filestream: fatal error: filestream: failed to upload: 404 Not Found path=files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/74sxhof8/file_stream: {\"error\":\"run pci-mappo/74sxhof8 not found while streaming file\"}"}

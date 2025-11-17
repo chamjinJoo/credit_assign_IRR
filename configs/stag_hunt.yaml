@@ -2,7 +2,7 @@
 
 # Neural Network Configuration
 network:
-  hidden_dim: 32
+  hidden_dim: 64
   lr: 3.0e-4
   lr_bridge: 3.0e-4
   lr_critic: 3.0e-4
@@ -19,7 +19,7 @@ algorithm:
   max_grad_norm: 0.5
   ppo_epochs: 4
   batch_size: 64
-  causal_lambda: 0.05
+  causal_lambda: 0.8
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_start: 0.0      # Starting causal lambda value
   causal_lambda_final: 0.8     # Final causal lambda value
@@ -36,8 +36,8 @@ algorithm:
 
 # Training Configuration
 training:
-  max_iterations: 1500
-  max_steps_per_iteration: 128
+  max_iterations: 3000
+  max_steps_per_iteration: 1024
   log_interval: 2
   save_interval: 100
   eval_interval: 50
@@ -51,10 +51,12 @@ training:
 # Environment Configuration
 environment:
   env_name: "StagHunt"
-  num_agents: 2
+  num_agents: 3
   max_steps: 50
   stag_move_prob: 0.7
-
+  forage_reward: 3.0
+  stag_reward: 5.0
+  mauling_punishment: -1.0
 # Weights & Biases Configuration
 wandb:
   use_wandb: false

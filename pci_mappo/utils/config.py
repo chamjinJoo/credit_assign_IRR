@@ -63,7 +63,7 @@ class EnvironmentConfig:
     """Environment configuration."""
     env_name: str = "simple_cooperative"
     name: str = "simple_cooperative"  # alias for env_name
-    num_agents: int = 3
+    num_agents: int = 2
     grid_size: int = 5
     max_steps: int = 50
     cooperation_bonus: float = 2.0
@@ -74,9 +74,13 @@ class EnvironmentConfig:
     seed: int = 0
     failure_obs_prob: float = 0.15
     fully_observable: bool = False
+
     # For Stag-Hunt environment
     stag_move_prob: float = 0.7
-    
+    forage_reward: float = 3.0
+    stag_reward: float = 5.0
+    mauling_punishment: float = -1.0
+
     # For MPE Simple Spread environment
     local_ratio: float = 0.5
     max_cycles: int = 25

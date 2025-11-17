@@ -54,8 +54,8 @@ def create_environment(env_config) -> MultiAgentEnv:
             forage_quantity=config_dict.get('forage_quantity', None),
             forage_reward=config_dict.get('forage_reward', 3.0),
             stag_reward=config_dict.get('stag_reward', 5.0),
-            mauling_punishment=config_dict.get('mauling_punishment', 0.0),
-            seed=config_dict.get('seed', None)
+            mauling_punishment=config_dict.get('mauling_punishment', -1.0),
+            seed=config_dict.get('seed', 0)
         )
     
     elif env_name == 'SimpleSpread' or env_name == 'simple_spread':

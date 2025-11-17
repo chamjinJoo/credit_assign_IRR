@@ -7,7 +7,7 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import random
 
-from ..networks import PolicyNetwork, BridgeNetwork, ActionBridgeNetwork, CentralizedValueNetwork
+from ..networks import PolicyNetwork, BridgeNetwork, ActionBridgeNetwork, ValueNetwork
 from ..utils.buffer import ExperienceBuffer
 
 
@@ -186,11 +186,16 @@ class PCIMAPPOAlgorithm:
         device: str = "cpu",  # Device for computation
         # RKHS Kernel parameters for analytical loss
         rkhs_gamma: float = 1.0,  # Gamma parameter for RBF kernel
+        # Environment required_agents for scenario classification
+        env_required_agents: Optional[Dict[int, List[int]]] = None,
     ):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.w_dim = w_dim
+        
+        # Store environment's required_agents for accurate scenario classification
+        self.env_required_agents = env_required_agents
         
         # Device setup
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
@@ -237,13 +242,26 @@ class PCIMAPPOAlgorithm:
                 lr=lr
             )
         
-        # Centralized value network (shared parameters across all agents)
-        # All agents use the same value network instance, ensuring parameter sharing
-        self.value_net = CentralizedValueNetwork(
+        # Value netowrk option 1: no parameter sharing
+        # self.value_nets = {
+        #     i: ValueNetwork(
+        #         obs_dim=obs_dim,
+        #         hidden_dim=hidden_dim
+        #     ) for i in range(num_agents)
+        # }
+        # # Optimizer per value network
+        # self.value_optimizers = {
+        #     i: optim.Adam(self.value_nets[i].parameters(), lr=lr) for i in range(num_agents)
+        # }
+
+        # Value network option 2: parameter sharing with agent ID embedding PS+id
+        self.value_net = ValueNetwork(
             obs_dim=obs_dim,
-            num_agents=num_agents,
-            hidden_dim=hidden_dim
+            hidden_dim=hidden_dim,
         )
+        
+        # Optimizer for the shared value network
+        self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         
         # Causal inference networks (shared across agents)
         # h_φ(a, w) - Outcome Bridge network
@@ -265,11 +283,11 @@ class PCIMAPPOAlgorithm:
             action_embedding_dim=8  # Action embedding dimension
         )
         
-        # RKHS Kernel for analytical loss
+        # RKHS Kernel
         self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)
         self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device)
 
-        # # Linear Kernel for analytical loss
+        # # Linear Kernel
         # self.critic_kernel_z = LinearKernel().to(self.device)
         # self.critic_kernel_w = LinearKernel().to(self.device)
         
@@ -285,8 +303,7 @@ class PCIMAPPOAlgorithm:
         self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_critic)
         self.kernel_action_embed_optimizer = optim.Adam(self.action_embedding_for_kernel.parameters(), lr=lr_critic)
         
-        # Optimizer for centralized value network
-        self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr)
+        # (Removed) single centralized value optimizer in favor of per-agent optimizers
         
         # Move all networks to device
         self._move_networks_to_device()
@@ -297,7 +314,7 @@ class PCIMAPPOAlgorithm:
         for agent in self.agents.values():
             agent.policy_net.to(self.device)
         
-        # Set device for all networks
+        # Move value network (shared across agents)
         self.value_net.to(self.device)
         self.outcome_bridge_net.to(self.device)
         self.action_bridge_net.to(self.device)
@@ -342,6 +359,13 @@ class PCIMAPPOAlgorithm:
         Returns:
             A dictionary containing loss values for monitoring.
         """
+        # Skip causal network updates if causal lambda is 0
+        if self.get_current_causal_lambda() == 0.0:
+            return {
+                'outcome_bridge_loss': 0.0,
+                'action_bridge_loss': 0.0,
+            }
+        
         batch_size = len(batch_data)
         # === Vectorized Data Preparation ===
         # Swap: o_{t-1} becomes z_t, o_t becomes w_t
@@ -364,7 +388,7 @@ class PCIMAPPOAlgorithm:
         # outcome_bridge_loss = torch.trace(quadratic_forms) / (self.num_agents * batch_size)
 
         # 1-2. Loss with Stabilizer
-        reg_K_z_inv = torch.inverse(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
+        reg_K_z_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
         loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
         outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
 
@@ -428,7 +452,7 @@ class PCIMAPPOAlgorithm:
         # action_bridge_loss = (quadratic_term - 2.0 * linear_term) / batch_size
 
         # 5-2. With Stabilizer
-        reg_K_w1_inv = torch.inverse(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
+        reg_K_w1_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
         quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
         linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
         action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
@@ -606,8 +630,9 @@ class PCIMAPPOAlgorithm:
         """
         Delta statistics를 분류하기 위해 현재 transition의 상황을 분석합니다.
         
-        n명의 agent 환경에서 정확한 협력 상황을 구분하여:
-        - 'stag_reward': 현재 agent가 협력에 참여해서 다른 agent가 stag reward를 받음
+        required_agents 정보를 활용하여 정확한 협력 관계를 판단:
+        - 'stag_reward': 현재 agent가 required_agents에 포함된 stag 사냥에 참여해서 
+                        다른 agent가 stag reward를 받음
         - 'forage_reward': 다른 agent가 hare를 사냥함 (협력 없음)
         - 'no_reward': 아무도 reward를 받지 않음
         
@@ -620,39 +645,38 @@ class PCIMAPPOAlgorithm:
         """
         info = transition.get('info', {})
         stag_hunts = info.get('stag_hunts', {})  # {stag_id: [participating_agent_ids]}
-        hare_hunts = info.get('hare_hunts', [])   # [agent_ids]
         
-        # 현재 agent가 협력 사냥에 참여했는지 확인
-        participated_in_stag_hunt = False
-        for stag_id, participants in stag_hunts.items():
-            if agent_id in participants:
-                participated_in_stag_hunt = True
-                break
-        
-        # 다른 agent들이 stag 사냥에 성공했는지 확인
+        # 다른 agent들의 보상 확인
         other_agents_stag_reward = False
-        for other_agent_id in range(self.num_agents):
-            if other_agent_id != agent_id and transition['bold_r_t'][other_agent_id] == 5.0:
-                other_agents_stag_reward = True
-                break
-        
-        # 다른 agent들이 hare를 사냥했는지 확인
         other_agents_forage_reward = False
-        for other_agent_id in range(self.num_agents):
-            if other_agent_id != agent_id and transition['bold_r_t'][other_agent_id] == 3.0:
-                other_agents_forage_reward = True
-                break
         
-        # Delta 분류: 현재 agent가 협력에 참여했는지에 따라 구분
-        if participated_in_stag_hunt and other_agents_stag_reward:
-            # 현재 agent가 협력에 참여해서 다른 agent가 stag reward를 받음
-            return 'stag_reward'
-        elif other_agents_forage_reward:
+        for other_agent_id in range(self.num_agents):
+            if other_agent_id != agent_id:
+                if transition['bold_r_t'][other_agent_id] == 5.0:
+                    other_agents_stag_reward = True
+                elif transition['bold_r_t'][other_agent_id] == 3.0:
+                    other_agents_forage_reward = True
+        
+        # required_agents 정보를 활용한 협력 관계 판단
+        if other_agents_stag_reward and self.env_required_agents is not None:
+            # Stag 사냥이 성공한 경우, 현재 agent가 해당 stag의 required_agents에 포함되는지 확인
+            for stag_id, participants in stag_hunts.items():
+                # 이 stag 사냥에 필요한 agents
+                required = self.env_required_agents.get(stag_id, [])
+                
+                # 현재 agent가 required_agents에 포함되어 있는지 확인
+                if agent_id in required:
+                    # 실제로 참여했는지도 확인
+                    if agent_id in participants:
+                        # 현재 agent가 협력에 참여해서 다른 agent가 stag reward를 받음
+                        return 'stag_reward'
+        
+        if other_agents_forage_reward:
             # 다른 agent가 hare를 사냥함 (협력 없음)
             return 'forage_reward'
-        else:
-            # 아무도 reward를 받지 않음
-            return 'no_reward'
+        
+        # 아무도 reward를 받지 않음
+        return 'no_reward'
     
     def causal_intrinsic_reward(
         self,
@@ -663,7 +687,7 @@ class PCIMAPPOAlgorithm:
         current_actions: Dict[int, int],  # Current joint action a_t
         current_rewards: Dict[int, float],  # Current joint reward r_t
     ) -> Tuple[float, np.ndarray]:
-        f"""
+        """
         Computes a causal reward shaping term Δ^i_t using a policy-weighted difference method.
 
         This method weights both the factual and counterfactual reward predictions by their
@@ -681,6 +705,10 @@ class PCIMAPPOAlgorithm:
             Delta_i_t: The final scalar causal reward shaping term for agent i.
             r_hat_all_numpy: A numpy array of all counterfactual reward predictions for monitoring.
         """
+        # Return 0 if causal lambda is 0 (no causal inference)
+        if self.get_current_causal_lambda() == 0.0:
+            return 0.0, np.zeros((self.action_dim, self.num_agents))
+        
         with torch.no_grad():
             # === 1. Compute All Counterfactual Outcomes (including the factual one) ===
             # DR Correction Term (calculated once based on the factual action)
@@ -723,31 +751,47 @@ class PCIMAPPOAlgorithm:
             
             r_hat_counterfactuals = r_hat_all[mask] # Shape: [action_dim - 1, num_agents]
             
-            # Opition 1) Weighted counterfactual baseline
-            probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
             # === 3. Compute the Difference-Based Causal Effect ===
-            sum_probs_counterfactuals = probs_counterfactuals.sum()
-            if sum_probs_counterfactuals > 1e-8:
-                # weighted_sum = (확률 * 보상).sum()
-                weighted_sum_counterfactuals = (probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals).sum(dim=0)
-                # baseline = weighted_sum / 확률의 합
-                baseline = weighted_sum_counterfactuals / sum_probs_counterfactuals
-            else:
-                # 비교할 반사실적 행동이 없는 경우 (행동이 1개뿐인 경우 등)
-                baseline = torch.zeros_like(r_hat_factual)
+            # Baseline using policy probabilities (commented out - not used)
+            # probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
+            # sum_probs_counterfactuals = probs_counterfactuals.sum()
+            # if sum_probs_counterfactuals > 1e-8:
+            #     # weighted_sum = (확률 * 보상).sum()
+            #     weighted_sum_counterfactuals = (probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals).sum(dim=0)
+            #     # baseline = weighted_sum / 확률의 합
+            #     baseline = weighted_sum_counterfactuals / sum_probs_counterfactuals
+            # else:
+            #     # 비교할 반사실적 행동이 없는 경우 (행동이 1개뿐인 경우 등)
+            #     baseline = torch.zeros_like(r_hat_factual)
+            
+            # Baseline using simple average (same as causal_intrinsic_reward_batch)
+            counterfactual_count = mask.sum().clamp(min=1).to(r_hat_counterfactuals.dtype)
+            baseline = r_hat_counterfactuals.sum(dim=0) / (counterfactual_count + 1e-8)  # Shape: [num_agents]
                 
             # === 3. 최종 인과 효과 벡터 계산 === #
             causal_effect_vector = r_hat_factual - baseline # Shape: [num_agents]
-            
+            # causal_effect_vector = current_rewards - baseline # Shape: [num_agents]
             # === 4. Calculate Final Shaping Term Δ^i_t ===
             # Average the causal effects over all *other* agents.
             other_agents = [j for j in range(self.num_agents) if j != agent_id]
             if other_agents:
-                Delta_i_t = causal_effect_vector[other_agents].mean().item()
+                Delta_i_t = causal_effect_vector[other_agents].max().item()
+                #Delta_i_t = causal_effect_vector[other_agents].mean().item()
             else:
                 Delta_i_t = 0.0
+            
+            # if agent_id == 0 and current_rewards[2] == 5.0:
+            #     Delta_i_t = 5.0
+            # elif agent_id == 1 and current_rewards[0] == 5.0:
+            #     Delta_i_t = 5.0
+            # elif agent_id == 2 and current_rewards[1] == 5.0:
+            #     Delta_i_t = 5.0
+            # else:
+            #     Delta_i_t = 0.0
 
-        # if current_rewards[agent_id] != 0 or current_rewards[1 - agent_id] != 0:
+        # Check bridge networks
+        # if current_rewards[0] != 0 or current_rewards[1] != 0 or current_rewards[2] != 0:
+        #     print(f"agent_id: {agent_id}")
         #     print(f"current_rewards: {current_rewards}")
         #     print(f"DR_corrections (q): {DR_correction_t}", weight_t.squeeze(), error_t.squeeze())
         #     print(f"reg_estimates (h): {reg_estimates}")
@@ -755,7 +799,176 @@ class PCIMAPPOAlgorithm:
         #     print(f"Delta_i_t: {Delta_i_t}")
         
         return Delta_i_t, r_hat_all.cpu().numpy()
+    
+    def causal_intrinsic_reward_batch(
+        self,
+        agent_id: int,
+        w_t_batch: torch.Tensor,      # [batch_size, w_dim]
+        z_t_batch: torch.Tensor,      # [batch_size, z_dim]
+        o_t_batch: torch.Tensor,      # [batch_size, obs_dim]
+        actions_batch: torch.Tensor,  # [batch_size, num_agents]
+        rewards_batch: torch.Tensor,  # [batch_size, num_agents]
+    ) -> torch.Tensor:
+        """
+        Vectorized batch version of causal_intrinsic_reward.
+        
+        Args:
+            agent_id: ID of the agent i for whom the shaping term is calculated.
+            w_t_batch: Batch of proxy w_t, [batch_size, w_dim]
+            z_t_batch: Batch of proxy z_t, [batch_size, z_dim]
+            o_t_batch: Batch of individual observations for agent i, [batch_size, obs_dim]
+            actions_batch: Batch of joint actions, [batch_size, num_agents]
+            rewards_batch: Batch of joint rewards, [batch_size, num_agents]
+        
+        Returns:
+            Delta_batch: Causal reward shaping terms, [batch_size]
+        """
+        # Return zeros if causal lambda is 0
+        if self.get_current_causal_lambda() == 0.0:
+            return torch.zeros(w_t_batch.size(0), device=self.device)
+        
+        batch_size = w_t_batch.size(0)
+        
+        with torch.no_grad():
+            # === 1. Compute DR Correction Term for all samples ===
+            r_pred_batch = self.outcome_bridge_net(actions_batch, w_t_batch)  # [batch_size, num_agents]
+            error_batch = rewards_batch - r_pred_batch  # [batch_size, num_agents]
+            weight_batch = self.action_bridge_net(z_t_batch, actions_batch)  # [batch_size, num_agents]
+            DR_correction_batch = weight_batch * error_batch  # [batch_size, num_agents]
+            
+            # === 2. Create action matrices for all counterfactual actions ===
+            # For each sample, create action_dim versions with different actions for agent_id
+            # Shape: [batch_size, action_dim, num_agents]
+            action_matrix = actions_batch.unsqueeze(1).repeat(1, self.action_dim, 1)
+            action_range = torch.arange(self.action_dim, device=self.device).unsqueeze(0).repeat(batch_size, 1)
+            action_matrix[:, :, agent_id] = action_range
+            
+            # Reshape for batch processing: [batch_size * action_dim, num_agents]
+            action_matrix_flat = action_matrix.view(batch_size * self.action_dim, self.num_agents)
+            
+            # Expand w_t for all counterfactual actions: [batch_size * action_dim, w_dim]
+            w_t_expanded = w_t_batch.unsqueeze(1).repeat(1, self.action_dim, 1).view(batch_size * self.action_dim, -1)
+            
+            # Get all counterfactual reward predictions: [batch_size * action_dim, num_agents]
+            reg_estimates_flat = self.outcome_bridge_net(action_matrix_flat, w_t_expanded)
+            
+            # Add DR correction: [batch_size, action_dim, num_agents]
+            reg_estimates = reg_estimates_flat.view(batch_size, self.action_dim, self.num_agents)
+            r_hat_all = reg_estimates + DR_correction_batch.unsqueeze(1)
+            
+            # === 3. Get policy probabilities for agent i ===
+            action_logits = self.agents[agent_id].policy_net(o_t_batch)  # [batch_size, action_dim]
+            action_probs = torch.softmax(action_logits, dim=-1)  # [batch_size, action_dim]
+            
+            # === 4. Extract factual and counterfactual predictions ===
+            # Factual action indices: [batch_size]
+            factual_actions = actions_batch[:, agent_id]
+            
+            # Gather factual predictions: [batch_size, num_agents]
+            # predicted reward vector for factual action
+            r_hat_factual = r_hat_all[torch.arange(batch_size, device=self.device), factual_actions]
+            # Get factual probabilities: [batch_size]
+            # prob_factual = action_probs[torch.arange(batch_size, device=self.device), factual_actions]
+            
+            # === 5. Compute counterfactual baseline ===
+            # Create mask for counterfactual actions: [batch_size, action_dim]
+            mask = torch.ones(batch_size, self.action_dim, dtype=torch.bool, device=self.device)
+            mask[torch.arange(batch_size, device=self.device), factual_actions] = False
+            
+            # Zero out the rewards of the factual actions as well to ensure they don't contribute
+            r_hat_all_masked = r_hat_all.clone()
+            '''
+            # Baseline using policy probabilities
+            probs_counterfactuals = action_probs.clone()
+            probs_counterfactuals[~mask] = 0.0
+            sum_probs_counterfactuals = probs_counterfactuals.sum(dim=1, keepdim=True)
+            weighted_sum_rewards = (probs_counterfactuals.unsqueeze(2) * r_hat_all_masked).sum(dim=1)
+            baseline = weighted_sum_rewards / (sum_probs_counterfactuals + 1e-8)
+            '''
+            # mask is [B, A], needs to be expanded for [B, A, N]
+            r_hat_all_masked[~mask.unsqueeze(-1).expand_as(r_hat_all)] = 0.0
+            # Compute the number of counterfactual actions for each batch element
+            counterfactual_count = mask.sum(dim=1, keepdim=True).clamp(min=1).to(r_hat_all_masked.dtype)
+            # Compute the final baseline as the simple average of counterfactual rewards
+            baseline = r_hat_all_masked.sum(dim=1) / (counterfactual_count + 1e-8) # Shape: [B, N]
+            
+            # === 6. Compute causal effect vector ===
+            causal_effect_vector = r_hat_factual - baseline  # [B, N]
+            # causal_effect_vector = rewards_batch - baseline  # [B, N]
+            
+            # # TEST: consider my reward
+            # Delta_batch = causal_effect_vector.mean(dim=1)
+            
+            # === 7. Extract effects for other agents ===
+            # Create mask for other agents: [num_agents]
+            other_agents_mask = torch.ones(self.num_agents, dtype=torch.bool, device=self.device)
+            other_agents_mask[agent_id] = False
+            
+            # Get effects for other agents: [batch_size, num_agents-1]
+            causal_effects_others = causal_effect_vector[:, other_agents_mask]
+            if causal_effects_others.size(1) > 0:
+                Delta_batch = causal_effects_others.max(dim=1)[0] # why [0]? because max returns a tuple (value, index)
+                # Delta_batch = causal_effects_others.mean(dim=1) 
+            else:
+                Delta_batch = torch.zeros(batch_size, device=self.device)
 
+        # TEST: Optimal Delta_batch to test how policy is updated with assumption that bridge networks are optimal.
+        # -------------------------------------------------------------
+        # Delta_batch = torch.zeros(batch_size, device=self.device)
+        # find where the rewards are 5.0 and set corresponding Delta_batch element to 5.0
+        # rule: if agent_id is zero, check last agent's reward and else check (agent_id-1) agent reward 
+        # if agent_id == 0:
+        #     Delta_batch[rewards_batch[:, (self.num_agents-1)] == 5.0] = 5.0
+        # else:
+        #     Delta_batch[rewards_batch[:, (agent_id-1)] == 5.0] = 5.0    
+        # -------------------------------------------------------------
+       
+        # Check performance of bridge networks
+        # if agent_id == 0:
+        #     print("r_pred_batch", r_pred_batch[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("error_batch", error_batch[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("r_hat_all", r_hat_all[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("r_hat_factual", r_hat_factual[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("baseline", baseline[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("Delta_batch", Delta_batch[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        # else:
+        #     print("r_pred_batch", r_pred_batch[rewards_batch[:, (agent_id-1)] == 5.0])    
+        #     print("error_batch", error_batch[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("r_hat_all", r_hat_all[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("factual_actions", factual_actions[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("baseline", baseline[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("Delta_batch", Delta_batch[rewards_batch[:, (agent_id-1)] == 5.0])
+
+        return Delta_batch
+    '''
+    def hamilton_divide_agent_i_action(
+        self,
+        agent_id: int,
+        w_t_batch: torch.Tensor,      # [batch_size, w_dim]
+        z_t_batch: torch.Tensor,      # [batch_size, z_dim]
+        o_t_batch: torch.Tensor,      # [batch_size, obs_dim]
+        actions_batch: torch.Tensor,  # [batch_size, num_agents]
+        rewards_batch: torch.Tensor,  # [batch_size, num_agents]
+    ) -> torch.Tensor:
+        """
+        all operation should be vectorized like causal_intrinsic_reward_batch
+        """
+        # Compute expected reward by counter factual actions using bridge networks
+        # E_{(a^i_t)'~\pi^i}[1^T r(o_t, {(a^i_t)', a^{-i}_t})]
+        
+        # Compute term (A): actual reward 1^T r - E_{(a^i_t)'~\pi^i}[1^T r(o_t, {(a^i_t)', a^{-i}_t})]
+
+        # Compute counterfatual value using current value function
+        # E_{(a^i_t)'~\pi^i, o^i_{t+1}~T(o^i_t, a^i_t)}[V^i(o^i_{t+1})]
+
+        # Compute term (B): 
+        # V^i(o^i_{t+1}) - E_{(a^i_t)'~\pi^i, o^i_{t+1}~T(o^i_t, a^i_t)}[V^i(o^i_{t+1})]
+
+        # Compute output:
+        # delta^i_[t_1:t_T] = delta_batch = term (A) - term (B) (length of batch is T)
+        
+        return delta_batch
+    '''
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
         """
         Updates agent policies and the centralized value function.
@@ -774,6 +987,7 @@ class PCIMAPPOAlgorithm:
 
         # === 1. Collect Agent-specific Shaped Rewards and Delta Statistics ===
         all_agent_shaped_rewards = {}
+        all_agent_rewards = {}  # Original rewards for value network
         all_agent_dones = {}
         
         # Delta statistics for wandb logging
@@ -783,6 +997,12 @@ class PCIMAPPOAlgorithm:
             'stag_reward': []
         }
         
+        # Prepare batch data for vectorized computation
+        w_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data]).to(self.device)
+        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device)
+        actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
+        rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
+        
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
                 
@@ -791,26 +1011,27 @@ class PCIMAPPOAlgorithm:
             agent_dones = torch.tensor([t['dones'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             
             shaped_rewards = []
+            # Use vectorized batch computation
             with torch.no_grad():
+                Delta_batch = self.causal_intrinsic_reward_batch(
+                    agent_id, w_t_batch, z_t_batch, agent_obs, actions_batch, rewards_batch
+                )
+                
+                # Compute shaped rewards
+                shaped_rewards = agent_rewards + self.get_current_causal_lambda() * Delta_batch
+                
+                # Collect delta statistics for wandb logging
                 for t, transition in enumerate(batch_data):
-                    z_t = self._concatenate_observations(transition['bold_o_t_minus_1'])
-                    w_t = self._concatenate_observations(transition['bold_o_t'])
-                    Delta_t, _ = self.causal_intrinsic_reward(
-                        agent_id, w_t, z_t, agent_obs[t],
-                        transition['bold_a_t'], transition['bold_r_t']
-                    )
-                    shaped_reward = agent_rewards[t] + self.get_current_causal_lambda() * Delta_t
-                    shaped_rewards.append(shaped_reward)
-                    
-                    # Collect delta statistics for wandb logging
                     scenario = self._classify_delta_scenario(transition, agent_id)
-                    delta_stats[scenario].append(Delta_t)
+                    delta_stats[scenario].append(Delta_batch[t].item())
             
-            all_agent_shaped_rewards[agent_id] = torch.tensor(shaped_rewards, dtype=torch.float32, device=self.device)
+            all_agent_shaped_rewards[agent_id] = shaped_rewards
+            all_agent_rewards[agent_id] = agent_rewards
             all_agent_dones[agent_id] = agent_dones
 
-        # === 2. Compute Individual Agent Returns for Value Network (from SHAPED rewards) ===
+        # === 2. Compute Individual Agent Returns/Advantages using SHAPED rewards ===
         agent_returns = {}
+        agent_advantages = {}
         agent_values = {}
         next_agent_values = {}
         
@@ -822,7 +1043,7 @@ class PCIMAPPOAlgorithm:
             with torch.no_grad():
                 agent_values[agent_id] = self.value_net(agent_obs_tensors[agent_id]).squeeze()
             
-            # Compute returns for this agent using its shaped rewards
+            # Estimate next state value for bootstrapping the SHAPED-return calculation
             with torch.no_grad():
                 last = batch_data[-1]
                 is_terminal = all_agent_dones[agent_id][-1].item()
@@ -832,13 +1053,14 @@ class PCIMAPPOAlgorithm:
                 else:
                     next_agent_values[agent_id] = 0.0
 
-            _, returns_agent_shaped = self.compute_gae(
+            advantages_shaped, returns_agent_shaped = self.compute_gae(
                 all_agent_shaped_rewards[agent_id].tolist(), 
                 agent_values[agent_id].tolist(), 
                 next_agent_values[agent_id], 
                 all_agent_dones[agent_id].tolist()
             )
             agent_returns[agent_id] = torch.tensor(returns_agent_shaped, dtype=torch.float32, device=self.device)
+            agent_advantages[agent_id] = torch.tensor(advantages_shaped, dtype=torch.float32, device=self.device)
 
         # === Agent-Specific Policy Updates ===
         for agent_id in range(self.num_agents):
@@ -852,18 +1074,8 @@ class PCIMAPPOAlgorithm:
                 logits = self.agents[agent_id].policy_net(agent_obs)
                 old_log_probs_tensor = F.log_softmax(logits, dim=-1).gather(1, agent_actions.unsqueeze(1)).squeeze(1)
 
-            shaped_rewards_tensor = all_agent_shaped_rewards[agent_id]
-            agent_dones = all_agent_dones[agent_id]
-            
-            # 3. GAE for the POLICY update (using agent-specific SHAPED rewards)
-            # The baseline for this GAE is the individual agent value function estimate.
-            advantages_shaped, _ = self.compute_gae(
-                shaped_rewards_tensor.tolist(), 
-                agent_values[agent_id].tolist(), # Use individual agent value as baseline
-                next_agent_values[agent_id], 
-                agent_dones.tolist()
-            )
-            advantages_tensor = torch.tensor(advantages_shaped, dtype=torch.float32, device=self.device)
+            # 3. Advantage for the POLICY update (using agent-specific SHAPED rewards)
+            advantages_tensor = agent_advantages[agent_id]
             advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
 
             # === PPO Policy Update Loop (for this agent) ===
@@ -947,8 +1159,14 @@ class PCIMAPPOAlgorithm:
         for batch_data in batches:
             if not batch_data: continue
             
-            # Phase 1: Update Causal Networks
-            causal_losses = self.update_causal_networks(batch_data)
+            # Phase 1: Update Causal Networks (only if causal lambda > 0)
+            if self.get_current_causal_lambda() > 0.0:
+                causal_losses = self.update_causal_networks(batch_data, mc_samples_k_w2=16)
+            else:
+                causal_losses = {
+                    'outcome_bridge_loss': 0.0,
+                    'action_bridge_loss': 0.0,
+                }
             
             # Phase 2: Update Agent Policies and Value Function
             agent_and_value_losses = self.update_agents(batch_data)

@@ -87,7 +87,7 @@ class MLPBase(nn.Module):
     
     def __init__(
         self,
-        obs_dim: int,
+        input_dim: int,
         hidden_size: int = 64,
         layer_N: int = 1,
         use_feature_normalization: bool = False,
@@ -102,11 +102,11 @@ class MLPBase(nn.Module):
 
         # Feature normalization
         if self._use_feature_normalization:
-            self.feature_norm = nn.LayerNorm(obs_dim)
+            self.feature_norm = nn.LayerNorm(input_dim)
 
         # Main MLP
         self.mlp = MLPLayer(
-            obs_dim, 
+            input_dim, 
             hidden_size,
             layer_N, 
             use_orthogonal, 
@@ -119,7 +119,7 @@ class MLPBase(nn.Module):
         Forward pass through MLP base.
         
         Args:
-            x: Input observations [batch_size, obs_dim]
+            x: Input observations [batch_size, input_dim]
             
         Returns:
             features: Encoded features [batch_size, hidden_size]

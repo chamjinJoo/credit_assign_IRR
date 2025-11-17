@@ -22,6 +22,11 @@ def create_algorithm(env, config):
     network_config = config.network
     algorithm_config = config.algorithm
     
+    # Get required_agents from environment if available (for StagHunt)
+    env_required_agents = None
+    if hasattr(env, 'required_agents'):
+        env_required_agents = env.required_agents
+    
     algorithm = PCIMAPPOAlgorithm(
         num_agents=env.num_agents,
         obs_dim=env.get_obs_dim(),
@@ -52,6 +57,8 @@ def create_algorithm(env, config):
         device=config.training.device,
         # RKHS Kernel parameters for analytical loss
         rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
+        # Environment required_agents for accurate scenario classification
+        env_required_agents=env_required_agents,
     )
     return algorithm
 
@@ -76,7 +83,7 @@ def run_causal_evaluation(env, algorithm, args, logger):
     evaluator = CausalEffectEvaluator(
         algorithm=algorithm,
         env=env,
-        num_eval_episodes=100,
+        num_eval_steps=1000,
         device=algorithm.device
     )
     
@@ -93,6 +100,14 @@ def run_causal_evaluation(env, algorithm, args, logger):
     # 플롯 생성 및 저장
     plot_path = os.path.join(results_dir, 'causal_effect_plot.png')
     evaluator.plot_causal_effects(statistics, save_path=plot_path)
+    
+    # t-SNE plot 생성
+    tsne_path = os.path.join(results_dir, 'observation_tsne.png')
+    logger.info("Observation t-SNE 분석 시작...")
+    evaluator.plot_tsne_observations(
+        save_path=tsne_path,
+        perplexity=30
+    )
     
     logger.info(f"Causal effect 평가 완료. 결과가 저장되었습니다: {results_dir}")
 
@@ -149,6 +164,14 @@ def main():
     
     # Create trainer
     logger.info("Creating trainer...")
+    
+    # Test 모드인 경우 checkpoint 저장 비활성화
+    is_test_mode = hasattr(args, 'test') and args.test
+    trainer_save_dir = None if is_test_mode else config.training.save_dir
+    
+    if is_test_mode:
+        logger.info("Test mode: Model checkpoint saving disabled")
+    
     trainer = PCIMAPPOTrainer(
         env=env,
         algorithm=algorithm,
@@ -158,13 +181,12 @@ def main():
         save_interval=config.training.save_interval,
         eval_interval=config.training.eval_interval,
         eval_episodes=config.training.eval_episodes,
-        save_dir=config.training.save_dir,
+        save_dir=trainer_save_dir,
         use_wandb=config.wandb.use_wandb,
         wandb_project=config.wandb.project,
         wandb_run_name=config.wandb.run_name,
         device=device
     )
-    
     # Check for evaluation or test mode
     if hasattr(args, 'eval') and args.eval:
         if args.checkpoint:
@@ -187,12 +209,45 @@ def main():
             logger.info("No checkpoint provided, using random policy")
         
         logger.info("Running test...")
+        
+        # Ask user about animation saving
+        save_animation = input("Test episode들을 animation으로 저장하시겠습니까? (y/n): ").lower().strip()
+        save_animation = save_animation in ['y', 'yes', '예', 'ㅇ']
+        
+        if save_animation:
+            animation_dir = input("Animation 저장 디렉토리를 입력하세요 (기본값: ./animations): ").strip()
+            if not animation_dir:
+                animation_dir = "./animations"
+            logger.info(f"Animation 저장 디렉토리: {animation_dir}")
+        
+        # Test 모드에서 advanced causal evaluation 결과를 저장하기 위해 임시 save_dir 설정
+        if args.checkpoint:
+            # checkpoint 파일이 있으면 그 디렉토리를 사용
+            checkpoint_dir = os.path.dirname(args.checkpoint)
+            temp_save_dir = checkpoint_dir
+        else:
+            # checkpoint가 없으면 현재 디렉토리에 test_results 폴더 생성
+            temp_save_dir = "./test_results"
+            os.makedirs(temp_save_dir, exist_ok=True)
+        
+        # Temporarily set save_dir for evaluation results only
+        original_save_dir = trainer.save_dir
+        trainer.save_dir = temp_save_dir
+        
         test_results = trainer.test_policy(
-            num_episodes=50,
+            num_episodes=10,
             render=getattr(args, 'render', False),
-            evaluate_causal_effects=True
+            save_animation=save_animation,
+            animation_dir=animation_dir if save_animation else "./animations",
+            evaluate_advanced_causal=True,
+            advanced_causal_steps=5000,
         )
+        
+        # Restore original save_dir (None for test mode)
+        trainer.save_dir = original_save_dir
+        
         logger.info(f"Test results: {test_results}")
+        logger.info(f"Advanced causal evaluation results saved to: {temp_save_dir}/advanced_causal_evaluation")
         return
     
     # Resume from checkpoint if provided

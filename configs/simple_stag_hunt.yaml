@@ -23,7 +23,7 @@ algorithm:
   causal_lambda_final: 0.2
   causal_lambda_warmup_steps: 1000
   causal_lambda_startingpoint: 0
-  num_batches: 4
+  num_batches: 2
 
 # Training Configuration
 training:

@@ -1,0 +1,14 @@
+# checkpoints
+checkpoints/
+
+# logs
+logs/
+
+# tensorboard
+tensorboard/
+
+# wandb
+wandb/
+
+# __pycache__
+__pycache__/

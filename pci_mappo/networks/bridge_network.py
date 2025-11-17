@@ -19,7 +19,6 @@ class BridgeNetwork(nn.Module):
         action_embedding_dim: int = 8
     ):
         super(BridgeNetwork, self).__init__()
-        
         self.action_dim = action_dim
         self.num_agents = num_agents
         self.w_dim = w_dim
@@ -35,11 +34,11 @@ class BridgeNetwork(nn.Module):
         
         # Bridge network with 3 hidden layers
         self.bridge_network = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
+            nn.Linear(input_dim, 3*hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(3*hidden_dim, 2*hidden_dim),
             nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(2*hidden_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, outcome_dim)
         )

@@ -1,0 +1,1427 @@
+import os
+import time
+import numpy as np
+import torch
+import wandb
+from typing import Dict, List, Optional, Any
+from collections import defaultdict, deque
+import logging
+from tqdm import tqdm
+from datetime import datetime
+import matplotlib.pyplot as plt
+import matplotlib.animation as animation
+
+from ..algorithms import PCIMAPPOAlgorithm
+from ..envs import MultiAgentEnv, dict_to_tensor
+from ..utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
+
+
+class PCIMAPPOTrainer:
+    """
+    Main trainer for PCI-MAPPO algorithm.
+    Implements the training loop following the pseudocode.
+    """
+    
+    def __init__(
+        self,
+        env: MultiAgentEnv,
+        algorithm: PCIMAPPOAlgorithm,
+        max_iterations: int = 1000,
+        max_steps_per_iteration: int = 2048,
+        log_interval: int = 10,
+        save_interval: int = 100,
+        eval_interval: int = 50,
+        eval_episodes: int = 10,
+        save_dir: str = "./checkpoints",
+        use_wandb: bool = False,
+        wandb_project: str = "pci-mappo",
+        wandb_run_name: Optional[str] = None,
+        device: str = "cpu"
+    ):
+        self.env = env
+        self.algorithm = algorithm
+        self.max_iterations = max_iterations
+        self.max_steps_per_iteration = max_steps_per_iteration
+        self.log_interval = log_interval
+        self.save_interval = save_interval
+        self.eval_interval = eval_interval
+        self.eval_episodes = eval_episodes
+        self.base_save_dir = save_dir
+        self.use_wandb = use_wandb
+        self.device = device
+        
+        # Store reproducibility info
+        self.seed = getattr(self, 'seed', None)
+        self.deterministic = getattr(self, 'deterministic', True)
+        
+        # Initialize logging first
+        self.logger = Logger()
+        self.metrics_tracker = MetricsTracker()
+        
+        # Initialize causal effect evaluator
+        CausalEffectEvaluator = get_causal_evaluator()
+        self.causal_evaluator = CausalEffectEvaluator(
+            algorithm=algorithm,
+            env=env,
+            num_eval_steps=5000,  # 기본값으로 5000 스텝 설정
+            device=device
+        )
+        
+        # Initialize advanced causal effect evaluator
+        AdvancedCausalEvaluator = get_advanced_causal_evaluator()
+        self.advanced_causal_evaluator = AdvancedCausalEvaluator(
+            algorithm=algorithm,
+            env=env,
+            num_eval_steps=5000,  # 기본값으로 5000 스텝 설정
+            device=device
+        )
+        
+        # Create structured save directory for this simulation (only if save_dir is provided)
+        if save_dir is not None:
+            self.save_dir = self._create_simulation_directory()
+            os.makedirs(self.save_dir, exist_ok=True)
+            
+            # Save simulation metadata
+            self._save_simulation_metadata()
+        else:
+            self.save_dir = None
+        
+        # Initialize wandb if requested
+        if use_wandb:
+            wandb.init(
+                project=wandb_project,
+                name=wandb_run_name,
+                config={
+                    "num_agents": env.num_agents,
+                    "obs_dim": env.get_obs_dim(),
+                    "action_dim": env.get_action_dim(),
+                    "max_iterations": max_iterations,
+                    "max_steps_per_iteration": max_steps_per_iteration,
+                }
+            )
+            
+            # Define metrics for better visualization
+            wandb.define_metric("iteration")
+            wandb.define_metric("causal_effect/*", step_metric="iteration")
+            wandb.define_metric("rollout/*", step_metric="iteration")
+            wandb.define_metric("update/*", step_metric="iteration")
+            wandb.define_metric("eval/*", step_metric="iteration")
+            
+            # Add summary information for causal effect metrics
+            wandb.summary.update({
+                "causal_effect_description": "Delta values for different reward scenarios in StagHunt environment",
+                "reward_scenarios": {
+                    "no_reward": "Other agent receives no reward (0.0)",
+                    "forage_reward": "Other agent receives forage reward (3.0)", 
+                    "stag_reward": "Other agent receives stag reward (5.0)"
+                },
+                "reproducibility": {
+                    "seed": getattr(self, 'seed', 'unknown'),
+                    "deterministic": getattr(self, 'deterministic', 'unknown')
+                }
+            })
+        
+        # Training state
+        self.iteration = 0
+        self.total_steps = 0
+        self.best_eval_reward = float('-inf')
+        
+        # Episode statistics
+        self.episode_rewards = defaultdict(list)
+        self.episode_lengths = []
+        self.recent_rewards = deque(maxlen=100)
+    
+    def _create_simulation_directory(self) -> str:
+        """Create structured directory for this simulation."""
+        # Get current timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        
+        # Get environment name
+        env_name = self.env.__class__.__name__.lower()
+        
+        # Create directory structure: base_dir/timestamp/env_name/checkpoints
+        sim_dir = os.path.join(
+            self.base_save_dir,
+            timestamp,
+            env_name,
+            "checkpoints"
+        )
+        
+        return sim_dir
+    
+    def _save_simulation_metadata(self):
+        """Save simulation configuration and metadata."""
+        import json
+        
+        # Create metadata directory
+        metadata_dir = os.path.dirname(self.save_dir)  # Remove 'checkpoints' from path
+        
+        metadata = {
+            "simulation_info": {
+                "timestamp": datetime.now().isoformat(),
+                "environment": self.env.__class__.__name__,
+                "num_agents": self.env.num_agents,
+                "obs_dim": self.env.get_obs_dim(),
+                "action_dim": self.env.get_action_dim()
+            },
+            "training_config": {
+                "max_iterations": self.max_iterations,
+                "max_steps_per_iteration": self.max_steps_per_iteration,
+                "log_interval": self.log_interval,
+                "save_interval": self.save_interval,
+                "eval_interval": self.eval_interval,
+                "eval_episodes": self.eval_episodes,
+                "device": self.device
+            },
+            "directories": {
+                "base_save_dir": self.base_save_dir,
+                "simulation_dir": self.save_dir,
+                "checkpoint_dir": self.save_dir
+            }
+        }
+        
+        # Save metadata
+        metadata_path = os.path.join(metadata_dir, "simulation_config.json")
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+        
+        # Also save a simple readme
+        readme_path = os.path.join(metadata_dir, "README.txt")
+        with open(readme_path, 'w') as f:
+            f.write(f"PCI-MAPPO Training Simulation\n")
+            f.write(f"=" * 40 + "\n\n")
+            f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+            f.write(f"Environment: {self.env.__class__.__name__}\n")
+            f.write(f"Agents: {self.env.num_agents}\n")
+            f.write(f"Max Iterations: {self.max_iterations}\n")
+            f.write(f"Steps per Iteration: {self.max_steps_per_iteration}\n")
+            f.write(f"Total Steps: {self.max_iterations * self.max_steps_per_iteration:,}\n\n")
+            f.write(f"Directory Structure:\n")
+            f.write(f"  checkpoints/     - Model checkpoints\n")
+            f.write(f"  logs/           - Training logs (if enabled)\n")
+            f.write(f"  results/        - Evaluation results (if enabled)\n")
+        
+        self.logger.info(f"Simulation metadata saved to: {metadata_dir}")
+        self.logger.info(f"Checkpoint directory: {self.save_dir}")
+    
+
+    
+    def _save_training_summary(self, total_time: float, final_eval: Dict[str, float]):
+        """Save final training summary and results."""
+        import json
+        
+        # Create results directory
+        results_dir = os.path.join(os.path.dirname(self.save_dir), "results")
+        os.makedirs(results_dir, exist_ok=True)
+        
+        # Training summary
+        summary = {
+            "training_completed": datetime.now().isoformat(),
+            "total_time_seconds": total_time,
+            "total_time_hours": total_time / 3600,
+            "iterations_completed": self.max_iterations,
+            "total_steps": self.max_iterations * self.max_steps_per_iteration,
+            "average_time_per_iteration": total_time / self.max_iterations,
+            "best_eval_reward": self.best_eval_reward,
+            "final_evaluation": final_eval
+        }
+        
+        # Save summary
+        summary_path = os.path.join(results_dir, "training_summary.json")
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+        
+        # Save training metrics (if available)
+        if hasattr(self, 'metrics_tracker') and hasattr(self.metrics_tracker, 'get_all_metrics'):
+            metrics_path = os.path.join(results_dir, "training_metrics.json")
+            try:
+                metrics = self.metrics_tracker.get_all_metrics()
+                with open(metrics_path, 'w') as f:
+                    json.dump(metrics, f, indent=2)
+            except:
+                pass  # Skip if metrics not available
+        
+        self.logger.info(f"Training summary saved to: {results_dir}")
+        self.logger.info(f"Final best reward: {self.best_eval_reward:.4f}")
+        
+    def train(self):
+        """Main training loop following PCI-MAPPO pseudocode."""
+        # Print training configuration
+        self.logger.info("=" * 60)
+        self.logger.info("PCI-MAPPO Training Configuration")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Environment: {self.env.__class__.__name__}")
+        self.logger.info(f"Number of agents: {self.env.num_agents}")
+        self.logger.info(f"Observation dimension: {self.env.get_obs_dim()}")
+        self.logger.info(f"Action dimension: {self.env.get_action_dim()}")
+        self.logger.info(f"Max iterations: {self.max_iterations}")
+        self.logger.info(f"Steps per iteration: {self.max_steps_per_iteration}")
+        self.logger.info(f"Total steps: {self.max_iterations * self.max_steps_per_iteration:,}")
+        self.logger.info(f"Log interval: {self.log_interval}")
+        self.logger.info(f"Eval interval: {self.eval_interval}")
+        self.logger.info(f"Save interval: {self.save_interval}")
+        self.logger.info(f"Device: {self.device}")
+        self.logger.info(f"Wandb: {self.use_wandb}")
+        self.logger.info("=" * 60)
+        
+        start_time = time.time()
+        
+        # Use tqdm for progress tracking
+        with tqdm(total=self.max_iterations, desc="Training Progress", unit="iter") as pbar:
+            for iteration in range(self.max_iterations):
+                self.iteration = iteration
+                
+                # Data Collection Phase
+                rollout_data = self.collect_rollouts()
+                
+                # Training Phase
+                update_info = self.algorithm.update()
+                
+                # Log metrics (only for logging, not displayed in tqdm)
+                if iteration % self.log_interval == 0:
+                    self.log_training_metrics(rollout_data, update_info)
+                
+                # Evaluate policy
+                if iteration % self.eval_interval == 0:
+                    eval_info = self.evaluate_policy()
+                    self.log_evaluation_metrics(eval_info)
+                
+                # Save checkpoint
+                if iteration % self.save_interval == 0:
+                    self.save_checkpoint()
+                
+                # Update progress bar
+                pbar.update(1)
+        
+        total_time = time.time() - start_time
+        
+        # Print final results
+        self.logger.info("=" * 60)
+        self.logger.info("Training Completed!")
+        self.logger.info("=" * 60)
+        self.logger.info(f"Total training time: {total_time:.2f} seconds ({total_time/3600:.2f} hours)")
+        self.logger.info(f"Average time per iteration: {total_time/self.max_iterations:.2f} seconds")
+        self.logger.info(f"Total iterations completed: {self.max_iterations}")
+        self.logger.info(f"Total steps collected: {self.max_iterations * self.max_steps_per_iteration:,}")
+        
+        # Final evaluation and save
+        self.logger.info("Running final evaluation...")
+        final_eval = self.evaluate_policy()
+        mean_reward = final_eval.get('eval_mean_reward', 'N/A')
+        if isinstance(mean_reward, (int, float)):
+            self.logger.info(f"Final evaluation reward: {mean_reward:.4f}")
+        else:
+            self.logger.info(f"Final evaluation reward: {mean_reward}")
+        self.save_checkpoint(is_final=True)
+        
+        # Save final training summary
+        self._save_training_summary(total_time, final_eval)
+        
+        if self.use_wandb:
+            wandb.finish()
+    
+    def collect_rollouts(self) -> Dict[str, Any]:
+        """
+        Collect rollouts for one iteration.
+        
+        Returns:
+            Dictionary containing rollout statistics
+        """
+        step_count = 0
+        episode_count = 0
+        episode_rewards = defaultdict(list)
+        episode_lengths = []
+        
+        while step_count < self.max_steps_per_iteration:
+            # Reset environment and agents
+            observations = self.env.reset()
+            self.algorithm.reset_agents()
+            # Convert observations to tensors
+            observations = dict_to_tensor(observations, device=self.algorithm.device)
+            
+            # Initialize previous observations (for first step, use zero vector since no previous observation exists)
+            prev_observations = {agent_id: torch.zeros_like(obs) for agent_id, obs in observations.items()}
+            
+            episode_reward = defaultdict(float)
+            episode_length = 0
+            done = False
+            
+            while not done and step_count < self.max_steps_per_iteration:
+                # Get actions from agents
+                actions = self.algorithm.get_actions(observations)
+                
+                # Convert actions for environment
+                env_actions = {agent_id: action for agent_id, (action, _) in actions.items()}
+                
+                # Take step in environment
+                next_observations, rewards, dones, info = self.env.step(env_actions)
+                
+                # Convert to tensors
+                next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
+                
+                # Store transition with proper causal structure (o_{t-1}, o_t, a_t, r_t, o_{t+1})
+                self.algorithm.store_transition(
+                    prev_observations=prev_observations,  # o_{t-1} (z_t)
+                    observations=observations,            # o_t (w_t)
+                    actions=env_actions,                  # a_t
+                    rewards=rewards,                      # r_t
+                    next_observations=next_observations,  # o_{t+1}
+                    dones=dones,
+                    info=info  # Environment info (e.g., stag_hunts, hare_hunts)
+                )
+                
+                # Update episode statistics
+                for agent_id, reward in rewards.items():
+                    episode_reward[agent_id] += reward
+                
+                # Update state: prev_observations = current observations, observations = next_observations
+                prev_observations = observations
+                observations = next_observations
+                episode_length += 1
+                step_count += 1
+                self.total_steps += 1
+                
+                # Check if episode is done
+                done = any(dones.values()) or episode_length >= 1000
+            
+            # Store episode statistics
+            for agent_id, total_reward in episode_reward.items():
+                episode_rewards[agent_id].append(total_reward)
+            
+            episode_lengths.append(episode_length)
+            episode_count += 1
+            
+            # Track recent rewards for logging
+            mean_episode_reward = np.mean(list(episode_reward.values()))
+            self.recent_rewards.append(mean_episode_reward)
+        
+        # Compile rollout data
+        rollout_data = {
+            'step_count': step_count,
+            'episode_count': episode_count,
+            'episode_rewards': dict(episode_rewards),
+            'episode_lengths': episode_lengths,
+            'mean_episode_reward': np.mean([np.mean(rewards) for rewards in episode_rewards.values()]),
+            'mean_episode_length': np.mean(episode_lengths)
+        }
+        
+        return rollout_data
+    
+    def evaluate_policy(self) -> Dict[str, float]:
+        """
+        Evaluate current policy for multiple episodes.
+        
+        Returns:
+            Dictionary containing evaluation metrics
+        """
+        eval_rewards = defaultdict(list)
+        eval_lengths = []
+        
+        for episode in range(self.eval_episodes):
+            # Reset environment and agents
+            observations = self.env.reset()
+            self.algorithm.reset_agents()
+            observations = dict_to_tensor(observations, device=self.algorithm.device)
+            
+            episode_reward = defaultdict(float)
+            episode_length = 0
+            done = False
+            
+            while not done and episode_length < 1000:
+                # Get actions (no exploration for evaluation)
+                with torch.no_grad():
+                    actions = {}
+                    for agent_id, obs in observations.items():
+                        action, _, = self.algorithm.agents[agent_id].get_action(obs)
+                        actions[agent_id] = action
+                
+                # Take step
+                next_observations, rewards, dones, info = self.env.step(actions)
+                next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
+                
+                # Update statistics
+                for agent_id, reward in rewards.items():
+                    episode_reward[agent_id] += reward
+                
+                observations = next_observations
+                episode_length += 1
+                done = any(dones.values())
+            
+            # Store episode data
+            for agent_id, total_reward in episode_reward.items():
+                eval_rewards[agent_id].append(total_reward)
+            eval_lengths.append(episode_length)
+        
+        # Compile evaluation metrics
+        eval_info = {
+            'eval_mean_reward': np.mean([np.mean(rewards) for rewards in eval_rewards.values()]),
+            'eval_std_reward': np.std([np.mean(rewards) for rewards in eval_rewards.values()]),
+            'eval_mean_length': np.mean(eval_lengths),
+            'eval_min_reward': np.min([np.mean(rewards) for rewards in eval_rewards.values()]),
+            'eval_max_reward': np.max([np.mean(rewards) for rewards in eval_rewards.values()])
+        }
+        
+        # Update best reward
+        if eval_info['eval_mean_reward'] > self.best_eval_reward:
+            self.best_eval_reward = eval_info['eval_mean_reward']
+            eval_info['is_best'] = True
+        else:
+            eval_info['is_best'] = False
+        
+        # Perform causal effect evaluation
+        try:
+            causal_stats = self.causal_evaluator.evaluate_causal_effects(num_eval_steps=1000)
+            eval_info['causal_effects'] = causal_stats
+            
+            # Log causal effect statistics
+            self.logger.info("Causal Effect Statistics:")
+            for scenario, stats in causal_stats.items():
+                self.logger.info(f"  {scenario}: mean={stats['mean']:.4f}, std={stats['std']:.4f}, count={stats['count']}")
+                
+        except Exception as e:
+            self.logger.warning(f"Failed to perform causal effect evaluation: {e}")
+            eval_info['causal_effects'] = None
+        
+        return eval_info
+    
+    def log_training_metrics(self, rollout_data: Dict[str, Any], update_info: Dict[str, float]):
+        """Log training metrics."""
+        # Log to console
+        self.logger.info(f"Iteration {self.iteration}")
+        self.logger.info(f"  Steps: {rollout_data['step_count']}")
+        self.logger.info(f"  Episodes: {rollout_data['episode_count']}")
+        self.logger.info(f"  Mean Episode Reward: {rollout_data['mean_episode_reward']:.3f}")
+        self.logger.info(f"  Mean Episode Length: {rollout_data['mean_episode_length']:.1f}")
+        
+        if update_info:
+            self.logger.info("  Update Info:")
+            for key, value in update_info.items():
+                if key.startswith('delta_'):
+                    # Format delta statistics nicely
+                    if key.endswith('_mean'):
+                        scenario = key.replace('delta_', '').replace('_mean', '')
+                        count_key = f'delta_{scenario}_count'
+                        if count_key in update_info:
+                            count = update_info[count_key]
+                            self.logger.info(f"    {key}: {value:.6f} (n={count})")
+                        else:
+                            self.logger.info(f"    {key}: {value:.6f}")
+                    elif key.endswith('_std'):
+                        scenario = key.replace('delta_', '').replace('_std', '')
+                        self.logger.info(f"    {key}: {value:.6f}")
+                    elif key.endswith('_count'):
+                        continue  # Skip count, already shown with mean
+                    else:
+                        self.logger.info(f"    {key}: {value:.6f}")
+                else:
+                    self.logger.info(f"    {key}: {value:.6f}")
+        
+        # Log to wandb
+        if self.use_wandb:
+            wandb_data = {
+                'iteration': self.iteration,
+                'total_steps': self.total_steps,
+                'rollout/mean_episode_reward': rollout_data['mean_episode_reward'],
+                'rollout/mean_episode_length': rollout_data['mean_episode_length'],
+                'rollout/episodes': rollout_data['episode_count']
+            }
+            
+            # Add agent-specific rewards
+            for agent_id, rewards in rollout_data['episode_rewards'].items():
+                wandb_data[f'rollout/agent_{agent_id}_mean_reward'] = np.mean(rewards)
+            
+            # Add update info
+            for key, value in update_info.items():
+                wandb_data[f'update/{key}'] = value
+            
+            # Add delta statistics for causal reward shaping
+            # Group by scenario for better visualization
+            delta_scenarios = ['no_reward', 'forage_reward', 'stag_reward']
+            for scenario in delta_scenarios:
+                mean_key = f'delta_{scenario}_mean'
+                std_key = f'delta_{scenario}_std'
+                count_key = f'delta_{scenario}_count'
+                
+                if mean_key in update_info:
+                    # Use consistent naming for wandb to group them in one plot
+                    wandb_data[f'causal_effect/delta_{scenario}'] = update_info[mean_key]
+                    # Also log std and count separately for reference
+                    if std_key in update_info:
+                        wandb_data[f'causal_effect/delta_{scenario}_std'] = update_info[std_key]
+                    if count_key in update_info:
+                        wandb_data[f'causal_effect/delta_{scenario}_count'] = update_info[count_key]
+            
+            wandb.log(wandb_data, step=self.iteration)
+    
+    def log_evaluation_metrics(self, eval_info: Dict[str, float]):
+        """Log evaluation metrics."""
+        self.logger.info("Evaluation Results:")
+        self.logger.info(f"  Mean Reward: {eval_info['eval_mean_reward']:.3f} ± {eval_info['eval_std_reward']:.3f}")
+        self.logger.info(f"  Mean Length: {eval_info['eval_mean_length']:.1f}")
+        self.logger.info(f"  Min/Max Reward: {eval_info['eval_min_reward']:.3f} / {eval_info['eval_max_reward']:.3f}")
+        
+        if eval_info['is_best']:
+            self.logger.info("  *** New best performance! ***")
+        
+        if self.use_wandb:
+            wandb_data = {
+                'eval/mean_reward': eval_info['eval_mean_reward'],
+                'eval/std_reward': eval_info['eval_std_reward'],
+                'eval/mean_length': eval_info['eval_mean_length'],
+                'eval/min_reward': eval_info['eval_min_reward'],
+                'eval/max_reward': eval_info['eval_max_reward'],
+                'eval/best_reward': self.best_eval_reward
+            }
+            
+            # Add causal effect metrics to wandb
+            if 'causal_effects' in eval_info and eval_info['causal_effects'] is not None:
+                causal_stats = eval_info['causal_effects']
+                for scenario, stats in causal_stats.items():
+                    wandb_data[f'eval/causal_effect_{scenario}_mean'] = stats['mean']
+                    wandb_data[f'eval/causal_effect_{scenario}_std'] = stats['std']
+                    wandb_data[f'eval/causal_effect_{scenario}_count'] = stats['count']
+                
+                # Create and log causal effect plot to wandb
+                try:
+                    import matplotlib.pyplot as plt
+                    fig = self.causal_evaluator.plot_causal_effects(
+                        causal_stats, 
+                        return_figure=True
+                    )
+                    if fig is not None:
+                        wandb_data[f'eval/causal_effect_plot'] = wandb.Image(fig)
+                        plt.close(fig)  # Clean up memory
+                except Exception as e:
+                    self.logger.warning(f"Failed to create causal effect plot for wandb: {e}")
+            
+            wandb.log(wandb_data, step=self.iteration)
+    
+    def save_checkpoint(self, is_final: bool = False):
+        """Save training checkpoint."""
+        # Skip saving if save_dir is None (testing mode)
+        if self.save_dir is None:
+            return
+            
+        checkpoint = {
+            'iteration': self.iteration,
+            'total_steps': self.total_steps,
+            'best_eval_reward': self.best_eval_reward,
+            'algorithm_state': self.get_algorithm_state(),
+        }
+        
+        # Save checkpoint
+        if is_final:
+            checkpoint_path = os.path.join(self.save_dir, 'final_checkpoint.pt')
+        else:
+            checkpoint_path = os.path.join(self.save_dir, f'checkpoint_{self.iteration}.pt')
+        
+        torch.save(checkpoint, checkpoint_path, _use_new_zipfile_serialization=False)
+        self.logger.info(f"Checkpoint saved: {checkpoint_path}")
+        
+        # Save best model separately
+        if is_final or (hasattr(self, 'best_eval_reward') and self.best_eval_reward > float('-inf')):
+            best_path = os.path.join(self.save_dir, 'best_model.pt')
+            torch.save(checkpoint, best_path, _use_new_zipfile_serialization=False)
+    
+    def get_latest_checkpoint_path(self) -> Optional[str]:
+        """Get the path to the latest checkpoint."""
+        if self.save_dir is None or not os.path.exists(self.save_dir):
+            return None
+        
+        # Check for final checkpoint first
+        final_checkpoint = os.path.join(self.save_dir, 'final_checkpoint.pt')
+        if os.path.exists(final_checkpoint):
+            return final_checkpoint
+        
+        # Check for best model
+        best_checkpoint = os.path.join(self.save_dir, 'best_model.pt')
+        if os.path.exists(best_checkpoint):
+            return best_checkpoint
+        
+        # Find the latest iteration checkpoint
+        checkpoint_files = [f for f in os.listdir(self.save_dir) if f.startswith('checkpoint_') and f.endswith('.pt')]
+        if checkpoint_files:
+            # Sort by iteration number
+            checkpoint_files.sort(key=lambda x: int(x.split('_')[1].split('.')[0]))
+            latest_checkpoint = os.path.join(self.save_dir, checkpoint_files[-1])
+            return latest_checkpoint
+        
+        return None
+    
+    def get_algorithm_state(self) -> Dict[str, Any]:
+        """Get algorithm state for saving."""
+        state = {
+            'agents': {},
+            'outcome_bridge_net': self.algorithm.outcome_bridge_net.state_dict(),
+            'action_bridge_net': self.algorithm.action_bridge_net.state_dict(),
+            'critic_kernel_z': self.algorithm.critic_kernel_z.state_dict(),
+            'critic_kernel_w': self.algorithm.critic_kernel_w.state_dict(),
+            'action_embedding_for_kernel': self.algorithm.action_embedding_for_kernel.state_dict(),
+            'outcome_bridge_optimizer': self.algorithm.outcome_bridge_optimizer.state_dict(),
+            'action_bridge_optimizer': self.algorithm.action_bridge_optimizer.state_dict(),
+            'kernel_action_embed_optimizer': self.algorithm.kernel_action_embed_optimizer.state_dict(),
+        }
+        
+        # Save agent states
+        for agent_id, agent in self.algorithm.agents.items():
+            state['agents'][agent_id] = {
+                'policy_net': agent.policy_net.state_dict(),
+                'optimizer': agent.optimizer.state_dict(),
+            }
+        
+        # Save value networks and optimizers (support both individual and parameter sharing)
+        from ..utils.value_network_utils import is_value_network_shared
+        
+        if not is_value_network_shared(self.algorithm):
+            # Individual value networks
+            state['value_nets'] = {}
+            state['value_optimizers'] = {}
+            for agent_id, value_net in self.algorithm.value_nets.items():
+                state['value_nets'][agent_id] = value_net.state_dict()
+            
+            for agent_id, value_optimizer in self.algorithm.value_optimizers.items():
+                state['value_optimizers'][agent_id] = value_optimizer.state_dict()
+        else:
+            # Parameter sharing: save single value_net
+            if hasattr(self.algorithm, 'value_net'):
+                state['value_net'] = self.algorithm.value_net.state_dict()
+            if hasattr(self.algorithm, 'value_optimizer'):
+                state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
+        
+        return state
+    
+    def load_checkpoint(self, checkpoint_path: str):
+        """Load training checkpoint."""
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        
+        self.iteration = checkpoint['iteration']
+        self.total_steps = checkpoint['total_steps']
+        self.best_eval_reward = checkpoint['best_eval_reward']
+        
+        # Load algorithm state
+        algorithm_state = checkpoint['algorithm_state']
+        
+        # Load network states
+        self.algorithm.outcome_bridge_net.load_state_dict(algorithm_state['outcome_bridge_net'])
+        self.algorithm.action_bridge_net.load_state_dict(algorithm_state['action_bridge_net'])
+        self.algorithm.critic_kernel_z.load_state_dict(algorithm_state['critic_kernel_z'])
+        self.algorithm.critic_kernel_w.load_state_dict(algorithm_state['critic_kernel_w'])
+        self.algorithm.action_embedding_for_kernel.load_state_dict(algorithm_state['action_embedding_for_kernel'])
+        self.algorithm.outcome_bridge_optimizer.load_state_dict(algorithm_state['outcome_bridge_optimizer'])
+        self.algorithm.action_bridge_optimizer.load_state_dict(algorithm_state['action_bridge_optimizer'])
+        self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
+        
+        # Load agent states
+        for agent_id, agent_state in algorithm_state['agents'].items():
+            agent = self.algorithm.agents[int(agent_id)]
+            agent.policy_net.load_state_dict(agent_state['policy_net'])
+            agent.optimizer.load_state_dict(agent_state['optimizer'])
+        
+        # Load value networks and optimizers (support both individual and parameter sharing)
+        from ..utils.value_network_utils import is_value_network_shared
+        
+        if 'value_nets' in algorithm_state:
+            # Individual value networks
+            if hasattr(self.algorithm, 'value_nets'):
+                for agent_id, value_net_state in algorithm_state['value_nets'].items():
+                    self.algorithm.value_nets[int(agent_id)].load_state_dict(value_net_state)
+            else:
+                self.logger.warning("Checkpoint contains individual value networks but algorithm uses parameter sharing")
+        
+        if 'value_optimizers' in algorithm_state:
+            # Individual value optimizers
+            if hasattr(self.algorithm, 'value_optimizers'):
+                for agent_id, value_optimizer_state in algorithm_state['value_optimizers'].items():
+                    self.algorithm.value_optimizers[int(agent_id)].load_state_dict(value_optimizer_state)
+            else:
+                self.logger.warning("Checkpoint contains individual value optimizers but algorithm uses parameter sharing")
+        
+        # Parameter sharing (backward compatibility)
+        if 'value_net' in algorithm_state:
+            if hasattr(self.algorithm, 'value_net'):
+                self.algorithm.value_net.load_state_dict(algorithm_state['value_net'])
+                # If using individual networks, copy to all agents
+                if hasattr(self.algorithm, 'value_nets'):
+                    for agent_id in self.algorithm.value_nets.keys():
+                        self.algorithm.value_nets[agent_id].load_state_dict(algorithm_state['value_net'])
+            else:
+                self.logger.warning("Checkpoint contains shared value network but algorithm uses individual networks")
+        
+        if 'value_optimizer' in algorithm_state:
+            if hasattr(self.algorithm, 'value_optimizer'):
+                self.algorithm.value_optimizer.load_state_dict(algorithm_state['value_optimizer'])
+                # If using individual optimizers, copy to all agents
+                if hasattr(self.algorithm, 'value_optimizers'):
+                    for agent_id in self.algorithm.value_optimizers.keys():
+                        self.algorithm.value_optimizers[agent_id].load_state_dict(algorithm_state['value_optimizer'])
+            else:
+                self.logger.warning("Checkpoint contains shared value optimizer but algorithm uses individual optimizers")
+        
+        self.logger.info(f"Checkpoint loaded: {checkpoint_path}")
+        self.logger.info(f"Resuming from iteration {self.iteration}")
+    
+    def test_policy(
+        self, 
+        num_episodes: int = 10, 
+        render: bool = False, 
+        save_animation: bool = False, 
+        animation_dir: str = "./animations",
+        evaluate_advanced_causal: bool = False,
+        advanced_causal_steps: int = 5000,
+        evaluate_policy_quality: bool = True
+    ):
+        """
+        Test the trained policy.
+        
+        Args:
+            num_episodes: Number of episodes for basic policy testing
+            render: Whether to render the environment during testing
+            save_animation: Whether to save animations
+            animation_dir: Directory to save animations
+            evaluate_advanced_causal: Whether to run advanced causal effect evaluation
+            advanced_causal_steps: Number of env steps (interactions) for advanced causal evaluation (approximate)
+            evaluate_policy_quality: Whether to evaluate policy quality metrics for stag-hunt environment
+        """
+        self.logger.info(f"Testing policy for {num_episodes} episodes...")
+        
+        # Create animation directory if needed
+        if save_animation:
+            os.makedirs(animation_dir, exist_ok=True)
+            self.logger.info(f"Animation will be saved to: {animation_dir}")
+        
+        test_rewards = defaultdict(list)
+        test_lengths = []
+        
+        # Policy quality metrics for stag-hunt environment (agent-specific)
+        policy_metrics = {
+            'agents': {},  # agent별 지표 저장
+            'total_episodes': 0,
+            'total_steps': 0  # 총 스텝 수
+        }
+        
+        # Initialize agent-specific metrics (will be initialized after first reset)
+        agents_initialized = False
+        # Determine data collection method
+        if evaluate_policy_quality:
+            # Use step-based collection for policy quality evaluation
+            self.logger.info(f"Collecting policy quality data for {advanced_causal_steps} steps...")
+            step_count = 0
+            episode_count = 0
+            
+            # Reset policy bias buffers in evaluator (case-by-case and aggregated)
+            try:
+                from collections import defaultdict as _dd
+                # Initialize all data structures used for case-by-case study
+                self.advanced_causal_evaluator.object_choice_data = _dd(lambda: _dd(list))
+                if hasattr(self.advanced_causal_evaluator, 'object_choice_cases'):
+                    self.advanced_causal_evaluator.object_choice_cases = []
+                if hasattr(self.advanced_causal_evaluator, 'case_attempt_data'):
+                    self.advanced_causal_evaluator.case_attempt_data = _dd(lambda: _dd(list))
+                # Also reset detailed_causal_effects for clean statistics
+                if hasattr(self.advanced_causal_evaluator, 'detailed_causal_effects'):
+                    self.advanced_causal_evaluator.detailed_causal_effects = _dd(lambda: _dd(list))
+            except Exception as e:
+                self.logger.debug(f"Failed to reset evaluator data: {e}")
+
+            while step_count < advanced_causal_steps:
+                episode_count += 1
+                observations = self.env.reset()
+                self.algorithm.reset_agents()
+                observations = dict_to_tensor(observations, device=self.algorithm.device)
+                
+                # Initialize agent-specific metrics on first reset
+                if not agents_initialized:
+                    for agent_id in range(self.env.num_agents):
+                        policy_metrics['agents'][agent_id] = {
+                            'my_stag_hunting_utilization': 0.0,
+                            'coop_stag_hunting_utilization': 0.0,
+                            'other_stag_hunting_utilization': 0.0,
+                            'hare_hunting_utilization': 0.0,
+                            'my_stag_hunt_attempts': 0,
+                            'coop_stag_hunt_attempts': 0,
+                            'other_stag_hunt_attempts': 0,
+                            'hare_hunt_attempts': 0,
+                            'my_stag_opportunities': 0,
+                            'coop_stag_opportunities': 0,
+                            'other_stag_opportunities': 0,
+                            'hare_opportunities': 0
+                        }
+                    agents_initialized = True
+                
+                episode_reward = defaultdict(float)
+                episode_length = 0
+                done = False
+                
+                # metrics for policy quality evaluation (agent-specific)
+                agent_metrics = {}
+                for agent_id in range(self.env.num_agents):
+                    agent_metrics[agent_id] = {
+                        'my_stag_hunt_attempts': 0,
+                        'coop_stag_hunt_attempts': 0,
+                        'other_stag_hunt_attempts': 0,
+                        'hare_hunt_attempts': 0,
+                        'my_stag_opportunities': 0,
+                        'coop_stag_opportunities': 0,
+                        'other_stag_opportunities': 0,
+                        'hare_opportunities': 0
+                    }
+                
+                # Animation frames storage
+                frames = []
+                
+                while not done and step_count < advanced_causal_steps:
+                    # Render and capture frame for animation
+                    if (render or save_animation) and hasattr(self.env, 'render'):
+                        if save_animation:
+                            # Capture frame for animation
+                            frame = self.env.render(mode='rgb_array')
+                            if frame is not None:
+                                frames.append(frame.copy())
+                                self.logger.debug(f"Frame {len(frames)} captured for episode {episode_count}")
+                            else:
+                                self.logger.warning(f"Failed to capture frame for episode {episode_count}")
+                        else:
+                            # Regular rendering
+                            self.env.render()
+                    
+                    # Get actions (deterministic for testing)
+                    with torch.no_grad():
+                        actions = {}
+                        for agent_id, obs in observations.items():
+                            action, _ = self.algorithm.agents[agent_id].get_action(obs)
+                            actions[agent_id] = action
+                    
+                    # Take step
+                    next_observations, rewards, dones, info = self.env.step(actions)
+                    next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
+
+                    # Update statistics
+                    for agent_id, reward in rewards.items():
+                        episode_reward[agent_id] += reward
+                    
+                    # Collect policy quality metrics if enabled 
+                    if evaluate_policy_quality and 'huntable_objects' in info:
+                        huntable_objects = info['huntable_objects']
+                        agents_with_hare_opportunity = set()
+                        
+                        # Process stag opportunities (my_stag, coop_stag)
+                        if 'huntable_stags' in huntable_objects:
+                            for stag_id, stag_info in huntable_objects['huntable_stags'].items():
+                                required_agents = stag_info.get('required_agents', [])
+                                
+                                # 각 agent별로 my_stag vs coop_stag 구분
+                                for agent_id in range(self.env.num_agents):
+                                    if agent_id in required_agents:
+                                        # stag_id를 사냥할 때 reward를 받는 agent인지 확인
+                                        if agent_id == stag_id:
+                                            # my_stag: 내가 reward를 받을 stag
+                                            agent_metrics[agent_id]['my_stag_opportunities'] += 1
+                                        else:   
+                                            # coop_stag: 타인이 reward를 받는 stag를 도와줄 수 있는 기회
+                                            agent_metrics[agent_id]['coop_stag_opportunities'] += 1
+                        
+                        # Process other_stag opportunities (각 agent별로 자신이 required_agents에 포함되지 않은 stag)
+                        if 'other_stags_by_agent' in huntable_objects:
+                            for agent_id, other_stags in huntable_objects['other_stags_by_agent'].items():
+                                # 각 other_stag 기회마다 카운트
+                                for stag_id in other_stags.keys():
+                                    agent_metrics[agent_id]['other_stag_opportunities'] += 1
+                            
+                        # Process stag hunting attempts
+                        if 'stag_attempts' in info:
+                            for stag_id, attempting_agents in info['stag_attempts'].items():
+                                if not attempting_agents:
+                                    continue
+                                
+                                # huntable_stags에 있는 경우 (my_stag, coop_stag)
+                                if 'huntable_stags' in huntable_objects and stag_id in huntable_objects['huntable_stags']:
+                                    stag_info = huntable_objects['huntable_stags'][stag_id]
+                                    required_agents = stag_info.get('required_agents', [])
+                                    # 각 attempting agent별로 분류
+                                    for agent_id in attempting_agents:
+                                        if agent_id in required_agents:
+                                            if agent_id == stag_id:
+                                                agent_metrics[agent_id]['my_stag_hunt_attempts'] += 1
+                                            else:
+                                                agent_metrics[agent_id]['coop_stag_hunt_attempts'] += 1
+                                
+                                # other_stags_by_agent에 있는 경우 (other_stag)
+                                if 'other_stags_by_agent' in huntable_objects:
+                                    for agent_id in attempting_agents:
+                                        # 해당 agent의 other_stags에 이 stag_id가 있는지 확인
+                                        agent_other_stags = huntable_objects['other_stags_by_agent'].get(agent_id, {})
+                                        if stag_id in agent_other_stags:
+                                            agent_metrics[agent_id]['other_stag_hunt_attempts'] += 1
+                        
+                        # Process hare opportunities and attempts
+                        if 'huntable_hares' in huntable_objects:
+                            for hare_info in huntable_objects['huntable_hares']:
+                                hunting_agents = hare_info.get('hunting_agents', [])
+                                for agent_id in hunting_agents:
+                                    agents_with_hare_opportunity.add(agent_id)
+                                    agent_metrics[agent_id]['hare_opportunities'] += 1
+                        
+                        # Process hare hunting attempts (agent-specific)
+                        if 'hare_attempts' in info and 'huntable_hares' in huntable_objects:
+                            for agent_id in info['hare_attempts']:
+                                if agent_id in agents_with_hare_opportunity:
+                                    agent_metrics[agent_id]['hare_hunt_attempts'] += 1
+
+                        # Collect policy bias data for advanced evaluator (case-by-case)
+                        try:
+                            # Convert current observations (before step update) back to numpy
+                            obs_np = {aid: obs.detach().cpu().numpy() for aid, obs in observations.items()}
+                            self.advanced_causal_evaluator._collect_policy_bias_data(
+                                observations=obs_np,
+                                actions=actions,
+                                info=info
+                            )
+                        except Exception as e:
+                            self.logger.debug(f"Policy bias data collection failed: {e}")
+                    
+                    observations = next_observations
+                    episode_length += 1
+                    step_count += 1
+                    done = any(dones.values())
+                
+                # Save animation if requested
+                if save_animation:
+                    if frames:
+                        self.logger.info(f"Saving animation for episode {episode_count} with {len(frames)} frames")
+                        self._save_episode_animation(frames, episode_count - 1, animation_dir)
+                    else:
+                        self.logger.warning(f"No frames captured for episode {episode_count}")
+                
+                # Store episode data
+                for agent_id, total_reward in episode_reward.items():
+                    test_rewards[agent_id].append(total_reward)
+                test_lengths.append(episode_length)
+                
+                # Accumulate policy quality metrics (agent-specific)
+                if evaluate_policy_quality:
+                    for agent_id, agent_metrics in agent_metrics.items():
+                        policy_metrics['agents'][agent_id]['my_stag_hunt_attempts'] += agent_metrics['my_stag_hunt_attempts']
+                        policy_metrics['agents'][agent_id]['coop_stag_hunt_attempts'] += agent_metrics['coop_stag_hunt_attempts']
+                        policy_metrics['agents'][agent_id]['other_stag_hunt_attempts'] += agent_metrics['other_stag_hunt_attempts']
+                        policy_metrics['agents'][agent_id]['hare_hunt_attempts'] += agent_metrics['hare_hunt_attempts']
+                        policy_metrics['agents'][agent_id]['my_stag_opportunities'] += agent_metrics['my_stag_opportunities']
+                        policy_metrics['agents'][agent_id]['coop_stag_opportunities'] += agent_metrics['coop_stag_opportunities']
+                        policy_metrics['agents'][agent_id]['other_stag_opportunities'] += agent_metrics['other_stag_opportunities']
+                        policy_metrics['agents'][agent_id]['hare_opportunities'] += agent_metrics['hare_opportunities']
+                    policy_metrics['total_episodes'] += 1
+                    policy_metrics['total_steps'] = step_count
+                
+                mean_reward = np.mean(list(episode_reward.values()))
+                self.logger.info(f"Episode {episode_count}: Reward = {mean_reward:.3f}, Length = {episode_length}, Steps = {step_count}/{advanced_causal_steps}")
+        
+        else:
+            # Use episode-based collection for basic testing
+            for episode in range(num_episodes):
+                observations = self.env.reset()
+                self.algorithm.reset_agents()
+                observations = dict_to_tensor(observations, device=self.algorithm.device)
+                
+                episode_reward = defaultdict(float)
+                episode_length = 0
+                done = False
+                
+                # Animation frames storage
+                frames = []
+                
+                while not done and episode_length < 1000:
+                    # Render and capture frame for animation
+                    if (render or save_animation) and hasattr(self.env, 'render'):
+                        if save_animation:
+                            # Capture frame for animation
+                            frame = self.env.render(mode='rgb_array')
+                            if frame is not None:
+                                frames.append(frame.copy())
+                                self.logger.debug(f"Frame {len(frames)} captured for episode {episode + 1}")
+                            else:
+                                self.logger.warning(f"Failed to capture frame for episode {episode + 1}")
+                        else:
+                            # Regular rendering
+                            self.env.render()
+                    
+                    # Get actions (deterministic for testing)
+                    with torch.no_grad():
+                        actions = {}
+                        for agent_id, obs in observations.items():
+                            action, _ = self.algorithm.agents[agent_id].get_action(obs)
+                            actions[agent_id] = action
+                    
+                    # Take step
+                    next_observations, rewards, dones, info = self.env.step(actions)
+                    next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
+                    
+                    # Update statistics
+                    for agent_id, reward in rewards.items():
+                        episode_reward[agent_id] += reward
+                    
+                    observations = next_observations
+                    episode_length += 1
+                    done = any(dones.values())
+                
+                # Save animation if requested
+                if save_animation:
+                    if frames:
+                        self.logger.info(f"Saving animation for episode {episode + 1} with {len(frames)} frames")
+                        self._save_episode_animation(frames, episode, animation_dir)
+                    else:
+                        self.logger.warning(f"No frames captured for episode {episode + 1}")
+                
+                # Store episode data
+                for agent_id, total_reward in episode_reward.items():
+                    test_rewards[agent_id].append(total_reward)
+                test_lengths.append(episode_length)
+                
+                mean_reward = np.mean(list(episode_reward.values()))
+                self.logger.info(f"Episode {episode + 1}: Reward = {mean_reward:.3f}, Length = {episode_length}")
+        
+        # Log final statistics
+        overall_mean = np.mean([np.mean(rewards) for rewards in test_rewards.values()])
+        overall_std = np.std([np.mean(rewards) for rewards in test_rewards.values()])
+        mean_length = np.mean(test_lengths)
+        
+        self.logger.info("Test Results:")
+        self.logger.info(f"  Mean Reward: {overall_mean:.3f} ± {overall_std:.3f}")
+        self.logger.info(f"  Mean Length: {mean_length:.1f}")
+        
+        for agent_id, rewards in test_rewards.items():
+            agent_mean = np.mean(rewards)
+            agent_std = np.std(rewards)
+            self.logger.info(f"  Agent {agent_id}: {agent_mean:.3f} ± {agent_std:.3f}")
+        
+        # Calculate and log policy quality metrics (agent-specific)
+        if evaluate_policy_quality and policy_metrics['total_episodes'] > 0:
+            self.logger.info("\n" + "="*60)
+            self.logger.info("Policy Quality Evaluation (Stag-Hunt Environment)")
+            self.logger.info("="*60)
+            
+            # Calculate derived metrics for each agent
+            for agent_id, agent_metrics in policy_metrics['agents'].items():
+                # my_stag hunting utilization
+                if agent_metrics['my_stag_opportunities'] > 0:
+                    my_stag_util = agent_metrics['my_stag_hunt_attempts'] / agent_metrics['my_stag_opportunities']
+                else:
+                    my_stag_util = 0.0
+                
+                # coop_stag hunting utilization
+                if agent_metrics['coop_stag_opportunities'] > 0:
+                    coop_stag_util = agent_metrics['coop_stag_hunt_attempts'] / agent_metrics['coop_stag_opportunities']
+                else:
+                    coop_stag_util = 0.0
+                
+                # other_stag hunting utilization
+                if agent_metrics['other_stag_opportunities'] > 0:
+                    other_stag_util = agent_metrics['other_stag_hunt_attempts'] / agent_metrics['other_stag_opportunities']
+                else:
+                    other_stag_util = 0.0
+                
+                # hare hunting utilization
+                if agent_metrics['hare_opportunities'] > 0:
+                    hare_util = agent_metrics['hare_hunt_attempts'] / agent_metrics['hare_opportunities']
+                else:
+                    hare_util = 0.0
+                
+                # Store calculated metrics
+                agent_metrics.update({
+                    'my_stag_hunting_utilization': my_stag_util,
+                    'coop_stag_hunting_utilization': coop_stag_util,
+                    'other_stag_hunting_utilization': other_stag_util,
+                    'hare_hunting_utilization': hare_util
+                })
+                
+                # Log metrics
+                self.logger.info(f"\nAgent {agent_id}:")
+                self.logger.info(f"  My Stag Utilization: {my_stag_util:.3f} ({agent_metrics['my_stag_hunt_attempts']}/{agent_metrics['my_stag_opportunities']})")
+                self.logger.info(f"  Coop Stag Utilization: {coop_stag_util:.3f} ({agent_metrics['coop_stag_hunt_attempts']}/{agent_metrics['coop_stag_opportunities']})")
+                self.logger.info(f"  Other Stag Utilization: {other_stag_util:.3f} ({agent_metrics['other_stag_hunt_attempts']}/{agent_metrics['other_stag_opportunities']})")
+                self.logger.info(f"  Hare Utilization: {hare_util:.3f} ({agent_metrics['hare_hunt_attempts']}/{agent_metrics['hare_opportunities']})")
+            
+            self.logger.info(f"\nTotal Steps: {policy_metrics['total_steps']}, Episodes: {policy_metrics['total_episodes']}")
+            self.logger.info("="*60)
+            
+            # Generate and save policy quality plots
+            if self.save_dir is not None:
+                self._plot_policy_quality_metrics(policy_metrics, self.save_dir)
+
+            # Additionally, generate policy bias plot using advanced evaluator's collected data
+            try:
+                advanced_eval_dir = os.path.join(self.save_dir, 'advanced_causal_evaluation') if self.save_dir is not None else None
+                if advanced_eval_dir is not None:
+                    os.makedirs(advanced_eval_dir, exist_ok=True)
+                    policy_bias_path = os.path.join(advanced_eval_dir, 'policy_bias.png')
+                    stats_for_bias = self.advanced_causal_evaluator._compute_detailed_statistics()
+                    self.advanced_causal_evaluator.plot_policy_bias(
+                        statistics=stats_for_bias,
+                        save_path=policy_bias_path,
+                        return_figure=False
+                    )
+                    self.logger.info(f"Policy bias plot saved: {policy_bias_path}")
+                    if self.use_wandb:
+                        wandb.log({"policy/policy_bias": wandb.Image(policy_bias_path)}, step=self.iteration)
+            except Exception as e:
+                self.logger.warning(f"Failed to generate policy bias plot: {e}")
+        
+        # Causal effect evaluation if requested (tsne and detailed_causal_effects.png only)
+        causal_results = None
+        if evaluate_advanced_causal:
+            self.logger.info("\n" + "="*80)
+            self.logger.info("Starting Causal Effect Evaluation")
+            self.logger.info("="*80)
+
+            # 1. Basic causal effect evaluation (for t-SNE)
+            self.logger.info("\n[1/3] Running basic causal effect evaluation...")
+            self.logger.info(f"Causal evaluation: target steps={advanced_causal_steps}")
+            basic_causal_stats = self.causal_evaluator.evaluate_causal_effects(num_eval_steps=advanced_causal_steps)
+            
+            # 2. Advanced causal effect evaluation (for detailed_causal_effects.png)
+            self.logger.info("\n[2/3] Running advanced causal effect evaluation...")
+            self.advanced_causal_evaluator.num_eval_steps = advanced_causal_steps
+            advanced_causal_stats = self.advanced_causal_evaluator.evaluate_detailed_causal_effects()
+            
+            # Save results if save_dir exists
+            if self.save_dir is not None:
+                advanced_eval_dir = os.path.join(self.save_dir, 'advanced_causal_evaluation')
+                os.makedirs(advanced_eval_dir, exist_ok=True)
+                
+                # Save statistics
+                self.causal_evaluator.save_results(basic_causal_stats, advanced_eval_dir)
+                self.advanced_causal_evaluator.save_results(advanced_causal_stats, advanced_eval_dir)
+                
+                # Generate and save plots
+                self.logger.info("\n[3/3] Generating visualizations...")
+                
+                # Detailed causal effect plot
+                causal_plot_path = os.path.join(advanced_eval_dir, 'detailed_causal_effects.png')
+                self.advanced_causal_evaluator.plot_detailed_causal_effects(
+                    advanced_causal_stats,
+                    save_path=causal_plot_path
+                )
+                
+                # t-SNE analysis
+                tsne_plot_path = os.path.join(advanced_eval_dir, 'observation_tsne.png')
+                self.logger.info("Generating optimized t-SNE visualizations (single embedding for all plots)...")
+                from ..evaluation.observation_analysis import create_tsne_plots
+                create_tsne_plots(
+                    self.causal_evaluator,
+                    self.env,
+                    save_path=tsne_plot_path,
+                    perplexity=60,
+                    use_huntable_cases=True,
+                    n_clusters=None
+                )
+                
+                self.logger.info(f"\nCausal evaluation results saved to: {advanced_eval_dir}")
+                
+                # Log to wandb if enabled
+                if self.use_wandb:
+                    self.logger.info("Logging causal evaluation to wandb...")
+                    
+                    # Log causal effect statistics
+                    causal_stats = advanced_causal_stats.get('causal_effects', {})
+                    for agent_key, agent_data in causal_stats.items():
+                        for scenario, stats in agent_data.items():
+                            wandb.log({
+                                f"causal/{agent_key}/{scenario}/mean": stats['mean'],
+                                f"causal/{agent_key}/{scenario}/std": stats['std'],
+                                f"causal/{agent_key}/{scenario}/count": stats['count']
+                            })
+                    
+                    # Log images
+                    wandb.log({
+                        "causal/detailed_effects": wandb.Image(causal_plot_path),
+                        "causal/observation_tsne": wandb.Image(tsne_plot_path)
+                    })
+            
+            causal_results = {
+                'causal_effects': advanced_causal_stats
+            }
+            
+            # 결과 요약 출력
+            self.logger.info("="*80)
+            self.logger.info("Causal Effect Evaluation Complete")
+            self.logger.info("="*80)
+        
+        return {
+            'mean_reward': overall_mean,
+            'std_reward': overall_std,
+            'mean_length': mean_length,
+            'agent_rewards': {agent_id: np.mean(rewards) for agent_id, rewards in test_rewards.items()},
+            'causal_evaluation': causal_results,
+            'policy_quality_metrics': policy_metrics if evaluate_policy_quality else None
+        }
+    
+    def _save_episode_animation(self, frames, episode, animation_dir):
+        """Save episode animation as MP4 file."""
+        if not frames:
+            return
+        # Check if ffmpeg is available
+        try:
+            import subprocess
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
+            use_ffmpeg = True
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            use_ffmpeg = False
+            self.logger.info("ffmpeg not available, using Pillow writer")
+        
+        try:
+            # Create figure and axis
+            fig, ax = plt.subplots(figsize=(8, 8))
+            ax.set_xlim(-0.5, frames[0].shape[1] - 0.5)
+            ax.set_ylim(-0.5, frames[0].shape[0] - 0.5)
+            ax.set_aspect('equal')
+            ax.axis('off')
+            
+            # Create animation
+            def animate(frame_idx):
+                ax.clear()
+                ax.set_xlim(-0.5, frames[0].shape[1] - 0.5)
+                ax.set_ylim(-0.5, frames[0].shape[0] - 0.5)
+                ax.set_aspect('equal')
+                ax.axis('off')
+                # Flip the image vertically to correct orientation
+                flipped_frame = np.flipud(frames[frame_idx])
+                ax.imshow(flipped_frame, origin='lower')
+                ax.set_title(f'Episode {episode + 1} - Step {frame_idx + 1}')
+            
+            # Create animation with faster timestep
+            anim = animation.FuncAnimation(fig, animate, frames=len(frames), 
+                                         interval=100, repeat=False)
+            
+            if use_ffmpeg:
+                # Try MP4 first
+                try:
+                    animation_path = os.path.join(animation_dir, f'episode_{episode + 1:03d}.mp4')
+                    anim.save(animation_path, writer='ffmpeg', fps=5, bitrate=1800)
+                    self.logger.info(f"Animation saved as MP4: {animation_path}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to save as MP4: {e}")
+                    raise e
+            else:
+                # Use GIF directly with faster speed
+                animation_path = os.path.join(animation_dir, f'episode_{episode + 1:03d}.gif')
+                anim.save(animation_path, writer='pillow', fps=10)
+                self.logger.info(f"Animation saved as GIF: {animation_path}")
+            
+            # Close figure to free memory
+            plt.close(fig)
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to save animation for episode {episode + 1}: {e}")
+            # Final fallback: save individual frames as images
+            try:
+                frames_dir = os.path.join(animation_dir, f'episode_{episode + 1:03d}_frames')
+                os.makedirs(frames_dir, exist_ok=True)
+                for i, frame in enumerate(frames):
+                    frame_path = os.path.join(frames_dir, f'frame_{i:03d}.png')
+                    plt.imsave(frame_path, frame)
+                self.logger.info(f"Frames saved as images: {frames_dir}")
+            except Exception as e2:
+                self.logger.error(f"Failed to save frames as images: {e2}")
+    
+    
+    def _plot_policy_quality_metrics(self, policy_metrics, save_dir):
+        """
+        Generate and save policy quality visualization plots (agent-specific).
+        Note: Other stag hunting opportunities is quite different from my stag and coop stag hunting opportunities.
+              It is counted when an agent can reach to the other stag's position.
+              Howvever, my/coop stag hunting opportunities is counted 
+              when all required agents can reach to the my/coop stag's position.
+        """
+        
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        
+        # Create plots directory
+        plots_dir = os.path.join(save_dir, 'policy_quality_plots')
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # Set style
+        plt.style.use('default')
+        sns.set_palette("husl")
+        
+        num_agents = self.env.num_agents
+        # Create figure with subplots: one row per agent
+        fig, axes = plt.subplots(num_agents, 2, figsize=(15, 6 * num_agents))
+        if num_agents == 1:
+            axes = axes.reshape(1, -1)
+        
+        fig.suptitle('Policy Quality Metrics (Agent-Specific)', fontsize=16, fontweight='bold')
+        
+        for agent_id in range(num_agents):
+            agent_metrics = policy_metrics['agents'][agent_id]
+            
+            # Hunting utilization rates
+            my_stag_util = agent_metrics['my_stag_hunting_utilization']
+            coop_stag_util = agent_metrics['coop_stag_hunting_utilization']
+            other_stag_util = agent_metrics['other_stag_hunting_utilization']
+            hare_util = agent_metrics['hare_hunting_utilization']
+            
+            hunting_rates = [my_stag_util, coop_stag_util, other_stag_util, hare_util]
+            hunting_labels = ['My Stag', 'Coop Stag', 'Other Stag', 'Hare']
+            bars = axes[agent_id, 0].bar(hunting_labels, hunting_rates, color=['#e74c3c', '#3498db', '#f39c12', '#2ecc71'], alpha=0.7)
+            axes[agent_id, 0].set_title(f'Agent {agent_id}: Hunting Opportunity Utilization')
+            axes[agent_id, 0].set_ylim(0, 1)
+            axes[agent_id, 0].set_ylabel('Utilization Rate')
+            
+            # Add data count labels on bars
+            attempts_list = [
+                agent_metrics['my_stag_hunt_attempts'],
+                agent_metrics['coop_stag_hunt_attempts'],
+                agent_metrics['other_stag_hunt_attempts'],
+                agent_metrics['hare_hunt_attempts']
+            ]
+            opps_list = [
+                agent_metrics['my_stag_opportunities'],
+                agent_metrics['coop_stag_opportunities'],
+                agent_metrics['other_stag_opportunities'],
+                agent_metrics['hare_opportunities']
+            ]
+            
+            for bar, rate, attempts, opps in zip(bars, hunting_rates, attempts_list, opps_list):
+                height = bar.get_height()
+                axes[agent_id, 0].text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                               f'{attempts}/{opps}\n{rate:.3f}', ha='center', va='bottom', fontsize=9)
+            
+            # Opportunities vs attempts
+            opportunities = [agent_metrics['my_stag_opportunities'], 
+                           agent_metrics['coop_stag_opportunities'],
+                           agent_metrics['other_stag_opportunities'],
+                           agent_metrics['hare_opportunities']]
+            attempts = [agent_metrics['my_stag_hunt_attempts'],
+                       agent_metrics['coop_stag_hunt_attempts'],
+                       agent_metrics['other_stag_hunt_attempts'],
+                       agent_metrics['hare_hunt_attempts']]
+            
+            x = np.arange(len(hunting_labels))
+            width = 0.35
+            
+            bars1 = axes[agent_id, 1].bar(x - width/2, opportunities, width, label='Opportunities', alpha=0.8, color='#95a5a6')
+            bars2 = axes[agent_id, 1].bar(x + width/2, attempts, width, label='Attempts', alpha=0.8, color='#34495e')
+            axes[agent_id, 1].set_title(f'Agent {agent_id}: Opportunities vs Attempts')
+            axes[agent_id, 1].set_ylabel('Count')
+            axes[agent_id, 1].set_xticks(x)
+            axes[agent_id, 1].set_xticklabels(hunting_labels)
+            axes[agent_id, 1].legend()
+            
+            # Add count labels on bars
+            for bars, values in [(bars1, opportunities), (bars2, attempts)]:
+                for bar, value in zip(bars, values):
+                    height = bar.get_height()
+                    if height > 0:  # Only label if value > 0
+                        axes[agent_id, 1].text(bar.get_x() + bar.get_width()/2., height + 0.1,
+                                       f'{value}', ha='center', va='bottom', fontsize=9)
+        
+        # Add overall data summary
+        total_steps = policy_metrics.get('total_steps', 0)
+        total_episodes = policy_metrics.get('total_episodes', 0)
+        fig.text(0.5, 0.02, f'Data Collection: {total_steps} steps across {total_episodes} episodes', 
+                ha='center', fontsize=10, style='italic')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(plots_dir, 'policy_quality_metrics.png'), dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        self.logger.info(f"Policy quality plots saved to: {plots_dir}")

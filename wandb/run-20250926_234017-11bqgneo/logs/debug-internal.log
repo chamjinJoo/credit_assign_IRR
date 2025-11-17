@@ -1,8 +1,0 @@
-{"time":"2025-09-26T23:40:17.926367105+09:00","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/home/chamjin/research/pci-mappo-DoublyRobust/wandb/run-20250926_234017-11bqgneo/logs/debug-core.log"}
-{"time":"2025-09-26T23:40:18.231235208+09:00","level":"INFO","msg":"stream: created new stream","id":"11bqgneo"}
-{"time":"2025-09-26T23:40:18.231279582+09:00","level":"INFO","msg":"stream: started","id":"11bqgneo"}
-{"time":"2025-09-26T23:40:18.231296671+09:00","level":"INFO","msg":"sender: started","stream_id":"11bqgneo"}
-{"time":"2025-09-26T23:40:18.231297958+09:00","level":"INFO","msg":"handler: started","stream_id":"11bqgneo"}
-{"time":"2025-09-26T23:40:18.231342791+09:00","level":"INFO","msg":"writer: Do: started","stream_id":"11bqgneo"}
-{"time":"2025-09-26T23:40:18.503053382+09:00","level":"INFO","msg":"Starting system monitor"}
-{"time":"2025-09-27T02:30:34.108091147+09:00","level":"INFO","msg":"api: retrying HTTP error","status":502,"url":"https://api.wandb.ai/files/chamjin-korea-advanced-institute-of-science-and-technology/pci-mappo/11bqgneo/file_stream","body":"\n<html><head>\n<meta http-equiv=\"content-type\" content=\"text/html;charset=utf-8\">\n<title>502 Server Error</title>\n</head>\n<body text=#000000 bgcolor=#ffffff>\n<h1>Error: Server Error</h1>\n<h2>The server encountered a temporary error and could not complete your request.<p>Please try again in 30 seconds.</h2>\n<h2></h2>\n</body></html>\n"}
