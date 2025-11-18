@@ -1,6 +1,7 @@
 import numpy as np
 import torch
 import random
+import math
 from typing import Dict, Tuple, List, Any, Optional
 from abc import ABC, abstractmethod
 
@@ -16,20 +17,20 @@ except ImportError:
     print("Warning: Matplotlib not available. Visualization features will not work.")
 
 # Optional imports with fallbacks
-try:
-    import jax
-    import jax.random as jr
-    JAX_AVAILABLE = True
-except ImportError:
-    JAX_AVAILABLE = False
-    print("Warning: JAX not available. MPE environments will not work.")
+# try:
+#     import jax
+#     import jax.random as jr
+#     JAX_AVAILABLE = True
+# except ImportError:
+#     JAX_AVAILABLE = False
+#     print("Warning: JAX not available. MPE environments will not work.")
 
-try:
-    from jaxmarl import make as jaxmarl_make
-    JAXMARL_AVAILABLE = True
-except ImportError:
-    JAXMARL_AVAILABLE = False
-    print("Warning: JaxMARL not available. MPE environments will not work.")
+# try:
+#     from jaxmarl import make as jaxmarl_make
+#     JAXMARL_AVAILABLE = True
+# except ImportError:
+#     JAXMARL_AVAILABLE = False
+#     print("Warning: JaxMARL not available. MPE environments will not work.")
 
 
 class MultiAgentEnv(ABC):
@@ -752,7 +753,7 @@ class StagHuntEnv(MultiAgentEnv):
     def __init__(
         self, 
         num_agents: int = 2,
-        max_steps: int = 30,
+        max_steps: int = 50,
         stag_follows: bool = False,
         run_away_after_maul: bool = False,
         forage_quantity: int = None,
@@ -802,13 +803,16 @@ class StagHuntEnv(MultiAgentEnv):
         self.hare_positions = {}  # {hare_id: (x, y)} - hares for individual hunting
         self.hare_alive = {}  # {hare_id: bool} - hare 생존 상태 추적
         
-        # corner spawn positions for agents
-        self.agent_spawn_positions = [
-            (0, self.grid_size_y-1), 
-            (self.grid_size_x-1, self.grid_size_y-1), 
-            (self.grid_size_x-1, 0),
-            (0, 0)
-        ]  
+        # spwan positions should be symmetrically distributed around the center
+        self.agent_spawn_positions = self._get_symmetric_spawn_positions(num_agents)
+
+        # self.agent_spawn_positions = [
+        #     (0, self.grid_size_y-1), 
+        #     (self.grid_size_x-1, self.grid_size_y-1), 
+        #     (self.grid_size_x-1, 0),
+        #     (0, 0),
+        #     (self.grid_size_x//2, self.grid_size_y//2)
+        # ]  
         
         # Rewards
         self.forage_reward = forage_reward
@@ -822,7 +826,7 @@ class StagHuntEnv(MultiAgentEnv):
                 self.required_agents[stag_id] = [stag_id, 0]
             else:
                 self.required_agents[stag_id] = [stag_id, stag_id + 1]
-    
+
         print(f"mauling_punishment: {self.mauling_punishment}")
         print(f"stag allocated agents: {self.required_agents}")
         
@@ -844,8 +848,55 @@ class StagHuntEnv(MultiAgentEnv):
             for y in range(self.grid_size_y):
                 if (x, y) not in occupied_positions:
                     empty_positions.append((x, y))
-        
         return empty_positions
+
+    def _get_symmetric_spawn_positions(self, num_agents):
+        """대칭적으로 분포된 스폰 위치를 반환합니다."""
+        spawn_positions = []
+
+        center_x = (self.grid_size_x - 1) / 2
+        center_y = (self.grid_size_y - 1) / 2
+        max_radius = (min(self.grid_size_x, self.grid_size_y) - 1) / 2
+        radius = max(1.0, max_radius)
+
+        for i in range(num_agents):
+            angle = 2 * math.pi * i / num_agents
+            attempt_radius = radius
+
+            while attempt_radius >= 0:
+                x = int(round(center_x + attempt_radius * math.cos(angle)))
+                y = int(round(center_y + attempt_radius * math.sin(angle)))
+
+                x = min(max(0, x), self.grid_size_x - 1)
+                y = min(max(0, y), self.grid_size_y - 1)
+
+                if (x, y) not in spawn_positions:
+                    spawn_positions.append((x, y))
+                    break
+
+                attempt_radius -= 1
+            if len(spawn_positions) <= i:
+                # 모든 반지름에서도 중복이 발생하면 아직 사용되지 않은 격자 좌표를 순차적으로 선택
+                for x in range(self.grid_size_x):
+                    for y in range(self.grid_size_y):
+                        if (x, y) not in spawn_positions:
+                            spawn_positions.append((x, y))
+                            break
+                    if len(spawn_positions) > i:
+                        break
+
+        # 여전히 부족하다면 남은 격자를 순서대로 채웁니다.
+        if len(spawn_positions) < num_agents:
+            for x in range(self.grid_size_x):
+                for y in range(self.grid_size_y):
+                    if (x, y) not in spawn_positions:
+                        spawn_positions.append((x, y))
+                    if len(spawn_positions) == num_agents:
+                        break
+                if len(spawn_positions) == num_agents:
+                    break
+
+        return spawn_positions
 
     def _spawn_object_randomly(self):
         """비어있는 위치에 객체를 랜덤하게 스폰합니다."""
@@ -911,17 +962,10 @@ class StagHuntEnv(MultiAgentEnv):
     def reset(self) -> Dict[int, np.ndarray]:
         """환경을 리셋하고 초기 관찰을 반환합니다."""
         self.step_count = 0
-        
-        # agent_spawn_positions = self.agent_spawn_positions.copy()
-        # if self._np_random is not None:
-        #     self._np_random.shuffle(agent_spawn_positions)
-        # else:
-        #     np.random.shuffle(agent_spawn_positions)
-        
+       
         for i, agent_id in enumerate(self.agents):
-            # self.agent_positions[agent_id] = self._spawn_object_randomly() # fully random spawn
-            # self.agent_positions[agent_id] = agent_spawn_positions[i] # shuffled fixed spawn
-            self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
+            self.agent_positions[agent_id] = self._spawn_object_randomly() # random spawn
+            # self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
         # n개의 Stag를 서로 상하좌우로 붙어있지 않게 배치 (이동하지 않음)
         self.stag_positions = {}
         self.stag_alive = {}
@@ -1178,7 +1222,7 @@ class StagHuntEnv(MultiAgentEnv):
         self.agent_positions.update(final_positions)
 
     def _process_hunting(self, rewards: Dict[int, float]) -> Dict:
-        """사냥 처리: 새로운 로직 - stag i는 agent i와 agent i+1이 동시에 사냥해야 성공
+        """사냥 처리: stag i는 agent i와 agent i+1이 동시에 사냥해야 성공
         stag i가 agent i에게만 reward 제공
         
         Returns:
@@ -1235,7 +1279,7 @@ class StagHuntEnv(MultiAgentEnv):
             
             # stag i를 사냥하기 위한 필수 에이전트들
             required_agents = self.required_agents[stag_id]
-        
+
             # 모든 stag 위치에 있는 에이전트들의 시도를 기록
             if agents_at_stag:
                 hunting_info['stag_attempts'][stag_id] = agents_at_stag.copy()
@@ -1244,7 +1288,6 @@ class StagHuntEnv(MultiAgentEnv):
             for agent_id in agents_at_stag:
                 if agent_id not in required_agents:
                     rewards[agent_id] += self.mauling_punishment
-
             # 필수 에이전트들이 모두 stag 위치에 있는지 확인
             if all(agent_id in agents_at_stag for agent_id in required_agents):
                 # 협력 사냥 성공 - stag i는 agent i에게만 reward 제공
@@ -1267,11 +1310,8 @@ class StagHuntEnv(MultiAgentEnv):
         for agent_id in self.agents:
             agent_x, agent_y = self.agent_positions[agent_id]
             
-            # 좌표 정보 (2차원)
-            coord_obs = [agent_x/(self.grid_size_x-1), agent_y/(self.grid_size_y-1)]
-            
-            # 3x3 그리드 정보 (9 * 4차원 = 36차원)
-            grid_obs = []
+            coord_obs = [agent_x/(self.grid_size_x-1), agent_y/(self.grid_size_y-1)] # 좌표 정보 (2차원)
+            grid_obs = [] # 3x3 그리드 정보 
             
             for dy in [-1, 0, 1]:
                 for dx in [-1, 0, 1]:
@@ -1590,8 +1630,8 @@ class MPESimpleSpreadEnv(MultiAgentEnv):
             continuous_actions: 연속 액션 사용 여부
             seed: 랜덤 시드
         """
-        if not JAXMARL_AVAILABLE:
-            raise ImportError("JaxMARL is required for MPESimpleSpreadEnv. Install with: pip install git+https://github.com/instadeepai/jaxmarl.git")
+        # if not JAXMARL_AVAILABLE:
+        #     raise ImportError("JaxMARL is required for MPESimpleSpreadEnv. Install with: pip install git+https://github.com/instadeepai/jaxmarl.git")
         
         super().__init__(num_agents=n_agents)
         

@@ -373,9 +373,9 @@ class CausalEffectEvaluator:
         Returns:
             Separability scores
         """
-        from .observation_analysis import create_tsne_plot_from_evaluator
+        from .observation_analysis import create_tsne_plots
         
-        return create_tsne_plot_from_evaluator(
+        return create_tsne_plots(
             self,
             self.env,
             save_path=save_path,

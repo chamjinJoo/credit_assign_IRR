@@ -53,13 +53,13 @@ class ObservationAnalyzer:
         
         self.huntable_colors = {
             'none': '#7F8C8D',  # 회색
-            'coop_stag': '#e93e3a',
-            'coop_stag+my_stag': '#ed683c',
-            'coop_stag+my_stag+hare': '#f3903f',
-            'coop_stag+hare': '#f8b23b',
-            'my_stag': '#f7a70a',   
-            'my_stag+hare': '#fdc70c',
-            'hare': '#fff33b' 
+            'coop_stag': '#fef0e6',
+            'coop_stag+my_stag': '#fcaf90',
+            'coop_stag+my_stag+hare': '#fa6948',
+            'coop_stag+hare': '#fc8e6b',
+            'my_stag': '#fddad4',   
+            'my_stag+hare': '#cb1816',
+            'hare': '#67000d' 
         }
         
         self.huntable_labels = {
@@ -1017,9 +1017,11 @@ class ObservationAnalyzer:
                         ax.text(i, mean, f'{mean:.3f}', 
                                ha='center', va='bottom', fontsize=9)
                     
-                    # 각 막대 위에 샘플 수 표시 (값 표시 위에)
-                    for i, (mean, std, count) in enumerate(zip(case_means, case_stds, case_counts)):
-                        ax.text(i, mean + std + 0.01, f'n={count}', 
+                    # 각 막대의 x축 근처에 샘플 수 표시
+                    y_min, y_max = ax.get_ylim()
+                    y_bottom = y_min + (y_max - y_min) * 0.02  # y축 최소값에서 2% 위에 표시
+                    for i, count in enumerate(case_counts):
+                        ax.text(i, y_bottom, f'n={count}', 
                                ha='center', va='bottom', fontsize=9, fontweight='bold')
                     
                     # X축 라벨 설정
@@ -1048,7 +1050,7 @@ class ObservationAnalyzer:
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Value by huntable case barplot saved: {save_path}")
         plt.close()
-    
+
     def _create_interactive_huntable_plot(
         self,
         observation_data: Dict[int, Dict[str, List]],

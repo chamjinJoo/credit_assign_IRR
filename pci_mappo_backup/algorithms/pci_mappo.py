@@ -254,10 +254,10 @@ class PCIMAPPOAlgorithm:
         #     i: optim.Adam(self.value_nets[i].parameters(), lr=lr) for i in range(num_agents)
         # }
 
-        # Value network option 2: parameter sharing (no agent ID embedding)
+        # Value network option 2: parameter sharing with agent ID embedding PS+id
         self.value_net = ValueNetwork(
             obs_dim=obs_dim,
-            hidden_dim=hidden_dim
+            hidden_dim=hidden_dim,
         )
         
         # Optimizer for the shared value network
@@ -388,8 +388,19 @@ class PCIMAPPOAlgorithm:
         # outcome_bridge_loss = torch.trace(quadratic_forms) / (self.num_agents * batch_size)
 
         # 1-2. Loss with Stabilizer
-        reg_K_z_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
-        loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
+        # 이전 버전 (bottleneck of training time)
+        # ------------------------------------------------------------
+        # reg_K_z_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
+        # loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
+        # outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
+        # ------------------------------------------------------------
+        # 역행렬 대신 Cholesky 분해를 사용한 선형 시스템 풀이 (더 빠르고 수치적으로 안정적)
+        reg_K_z = self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z
+        # residuals.T @ K_z @ inv(reg_K_z) @ residuals 계산
+        # = (residuals.T @ K_z) @ solve(reg_K_z, residuals)
+        K_z_residuals = residuals.T @ K_z  # Shape: [num_agents, batch_size]
+        solved_residuals = torch.linalg.solve(reg_K_z, residuals)  # Shape: [batch_size, num_agents]
+        loss_matrix_h = K_z_residuals @ solved_residuals  # Shape: [num_agents, num_agents]
         outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
 
         # === Part 2: Update Action Bridge Network q_θ ===
@@ -452,10 +463,28 @@ class PCIMAPPOAlgorithm:
         # action_bridge_loss = (quadratic_term - 2.0 * linear_term) / batch_size
 
         # 5-2. With Stabilizer
-        reg_K_w1_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
-        quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
-        linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
-        action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
+        # 이전 버전 (bottleneck of training time)
+        # ------------------------------------------------------------
+        # reg_K_w1_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
+        # quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
+        # linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
+        # action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
+        # ------------------------------------------------------------
+        # 역행렬 대신 선형 시스템 풀이 사용
+        reg_K_w1 = self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1
+        # quadratic_term = phi_q_col.T @ K_w1 @ inv(reg_K_w1) @ phi_q_col
+        # = (phi_q_col.T @ K_w1) @ solve(reg_K_w1, phi_q_col)
+        K_w1_phi_q = phi_q_col.T @ K_w1  # Shape: [1, batch_size]
+        solved_phi_q = torch.linalg.solve(reg_K_w1, phi_q_col)  # Shape: [batch_size, 1]
+        quadratic_term = K_w1_phi_q @ solved_phi_q  # Shape: [1, 1]
+
+        # linear_term = phi_q_col.T @ inv(reg_K_w1) @ K_w2.sum(dim=1).unsqueeze(1)
+        # = phi_q_col.T @ solve(reg_K_w1, K_w2.sum(dim=1).unsqueeze(1))
+        K_w2_sum = K_w2.sum(dim=1).unsqueeze(1)  # Shape: [batch_size, 1]
+        solved_K_w2_sum = torch.linalg.solve(reg_K_w1, K_w2_sum)  # Shape: [batch_size, 1]
+        linear_term = phi_q_col.T @ solved_K_w2_sum  # Shape: [1, 1]
+
+        action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size 
 
         # --- Combine Losses and Backward Pass ---
         # We now have two distinct loss terms for the shared action embedding.
@@ -751,22 +780,26 @@ class PCIMAPPOAlgorithm:
             
             r_hat_counterfactuals = r_hat_all[mask] # Shape: [action_dim - 1, num_agents]
             
-            # Opition 1) Weighted counterfactual baseline
-            probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
             # === 3. Compute the Difference-Based Causal Effect ===
-            sum_probs_counterfactuals = probs_counterfactuals.sum()
-            if sum_probs_counterfactuals > 1e-8:
-                # weighted_sum = (확률 * 보상).sum()
-                weighted_sum_counterfactuals = (probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals).sum(dim=0)
-                # baseline = weighted_sum / 확률의 합
-                baseline = weighted_sum_counterfactuals / sum_probs_counterfactuals
-            else:
-                # 비교할 반사실적 행동이 없는 경우 (행동이 1개뿐인 경우 등)
-                baseline = torch.zeros_like(r_hat_factual)
+            # Baseline using policy probabilities (commented out - not used)
+            # probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
+            # sum_probs_counterfactuals = probs_counterfactuals.sum()
+            # if sum_probs_counterfactuals > 1e-8:
+            #     # weighted_sum = (확률 * 보상).sum()
+            #     weighted_sum_counterfactuals = (probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals).sum(dim=0)
+            #     # baseline = weighted_sum / 확률의 합
+            #     baseline = weighted_sum_counterfactuals / sum_probs_counterfactuals
+            # else:
+            #     # 비교할 반사실적 행동이 없는 경우 (행동이 1개뿐인 경우 등)
+            #     baseline = torch.zeros_like(r_hat_factual)
+            
+            # Baseline using simple average (same as causal_intrinsic_reward_batch)
+            counterfactual_count = mask.sum().clamp(min=1).to(r_hat_counterfactuals.dtype)
+            baseline = r_hat_counterfactuals.sum(dim=0) / (counterfactual_count + 1e-8)  # Shape: [num_agents]
                 
             # === 3. 최종 인과 효과 벡터 계산 === #
             causal_effect_vector = r_hat_factual - baseline # Shape: [num_agents]
-            
+            # causal_effect_vector = current_rewards - baseline # Shape: [num_agents]
             # === 4. Calculate Final Shaping Term Δ^i_t ===
             # Average the causal effects over all *other* agents.
             other_agents = [j for j in range(self.num_agents) if j != agent_id]
@@ -861,39 +894,39 @@ class PCIMAPPOAlgorithm:
             factual_actions = actions_batch[:, agent_id]
             
             # Gather factual predictions: [batch_size, num_agents]
+            # predicted reward vector for factual action
             r_hat_factual = r_hat_all[torch.arange(batch_size, device=self.device), factual_actions]
-            
             # Get factual probabilities: [batch_size]
-            prob_factual = action_probs[torch.arange(batch_size, device=self.device), factual_actions]
+            # prob_factual = action_probs[torch.arange(batch_size, device=self.device), factual_actions]
             
             # === 5. Compute counterfactual baseline ===
             # Create mask for counterfactual actions: [batch_size, action_dim]
             mask = torch.ones(batch_size, self.action_dim, dtype=torch.bool, device=self.device)
             mask[torch.arange(batch_size, device=self.device), factual_actions] = False
             
-            # Zero out the probabilities of the factual actions using the mask
-            # Make a copy to avoid modifying the original action_probs
-            probs_counterfactuals = action_probs.clone()
-            probs_counterfactuals[~mask] = 0.0 # ~mask selects the factual actions
-
-            # Calculate the sum of probabilities for the counterfactual actions for normalization
-            # Shape: [batch_size, 1]
-            sum_probs = probs_counterfactuals.sum(dim=1, keepdim=True)
-
             # Zero out the rewards of the factual actions as well to ensure they don't contribute
             r_hat_all_masked = r_hat_all.clone()
+            '''
+            # Baseline using policy probabilities
+            probs_counterfactuals = action_probs.clone()
+            probs_counterfactuals[~mask] = 0.0
+            sum_probs_counterfactuals = probs_counterfactuals.sum(dim=1, keepdim=True)
+            weighted_sum_rewards = (probs_counterfactuals.unsqueeze(2) * r_hat_all_masked).sum(dim=1)
+            baseline = weighted_sum_rewards / (sum_probs_counterfactuals + 1e-8)
+            '''
             # mask is [B, A], needs to be expanded for [B, A, N]
             r_hat_all_masked[~mask.unsqueeze(-1).expand_as(r_hat_all)] = 0.0
-
-            # Calculate the policy-weighted sum of counterfactual rewards
-            # probs_counterfactuals.unsqueeze(2): [B, A, 1], r_hat_all_masked: [B, A, N]
-            # The product is broadcasted correctly. Sum over action_dim.
-            weighted_sum_rewards = (probs_counterfactuals.unsqueeze(2) * r_hat_all_masked).sum(dim=1) # Shape: [B, N]
-            # Compute the final baseline, with a stability term
-            baseline = weighted_sum_rewards / (sum_probs + 1e-8) # Shape: [B, N]
+            # Compute the number of counterfactual actions for each batch element
+            counterfactual_count = mask.sum(dim=1, keepdim=True).clamp(min=1).to(r_hat_all_masked.dtype)
+            # Compute the final baseline as the simple average of counterfactual rewards
+            baseline = r_hat_all_masked.sum(dim=1) / (counterfactual_count + 1e-8) # Shape: [B, N]
             
             # === 6. Compute causal effect vector ===
-            causal_effect_vector = r_hat_factual - baseline  # [batch_size, num_agents]
+            causal_effect_vector = r_hat_factual - baseline  # [B, N]
+            # causal_effect_vector = rewards_batch - baseline  # [B, N]
+            
+            # # TEST: consider my reward
+            # Delta_batch = causal_effect_vector.mean(dim=1)
             
             # === 7. Extract effects for other agents ===
             # Create mask for other agents: [num_agents]
@@ -903,14 +936,41 @@ class PCIMAPPOAlgorithm:
             # Get effects for other agents: [batch_size, num_agents-1]
             causal_effects_others = causal_effect_vector[:, other_agents_mask]
             if causal_effects_others.size(1) > 0:
-                # Delta_batch = causal_effects_others.max(dim=1)[0]
-                Delta_batch = causal_effects_others.mean(dim=1)
+                Delta_batch = causal_effects_others.max(dim=1)[0] # why [0]? because max returns a tuple (value, index)
+                # Delta_batch = causal_effects_others.mean(dim=1) 
             else:
                 Delta_batch = torch.zeros(batch_size, device=self.device)
-        
+
+        # TEST: Optimal Delta_batch to test how policy is updated with assumption that bridge networks are optimal.
+        # -------------------------------------------------------------
+        # Delta_batch = torch.zeros(batch_size, device=self.device)
+        # find where the rewards are 5.0 and set corresponding Delta_batch element to 5.0
+        # rule: if agent_id is zero, check last agent's reward and else check (agent_id-1) agent reward 
+        # if agent_id == 0:
+        #     Delta_batch[rewards_batch[:, (self.num_agents-1)] == 5.0] = 5.0
+        # else:
+        #     Delta_batch[rewards_batch[:, (agent_id-1)] == 5.0] = 5.0    
+        # -------------------------------------------------------------
+       
+        # Check performance of bridge networks
+        # if agent_id == 0:
+        #     print("r_pred_batch", r_pred_batch[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("error_batch", error_batch[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("r_hat_all", r_hat_all[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("r_hat_factual", r_hat_factual[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("baseline", baseline[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        #     print("Delta_batch", Delta_batch[rewards_batch[:, (self.num_agents-1)] == 5.0])
+        # else:
+        #     print("r_pred_batch", r_pred_batch[rewards_batch[:, (agent_id-1)] == 5.0])    
+        #     print("error_batch", error_batch[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("r_hat_all", r_hat_all[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("factual_actions", factual_actions[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("baseline", baseline[rewards_batch[:, (agent_id-1)] == 5.0])
+        #     print("Delta_batch", Delta_batch[rewards_batch[:, (agent_id-1)] == 5.0])
+
         return Delta_batch
     '''
-    def hamilton_method(
+    def hamilton_divide_agent_i_action(
         self,
         agent_id: int,
         w_t_batch: torch.Tensor,      # [batch_size, w_dim]
@@ -941,6 +1001,8 @@ class PCIMAPPOAlgorithm:
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
         """
         Updates agent policies and the centralized value function.
+        MODIFIED: The value function is now trained using returns from SHAPED rewards.
+        The entropy loss bug is also fixed.
         """
         agent_losses = defaultdict(float)
         batch_size = len(batch_data)
@@ -954,6 +1016,7 @@ class PCIMAPPOAlgorithm:
 
         # === 1. Collect Agent-specific Shaped Rewards and Delta Statistics ===
         all_agent_shaped_rewards = {}
+        all_agent_rewards = {}  # Original rewards for value network
         all_agent_dones = {}
         
         # Delta statistics for wandb logging
@@ -976,6 +1039,7 @@ class PCIMAPPOAlgorithm:
             agent_rewards = torch.tensor([t['bold_r_t'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             agent_dones = torch.tensor([t['dones'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             
+            shaped_rewards = []
             # Use vectorized batch computation
             with torch.no_grad():
                 Delta_batch = self.causal_intrinsic_reward_batch(
@@ -991,10 +1055,12 @@ class PCIMAPPOAlgorithm:
                     delta_stats[scenario].append(Delta_batch[t].item())
             
             all_agent_shaped_rewards[agent_id] = shaped_rewards
+            all_agent_rewards[agent_id] = agent_rewards
             all_agent_dones[agent_id] = agent_dones
 
-        # === 2. Compute Individual Agent Returns for Value Network (from RAW rewards) ===
+        # === 2. Compute Individual Agent Returns/Advantages using SHAPED rewards ===
         agent_returns = {}
+        agent_advantages = {}
         agent_values = {}
         next_agent_values = {}
         
@@ -1006,10 +1072,7 @@ class PCIMAPPOAlgorithm:
             with torch.no_grad():
                 agent_values[agent_id] = self.value_net(agent_obs_tensors[agent_id]).squeeze()
             
-            # Extract raw rewards for value network training
-            raw_rewards = torch.tensor([t['bold_r_t'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
-            
-            # Compute returns for this agent using its RAW rewards
+            # Estimate next state value for bootstrapping the SHAPED-return calculation
             with torch.no_grad():
                 last = batch_data[-1]
                 is_terminal = all_agent_dones[agent_id][-1].item()
@@ -1019,13 +1082,14 @@ class PCIMAPPOAlgorithm:
                 else:
                     next_agent_values[agent_id] = 0.0
 
-            _, returns_agent_raw = self.compute_gae(
-                raw_rewards.tolist(), 
+            advantages_shaped, returns_agent_shaped = self.compute_gae(
+                all_agent_shaped_rewards[agent_id].tolist(), 
                 agent_values[agent_id].tolist(), 
                 next_agent_values[agent_id], 
                 all_agent_dones[agent_id].tolist()
             )
-            agent_returns[agent_id] = torch.tensor(returns_agent_raw, dtype=torch.float32, device=self.device)
+            agent_returns[agent_id] = torch.tensor(returns_agent_shaped, dtype=torch.float32, device=self.device)
+            agent_advantages[agent_id] = torch.tensor(advantages_shaped, dtype=torch.float32, device=self.device)
 
         # === Agent-Specific Policy Updates ===
         for agent_id in range(self.num_agents):
@@ -1039,18 +1103,8 @@ class PCIMAPPOAlgorithm:
                 logits = self.agents[agent_id].policy_net(agent_obs)
                 old_log_probs_tensor = F.log_softmax(logits, dim=-1).gather(1, agent_actions.unsqueeze(1)).squeeze(1)
 
-            shaped_rewards_tensor = all_agent_shaped_rewards[agent_id]
-            agent_dones = all_agent_dones[agent_id]
-            
-            # 3. GAE for the POLICY update (using agent-specific SHAPED rewards)
-            # The baseline for this GAE is the individual agent value function estimate.
-            advantages_shaped, _ = self.compute_gae(
-                shaped_rewards_tensor.tolist(), 
-                agent_values[agent_id].tolist(), # Use individual agent value as baseline
-                next_agent_values[agent_id], 
-                agent_dones.tolist()
-            )
-            advantages_tensor = torch.tensor(advantages_shaped, dtype=torch.float32, device=self.device)
+            # 3. Advantage for the POLICY update (using agent-specific SHAPED rewards)
+            advantages_tensor = agent_advantages[agent_id]
             advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
 
             # === PPO Policy Update Loop (for this agent) ===
@@ -1089,7 +1143,6 @@ class PCIMAPPOAlgorithm:
                     
                 # Get new values for this agent using the shared value network
                 new_agent_values = self.value_net(agent_obs_tensors[agent_id]).squeeze()
-                # Value network trained on RAW rewards (returns computed from raw rewards)
                 agent_value_loss = F.mse_loss(new_agent_values, agent_returns[agent_id])
                 total_value_loss += agent_value_loss
             

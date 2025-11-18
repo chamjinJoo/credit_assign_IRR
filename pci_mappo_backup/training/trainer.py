@@ -869,7 +869,7 @@ class PCIMAPPOTrainer:
                 # Animation frames storage
                 frames = []
                 
-                while not done and episode_length < 1000 and step_count < advanced_causal_steps:
+                while not done and step_count < advanced_causal_steps:
                     # Render and capture frame for animation
                     if (render or save_animation) and hasattr(self.env, 'render'):
                         if save_animation:
@@ -1174,7 +1174,6 @@ class PCIMAPPOTrainer:
             # 1. Basic causal effect evaluation (for t-SNE)
             self.logger.info("\n[1/3] Running basic causal effect evaluation...")
             self.logger.info(f"Causal evaluation: target steps={advanced_causal_steps}")
-            self.causal_evaluator.num_eval_steps = advanced_causal_steps
             basic_causal_stats = self.causal_evaluator.evaluate_causal_effects(num_eval_steps=advanced_causal_steps)
             
             # 2. Advanced causal effect evaluation (for detailed_causal_effects.png)
