@@ -753,7 +753,7 @@ class StagHuntEnv(MultiAgentEnv):
     def __init__(
         self, 
         num_agents: int = 2,
-        max_steps: int = 30,
+        max_steps: int = 50,
         stag_follows: bool = False,
         run_away_after_maul: bool = False,
         forage_quantity: int = None,
@@ -962,17 +962,10 @@ class StagHuntEnv(MultiAgentEnv):
     def reset(self) -> Dict[int, np.ndarray]:
         """환경을 리셋하고 초기 관찰을 반환합니다."""
         self.step_count = 0
-        
-        # agent_spawn_positions = self.agent_spawn_positions.copy()
-        # if self._np_random is not None:
-        #     self._np_random.shuffle(agent_spawn_positions)
-        # else:
-        #     np.random.shuffle(agent_spawn_positions)
-        
+       
         for i, agent_id in enumerate(self.agents):
-            # self.agent_positions[agent_id] = self._spawn_object_randomly() # fully random spawn
-            # self.agent_positions[agent_id] = agent_spawn_positions[i] # shuffled fixed spawn
-            self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
+            self.agent_positions[agent_id] = self._spawn_object_randomly() # random spawn
+            # self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
         # n개의 Stag를 서로 상하좌우로 붙어있지 않게 배치 (이동하지 않음)
         self.stag_positions = {}
         self.stag_alive = {}

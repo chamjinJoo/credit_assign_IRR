@@ -388,8 +388,19 @@ class PCIMAPPOAlgorithm:
         # outcome_bridge_loss = torch.trace(quadratic_forms) / (self.num_agents * batch_size)
 
         # 1-2. Loss with Stabilizer
-        reg_K_z_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
-        loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
+        # 이전 버전 (bottleneck of training time)
+        # ------------------------------------------------------------
+        # reg_K_z_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
+        # loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
+        # outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
+        # ------------------------------------------------------------
+        # 역행렬 대신 Cholesky 분해를 사용한 선형 시스템 풀이 (더 빠르고 수치적으로 안정적)
+        reg_K_z = self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z
+        # residuals.T @ K_z @ inv(reg_K_z) @ residuals 계산
+        # = (residuals.T @ K_z) @ solve(reg_K_z, residuals)
+        K_z_residuals = residuals.T @ K_z  # Shape: [num_agents, batch_size]
+        solved_residuals = torch.linalg.solve(reg_K_z, residuals)  # Shape: [batch_size, num_agents]
+        loss_matrix_h = K_z_residuals @ solved_residuals  # Shape: [num_agents, num_agents]
         outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
 
         # === Part 2: Update Action Bridge Network q_θ ===
@@ -452,10 +463,28 @@ class PCIMAPPOAlgorithm:
         # action_bridge_loss = (quadratic_term - 2.0 * linear_term) / batch_size
 
         # 5-2. With Stabilizer
-        reg_K_w1_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
-        quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
-        linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
-        action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
+        # 이전 버전 (bottleneck of training time)
+        # ------------------------------------------------------------
+        # reg_K_w1_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
+        # quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
+        # linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
+        # action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
+        # ------------------------------------------------------------
+        # 역행렬 대신 선형 시스템 풀이 사용
+        reg_K_w1 = self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1
+        # quadratic_term = phi_q_col.T @ K_w1 @ inv(reg_K_w1) @ phi_q_col
+        # = (phi_q_col.T @ K_w1) @ solve(reg_K_w1, phi_q_col)
+        K_w1_phi_q = phi_q_col.T @ K_w1  # Shape: [1, batch_size]
+        solved_phi_q = torch.linalg.solve(reg_K_w1, phi_q_col)  # Shape: [batch_size, 1]
+        quadratic_term = K_w1_phi_q @ solved_phi_q  # Shape: [1, 1]
+
+        # linear_term = phi_q_col.T @ inv(reg_K_w1) @ K_w2.sum(dim=1).unsqueeze(1)
+        # = phi_q_col.T @ solve(reg_K_w1, K_w2.sum(dim=1).unsqueeze(1))
+        K_w2_sum = K_w2.sum(dim=1).unsqueeze(1)  # Shape: [batch_size, 1]
+        solved_K_w2_sum = torch.linalg.solve(reg_K_w1, K_w2_sum)  # Shape: [batch_size, 1]
+        linear_term = phi_q_col.T @ solved_K_w2_sum  # Shape: [1, 1]
+
+        action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size 
 
         # --- Combine Losses and Backward Pass ---
         # We now have two distinct loss terms for the shared action embedding.
