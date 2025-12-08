@@ -57,7 +57,21 @@ def create_environment(env_config) -> MultiAgentEnv:
             mauling_punishment=config_dict.get('mauling_punishment', -1.0),
             seed=config_dict.get('seed', 0)
         )
-    
+        
+    elif env_name == 'LBForaging' or env_name == 'LBF' or env_name == 'lbforaging':
+        from .multi_agent_env import LBForagingWrapper
+        return LBForagingWrapper(
+            field_size=config_dict.get('field_size', 7),
+            num_agents=config_dict.get('num_agents', 2),
+            max_food=config_dict.get('max_food', 1),
+            player_level=config_dict.get('player_level', (3, 3)),
+            food_level=config_dict.get('food_level', (3, 3)),
+            sight=config_dict.get('sight', 2),
+            max_episode_steps=config_dict.get('max_episode_steps', 50),
+            force_coop=config_dict.get('force_coop', False),
+            seed=config_dict.get('seed', None),
+        )
+
     elif env_name == 'SimpleSpread' or env_name == 'simple_spread':
         from .multi_agent_env import MPESimpleSpreadEnv
         return MPESimpleSpreadEnv(

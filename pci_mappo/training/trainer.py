@@ -11,21 +11,22 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from ..algorithms import PCIMAPPOAlgorithm
+from ..algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm
 from ..envs import MultiAgentEnv, dict_to_tensor
 from ..utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
+from typing import Union
 
 
 class PCIMAPPOTrainer:
     """
-    Main trainer for PCI-MAPPO algorithm.
+    Main trainer for PCI-MAPPO, MAPPO, and IPPO algorithms.
     Implements the training loop following the pseudocode.
     """
     
     def __init__(
         self,
         env: MultiAgentEnv,
-        algorithm: PCIMAPPOAlgorithm,
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -54,27 +55,34 @@ class PCIMAPPOTrainer:
         self.seed = getattr(self, 'seed', None)
         self.deterministic = getattr(self, 'deterministic', True)
         
-        # Initialize logging first
-        self.logger = Logger()
+        # Initialize logging first with algorithm-specific name
+        algorithm_type = type(algorithm).__name__.replace('Algorithm', '').upper()
+        self.logger = Logger(name=algorithm_type)
         self.metrics_tracker = MetricsTracker()
         
-        # Initialize causal effect evaluator
-        CausalEffectEvaluator = get_causal_evaluator()
-        self.causal_evaluator = CausalEffectEvaluator(
-            algorithm=algorithm,
-            env=env,
-            num_eval_steps=5000,  # 기본값으로 5000 스텝 설정
-            device=device
-        )
-        
-        # Initialize advanced causal effect evaluator
-        AdvancedCausalEvaluator = get_advanced_causal_evaluator()
-        self.advanced_causal_evaluator = AdvancedCausalEvaluator(
-            algorithm=algorithm,
-            env=env,
-            num_eval_steps=5000,  # 기본값으로 5000 스텝 설정
-            device=device
-        )
+        # Initialize causal effect evaluator (only for PCI-MAPPO)
+        # For other algorithms, these will be None
+        self.causal_evaluator = None
+        self.advanced_causal_evaluator = None
+
+        # Initialize causal effect evaluator (only for PCI-MAPPO and StagHuntEnv)
+        if algorithm_type == 'pci_mappo' and env.__class__.__name__ == "StagHuntEnv":
+            CausalEffectEvaluator = get_causal_evaluator()
+            self.causal_evaluator = CausalEffectEvaluator(
+                algorithm=algorithm,
+                env=env,
+                num_eval_steps=5000,  # 기본값으로 5000 스텝 설정
+                device=device
+            )
+            
+            # Initialize advanced causal effect evaluator
+            AdvancedCausalEvaluator = get_advanced_causal_evaluator()
+            self.advanced_causal_evaluator = AdvancedCausalEvaluator(
+                algorithm=algorithm,
+                env=env,
+                num_eval_steps=5000,  # 기본값으로 5000 스텝 설정
+                device=device
+            )
         
         # Create structured save directory for this simulation (only if save_dir is provided)
         if save_dir is not None:
@@ -88,10 +96,13 @@ class PCIMAPPOTrainer:
         
         # Initialize wandb if requested
         if use_wandb:
+            # Get algorithm type for config
+            algorithm_type = type(self.algorithm).__name__.replace('Algorithm', '').lower()
             wandb.init(
                 project=wandb_project,
                 name=wandb_run_name,
                 config={
+                    "algorithm_type": algorithm_type,
                     "num_agents": env.num_agents,
                     "obs_dim": env.get_obs_dim(),
                     "action_dim": env.get_action_dim(),
@@ -152,6 +163,20 @@ class PCIMAPPOTrainer:
     def _save_simulation_metadata(self):
         """Save simulation configuration and metadata."""
         import json
+        def convert_to_python_type(obj):
+            """Convert numpy types and other non-JSON-serializable types to Python types."""
+            if isinstance(obj, (np.integer, np.int8, np.int16, np.int32, np.int64)):
+                return int(obj)
+            elif isinstance(obj, (np.floating, np.float16, np.float32, np.float64)):
+                return float(obj)
+            elif isinstance(obj, np.ndarray):
+                return obj.tolist()
+            elif isinstance(obj, dict):
+                return {key: convert_to_python_type(value) for key, value in obj.items()}
+            elif isinstance(obj, (list, tuple)):
+                return [convert_to_python_type(item) for item in obj]
+            else:
+                return obj
         
         # Create metadata directory
         metadata_dir = os.path.dirname(self.save_dir)  # Remove 'checkpoints' from path
@@ -181,6 +206,7 @@ class PCIMAPPOTrainer:
         }
         
         # Save metadata
+        metadata = convert_to_python_type(metadata)
         metadata_path = os.path.join(metadata_dir, "simulation_config.json")
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
@@ -247,8 +273,9 @@ class PCIMAPPOTrainer:
     def train(self):
         """Main training loop following PCI-MAPPO pseudocode."""
         # Print training configuration
+        algorithm_type = type(self.algorithm).__name__.replace('Algorithm', '').upper()
         self.logger.info("=" * 60)
-        self.logger.info("PCI-MAPPO Training Configuration")
+        self.logger.info(f"{algorithm_type} Training Configuration")
         self.logger.info("=" * 60)
         self.logger.info(f"Environment: {self.env.__class__.__name__}")
         self.logger.info(f"Number of agents: {self.env.num_agents}")
@@ -468,18 +495,21 @@ class PCIMAPPOTrainer:
         else:
             eval_info['is_best'] = False
         
-        # Perform causal effect evaluation
-        try:
-            causal_stats = self.causal_evaluator.evaluate_causal_effects(num_eval_steps=1000)
-            eval_info['causal_effects'] = causal_stats
-            
-            # Log causal effect statistics
-            self.logger.info("Causal Effect Statistics:")
-            for scenario, stats in causal_stats.items():
-                self.logger.info(f"  {scenario}: mean={stats['mean']:.4f}, std={stats['std']:.4f}, count={stats['count']}")
+        # Perform causal effect evaluation (only for PCI-MAPPO)
+        if self.causal_evaluator is not None:
+            try:
+                causal_stats = self.causal_evaluator.evaluate_causal_effects(num_eval_steps=1000)
+                eval_info['causal_effects'] = causal_stats
                 
-        except Exception as e:
-            self.logger.warning(f"Failed to perform causal effect evaluation: {e}")
+                # Log causal effect statistics
+                self.logger.info("Causal Effect Statistics:")
+                for scenario, stats in causal_stats.items():
+                    self.logger.info(f"  {scenario}: mean={stats['mean']:.4f}, std={stats['std']:.4f}, count={stats['count']}")
+                    
+            except Exception as e:
+                self.logger.warning(f"Failed to perform causal effect evaluation: {e}")
+                eval_info['causal_effects'] = None
+        else:
             eval_info['causal_effects'] = None
         
         return eval_info
@@ -573,8 +603,8 @@ class PCIMAPPOTrainer:
                 'eval/best_reward': self.best_eval_reward
             }
             
-            # Add causal effect metrics to wandb
-            if 'causal_effects' in eval_info and eval_info['causal_effects'] is not None:
+            # Add causal effect metrics to wandb (only for PCI-MAPPO)
+            if self.causal_evaluator is not None and 'causal_effects' in eval_info and eval_info['causal_effects'] is not None:
                 causal_stats = eval_info['causal_effects']
                 for scenario, stats in causal_stats.items():
                     wandb_data[f'eval/causal_effect_{scenario}_mean'] = stats['mean']
@@ -652,14 +682,7 @@ class PCIMAPPOTrainer:
         """Get algorithm state for saving."""
         state = {
             'agents': {},
-            'outcome_bridge_net': self.algorithm.outcome_bridge_net.state_dict(),
-            'action_bridge_net': self.algorithm.action_bridge_net.state_dict(),
-            'critic_kernel_z': self.algorithm.critic_kernel_z.state_dict(),
-            'critic_kernel_w': self.algorithm.critic_kernel_w.state_dict(),
-            'action_embedding_for_kernel': self.algorithm.action_embedding_for_kernel.state_dict(),
-            'outcome_bridge_optimizer': self.algorithm.outcome_bridge_optimizer.state_dict(),
-            'action_bridge_optimizer': self.algorithm.action_bridge_optimizer.state_dict(),
-            'kernel_action_embed_optimizer': self.algorithm.kernel_action_embed_optimizer.state_dict(),
+            'algorithm_type': type(self.algorithm).__name__
         }
         
         # Save agent states
@@ -669,20 +692,38 @@ class PCIMAPPOTrainer:
                 'optimizer': agent.optimizer.state_dict(),
             }
         
-        # Save value networks and optimizers (support both individual and parameter sharing)
-        from ..utils.value_network_utils import is_value_network_shared
-        
-        if not is_value_network_shared(self.algorithm):
-            # Individual value networks
-            state['value_nets'] = {}
-            state['value_optimizers'] = {}
-            for agent_id, value_net in self.algorithm.value_nets.items():
-                state['value_nets'][agent_id] = value_net.state_dict()
+        # Save algorithm-specific states
+        if isinstance(self.algorithm, PCIMAPPOAlgorithm):
+            # PCI-MAPPO specific states
+            state['outcome_bridge_net'] = self.algorithm.outcome_bridge_net.state_dict()
+            state['action_bridge_net'] = self.algorithm.action_bridge_net.state_dict()
+            state['critic_kernel_z'] = self.algorithm.critic_kernel_z.state_dict()
+            state['critic_kernel_w'] = self.algorithm.critic_kernel_w.state_dict()
+            state['action_embedding_for_kernel'] = self.algorithm.action_embedding_for_kernel.state_dict()
+            state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
+            state['action_bridge_optimizer'] = self.algorithm.action_bridge_optimizer.state_dict()
+            state['kernel_action_embed_optimizer'] = self.algorithm.kernel_action_embed_optimizer.state_dict()
             
-            for agent_id, value_optimizer in self.algorithm.value_optimizers.items():
-                state['value_optimizers'][agent_id] = value_optimizer.state_dict()
+            # Save value networks and optimizers (support both individual and parameter sharing)
+            from ..utils.value_network_utils import is_value_network_shared
+            
+            if not is_value_network_shared(self.algorithm):
+                # Individual value networks
+                state['value_nets'] = {}
+                state['value_optimizers'] = {}
+                for agent_id, value_net in self.algorithm.value_nets.items():
+                    state['value_nets'][agent_id] = value_net.state_dict()
+                
+                for agent_id, value_optimizer in self.algorithm.value_optimizers.items():
+                    state['value_optimizers'][agent_id] = value_optimizer.state_dict()
+            else:
+                # Parameter sharing: save single value_net
+                if hasattr(self.algorithm, 'value_net'):
+                    state['value_net'] = self.algorithm.value_net.state_dict()
+                if hasattr(self.algorithm, 'value_optimizer'):
+                    state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
         else:
-            # Parameter sharing: save single value_net
+            # MAPPO and IPPO: save shared value network
             if hasattr(self.algorithm, 'value_net'):
                 state['value_net'] = self.algorithm.value_net.state_dict()
             if hasattr(self.algorithm, 'value_optimizer'):
@@ -700,43 +741,53 @@ class PCIMAPPOTrainer:
         
         # Load algorithm state
         algorithm_state = checkpoint['algorithm_state']
-        
-        # Load network states
-        self.algorithm.outcome_bridge_net.load_state_dict(algorithm_state['outcome_bridge_net'])
-        self.algorithm.action_bridge_net.load_state_dict(algorithm_state['action_bridge_net'])
-        self.algorithm.critic_kernel_z.load_state_dict(algorithm_state['critic_kernel_z'])
-        self.algorithm.critic_kernel_w.load_state_dict(algorithm_state['critic_kernel_w'])
-        self.algorithm.action_embedding_for_kernel.load_state_dict(algorithm_state['action_embedding_for_kernel'])
-        self.algorithm.outcome_bridge_optimizer.load_state_dict(algorithm_state['outcome_bridge_optimizer'])
-        self.algorithm.action_bridge_optimizer.load_state_dict(algorithm_state['action_bridge_optimizer'])
-        self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
-        
+    
         # Load agent states
         for agent_id, agent_state in algorithm_state['agents'].items():
             agent = self.algorithm.agents[int(agent_id)]
             agent.policy_net.load_state_dict(agent_state['policy_net'])
             agent.optimizer.load_state_dict(agent_state['optimizer'])
         
-        # Load value networks and optimizers (support both individual and parameter sharing)
-        from ..utils.value_network_utils import is_value_network_shared
+        # Load algorithm-specific states
+        if isinstance(self.algorithm, PCIMAPPOAlgorithm):
+            # PCI-MAPPO specific states
+            if 'outcome_bridge_net' in algorithm_state:
+                self.algorithm.outcome_bridge_net.load_state_dict(algorithm_state['outcome_bridge_net'])
+            if 'action_bridge_net' in algorithm_state:
+                self.algorithm.action_bridge_net.load_state_dict(algorithm_state['action_bridge_net'])
+            if 'critic_kernel_z' in algorithm_state:
+                self.algorithm.critic_kernel_z.load_state_dict(algorithm_state['critic_kernel_z'])
+            if 'critic_kernel_w' in algorithm_state:
+                self.algorithm.critic_kernel_w.load_state_dict(algorithm_state['critic_kernel_w'])
+            if 'action_embedding_for_kernel' in algorithm_state:
+                self.algorithm.action_embedding_for_kernel.load_state_dict(algorithm_state['action_embedding_for_kernel'])
+            if 'outcome_bridge_optimizer' in algorithm_state:
+                self.algorithm.outcome_bridge_optimizer.load_state_dict(algorithm_state['outcome_bridge_optimizer'])
+            if 'action_bridge_optimizer' in algorithm_state:
+                self.algorithm.action_bridge_optimizer.load_state_dict(algorithm_state['action_bridge_optimizer'])
+            if 'kernel_action_embed_optimizer' in algorithm_state:
+                self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
+            
+            # Load value networks and optimizers (support both individual and parameter sharing)
+            from ..utils.value_network_utils import is_value_network_shared
+            
+            if 'value_nets' in algorithm_state:
+                # Individual value networks
+                if hasattr(self.algorithm, 'value_nets'):
+                    for agent_id, value_net_state in algorithm_state['value_nets'].items():
+                        self.algorithm.value_nets[int(agent_id)].load_state_dict(value_net_state)
+                else:
+                    self.logger.warning("Checkpoint contains individual value networks but algorithm uses parameter sharing")
+            
+            if 'value_optimizers' in algorithm_state:
+                # Individual value optimizers
+                if hasattr(self.algorithm, 'value_optimizers'):
+                    for agent_id, value_optimizer_state in algorithm_state['value_optimizers'].items():
+                        self.algorithm.value_optimizers[int(agent_id)].load_state_dict(value_optimizer_state)
+                else:
+                    self.logger.warning("Checkpoint contains individual value optimizers but algorithm uses parameter sharing")
         
-        if 'value_nets' in algorithm_state:
-            # Individual value networks
-            if hasattr(self.algorithm, 'value_nets'):
-                for agent_id, value_net_state in algorithm_state['value_nets'].items():
-                    self.algorithm.value_nets[int(agent_id)].load_state_dict(value_net_state)
-            else:
-                self.logger.warning("Checkpoint contains individual value networks but algorithm uses parameter sharing")
-        
-        if 'value_optimizers' in algorithm_state:
-            # Individual value optimizers
-            if hasattr(self.algorithm, 'value_optimizers'):
-                for agent_id, value_optimizer_state in algorithm_state['value_optimizers'].items():
-                    self.algorithm.value_optimizers[int(agent_id)].load_state_dict(value_optimizer_state)
-            else:
-                self.logger.warning("Checkpoint contains individual value optimizers but algorithm uses parameter sharing")
-        
-        # Parameter sharing (backward compatibility)
+        # Load shared value network (for all algorithms)
         if 'value_net' in algorithm_state:
             if hasattr(self.algorithm, 'value_net'):
                 self.algorithm.value_net.load_state_dict(algorithm_state['value_net'])
@@ -808,20 +859,21 @@ class PCIMAPPOTrainer:
             step_count = 0
             episode_count = 0
             
-            # Reset policy bias buffers in evaluator (case-by-case and aggregated)
-            try:
-                from collections import defaultdict as _dd
-                # Initialize all data structures used for case-by-case study
-                self.advanced_causal_evaluator.object_choice_data = _dd(lambda: _dd(list))
-                if hasattr(self.advanced_causal_evaluator, 'object_choice_cases'):
-                    self.advanced_causal_evaluator.object_choice_cases = []
-                if hasattr(self.advanced_causal_evaluator, 'case_attempt_data'):
-                    self.advanced_causal_evaluator.case_attempt_data = _dd(lambda: _dd(list))
-                # Also reset detailed_causal_effects for clean statistics
-                if hasattr(self.advanced_causal_evaluator, 'detailed_causal_effects'):
-                    self.advanced_causal_evaluator.detailed_causal_effects = _dd(lambda: _dd(list))
-            except Exception as e:
-                self.logger.debug(f"Failed to reset evaluator data: {e}")
+            # Reset policy bias buffers in evaluator (case-by-case and aggregated) - only for PCI-MAPPO
+            if self.advanced_causal_evaluator is not None:
+                try:
+                    from collections import defaultdict as _dd
+                    # Initialize all data structures used for case-by-case study
+                    self.advanced_causal_evaluator.object_choice_data = _dd(lambda: _dd(list))
+                    if hasattr(self.advanced_causal_evaluator, 'object_choice_cases'):
+                        self.advanced_causal_evaluator.object_choice_cases = []
+                    if hasattr(self.advanced_causal_evaluator, 'case_attempt_data'):
+                        self.advanced_causal_evaluator.case_attempt_data = _dd(lambda: _dd(list))
+                    # Also reset detailed_causal_effects for clean statistics
+                    if hasattr(self.advanced_causal_evaluator, 'detailed_causal_effects'):
+                        self.advanced_causal_evaluator.detailed_causal_effects = _dd(lambda: _dd(list))
+                except Exception as e:
+                    self.logger.debug(f"Failed to reset evaluator data: {e}")
 
             while step_count < advanced_causal_steps:
                 episode_count += 1
@@ -967,17 +1019,18 @@ class PCIMAPPOTrainer:
                                 if agent_id in agents_with_hare_opportunity:
                                     agent_metrics[agent_id]['hare_hunt_attempts'] += 1
 
-                        # Collect policy bias data for advanced evaluator (case-by-case)
-                        try:
-                            # Convert current observations (before step update) back to numpy
-                            obs_np = {aid: obs.detach().cpu().numpy() for aid, obs in observations.items()}
-                            self.advanced_causal_evaluator._collect_policy_bias_data(
-                                observations=obs_np,
-                                actions=actions,
-                                info=info
-                            )
-                        except Exception as e:
-                            self.logger.debug(f"Policy bias data collection failed: {e}")
+                        # Collect policy bias data for advanced evaluator (case-by-case) - only for PCI-MAPPO
+                        if self.advanced_causal_evaluator is not None:
+                            try:
+                                # Convert current observations (before step update) back to numpy
+                                obs_np = {aid: obs.detach().cpu().numpy() for aid, obs in observations.items()}
+                                self.advanced_causal_evaluator._collect_policy_bias_data(
+                                    observations=obs_np,
+                                    actions=actions,
+                                    info=info
+                                )
+                            except Exception as e:
+                                self.logger.debug(f"Policy bias data collection failed: {e}")
                     
                     observations = next_observations
                     episode_length += 1
@@ -1146,27 +1199,28 @@ class PCIMAPPOTrainer:
             if self.save_dir is not None:
                 self._plot_policy_quality_metrics(policy_metrics, self.save_dir)
 
-            # Additionally, generate policy bias plot using advanced evaluator's collected data
-            try:
-                advanced_eval_dir = os.path.join(self.save_dir, 'advanced_causal_evaluation') if self.save_dir is not None else None
-                if advanced_eval_dir is not None:
-                    os.makedirs(advanced_eval_dir, exist_ok=True)
-                    policy_bias_path = os.path.join(advanced_eval_dir, 'policy_bias.png')
-                    stats_for_bias = self.advanced_causal_evaluator._compute_detailed_statistics()
-                    self.advanced_causal_evaluator.plot_policy_bias(
-                        statistics=stats_for_bias,
-                        save_path=policy_bias_path,
-                        return_figure=False
-                    )
-                    self.logger.info(f"Policy bias plot saved: {policy_bias_path}")
-                    if self.use_wandb:
-                        wandb.log({"policy/policy_bias": wandb.Image(policy_bias_path)}, step=self.iteration)
-            except Exception as e:
-                self.logger.warning(f"Failed to generate policy bias plot: {e}")
+            # Additionally, generate policy bias plot using advanced evaluator's collected data - only for PCI-MAPPO
+            if self.advanced_causal_evaluator is not None:
+                try:
+                    advanced_eval_dir = os.path.join(self.save_dir, 'advanced_causal_evaluation') if self.save_dir is not None else None
+                    if advanced_eval_dir is not None:
+                        os.makedirs(advanced_eval_dir, exist_ok=True)
+                        policy_bias_path = os.path.join(advanced_eval_dir, 'policy_bias.png')
+                        stats_for_bias = self.advanced_causal_evaluator._compute_detailed_statistics()
+                        self.advanced_causal_evaluator.plot_policy_bias(
+                            statistics=stats_for_bias,
+                            save_path=policy_bias_path,
+                            return_figure=False
+                        )
+                        self.logger.info(f"Policy bias plot saved: {policy_bias_path}")
+                        if self.use_wandb:
+                            wandb.log({"policy/policy_bias": wandb.Image(policy_bias_path)}, step=self.iteration)
+                except Exception as e:
+                    self.logger.warning(f"Failed to generate policy bias plot: {e}")
         
-        # Causal effect evaluation if requested (tsne and detailed_causal_effects.png only)
+        # Causal effect evaluation if requested (tsne and detailed_causal_effects.png only) - only for PCI-MAPPO
         causal_results = None
-        if evaluate_advanced_causal:
+        if evaluate_advanced_causal and self.causal_evaluator is not None and self.advanced_causal_evaluator is not None:
             self.logger.info("\n" + "="*80)
             self.logger.info("Starting Causal Effect Evaluation")
             self.logger.info("="*80)

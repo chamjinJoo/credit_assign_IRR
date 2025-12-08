@@ -4,34 +4,14 @@ import random
 import math
 from typing import Dict, Tuple, List, Any, Optional
 from abc import ABC, abstractmethod
+import lbforaging
+import gymnasium as gym
 
-# Optional imports for visualization
-try:
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as patches
-    from matplotlib.animation import FuncAnimation
-    import matplotlib.colors as mcolors
-    MATPLOTLIB_AVAILABLE = True
-except ImportError:
-    MATPLOTLIB_AVAILABLE = False
-    print("Warning: Matplotlib not available. Visualization features will not work.")
-
-# Optional imports with fallbacks
-# try:
-#     import jax
-#     import jax.random as jr
-#     JAX_AVAILABLE = True
-# except ImportError:
-#     JAX_AVAILABLE = False
-#     print("Warning: JAX not available. MPE environments will not work.")
-
-# try:
-#     from jaxmarl import make as jaxmarl_make
-#     JAXMARL_AVAILABLE = True
-# except ImportError:
-#     JAXMARL_AVAILABLE = False
-#     print("Warning: JaxMARL not available. MPE environments will not work.")
-
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+from matplotlib.animation import FuncAnimation
+import matplotlib.colors as mcolors
+MATPLOTLIB_AVAILABLE = True
 
 class MultiAgentEnv(ABC):
     """
@@ -79,656 +59,6 @@ class MultiAgentEnv(ABC):
     def get_action_dim(self) -> int:
         """Get action dimension."""
         pass
-
-
-class SimpleCooperativeEnv(MultiAgentEnv):
-    """
-    Simple cooperative environment for testing PCI-MAPPO.
-    Agents need to coordinate to maximize collective reward.
-    """
-    
-    def __init__(
-        self, 
-        num_agents: int = 3,
-        grid_size: int = 5,
-        max_steps: int = 50,
-        cooperation_bonus: float = 2.0,
-        seed: int = None
-    ):
-        super().__init__(num_agents, seed)
-        
-        self.grid_size = grid_size
-        self.max_steps = max_steps
-        self.cooperation_bonus = cooperation_bonus
-        
-        # State
-        self.agent_positions = {}
-        self.target_positions = {}
-        self.step_count = 0
-        
-        # Action space: 0=stay, 1=up, 2=down, 3=left, 4=right
-        self.action_dim = 5
-        
-        # Observation space: [agent_x, agent_y, target_x, target_y, other_agent_positions...]
-        self.obs_dim = 2 + 2 + 2 * (num_agents - 1)
-        
-    def reset(self) -> Dict[int, np.ndarray]:
-        """Reset environment."""
-        self.step_count = 0
-        
-        # Random initial positions
-        for agent_id in self.agents:
-            if self._np_random is not None:
-                self.agent_positions[agent_id] = [
-                    self._np_random.randint(0, self.grid_size),
-                    self._np_random.randint(0, self.grid_size)
-                ]
-                
-                self.target_positions[agent_id] = [
-                    self._np_random.randint(0, self.grid_size),
-                    self._np_random.randint(0, self.grid_size)
-                ]
-            else:
-                self.agent_positions[agent_id] = [
-                    np.random.randint(0, self.grid_size),
-                    np.random.randint(0, self.grid_size)
-                ]
-                
-                self.target_positions[agent_id] = [
-                    np.random.randint(0, self.grid_size),
-                    np.random.randint(0, self.grid_size)
-                ]
-        
-        return self._get_observations()
-    
-    def step(self, actions: Dict[int, int]) -> Tuple[
-        Dict[int, np.ndarray],
-        Dict[int, float], 
-        Dict[int, bool],
-        Dict[str, Any]
-    ]:
-        """Take step in environment."""
-        self.step_count += 1
-        
-        # Update positions based on actions
-        for agent_id, action in actions.items():
-            pos = self.agent_positions[agent_id]
-            
-            if action == 1:  # up
-                pos[1] = min(pos[1] + 1, self.grid_size - 1)
-            elif action == 2:  # down
-                pos[1] = max(pos[1] - 1, 0)
-            elif action == 3:  # left
-                pos[0] = max(pos[0] - 1, 0)
-            elif action == 4:  # right
-                pos[0] = min(pos[0] + 1, self.grid_size - 1)
-            # action == 0 is stay
-        
-        # Compute rewards
-        rewards = self._compute_rewards()
-        
-        # Check if done
-        done = self.step_count >= self.max_steps
-        dones = {agent_id: done for agent_id in self.agents}
-        
-        # Get observations
-        observations = self._get_observations()
-        
-        # Info
-        info = {
-            'step_count': self.step_count,
-            'cooperation_events': self._count_cooperation_events()
-        }
-        
-        return observations, rewards, dones, info
-    
-    def _get_observations(self) -> Dict[int, np.ndarray]:
-        """Get observations for all agents."""
-        observations = {}
-        
-        for agent_id in self.agents:
-            obs = []
-            
-            # Agent position
-            obs.extend(self.agent_positions[agent_id])
-            
-            # Target position
-            obs.extend(self.target_positions[agent_id])
-            
-            # Other agents' positions
-            for other_id in self.agents:
-                if other_id != agent_id:
-                    obs.extend(self.agent_positions[other_id])
-            
-            observations[agent_id] = np.array(obs, dtype=np.float32)
-        
-        return observations
-    
-    def _compute_rewards(self) -> Dict[int, float]:
-        """Compute rewards for all agents."""
-        rewards = {}
-        
-        for agent_id in self.agents:
-            # Distance to target
-            agent_pos = np.array(self.agent_positions[agent_id])
-            target_pos = np.array(self.target_positions[agent_id])
-            distance = np.linalg.norm(agent_pos - target_pos)
-            
-            # Base reward (negative distance)
-            reward = -distance / self.grid_size
-            
-            # Cooperation bonus
-            cooperation_reward = self._get_cooperation_reward(agent_id)
-            
-            rewards[agent_id] = reward + cooperation_reward
-        
-        return rewards
-    
-    def _get_cooperation_reward(self, agent_id: int) -> float:
-        """Compute cooperation reward for an agent."""
-        agent_pos = np.array(self.agent_positions[agent_id])
-        
-        cooperation_reward = 0.0
-        for other_id in self.agents:
-            if other_id != agent_id:
-                other_pos = np.array(self.agent_positions[other_id])
-                distance = np.linalg.norm(agent_pos - other_pos)
-                
-                # Reward for being close to other agents
-                if distance <= 1.5:  # Adjacent or same cell
-                    cooperation_reward += self.cooperation_bonus
-        
-        return cooperation_reward
-    
-    def _count_cooperation_events(self) -> int:
-        """Count cooperation events (agents in close proximity)."""
-        count = 0
-        for i, agent_id in enumerate(self.agents):
-            for other_id in self.agents[i+1:]:
-                agent_pos = np.array(self.agent_positions[agent_id])
-                other_pos = np.array(self.agent_positions[other_id])
-                distance = np.linalg.norm(agent_pos - other_pos)
-                
-                if distance <= 1.5:
-                    count += 1
-        
-        return count
-    
-    def get_obs_dim(self) -> int:
-        return self.obs_dim
-    
-    def get_action_dim(self) -> int:
-        return self.action_dim
-    
-    def render(self, mode='human'):
-        """Render the environment (optional)."""
-        grid = np.zeros((self.grid_size, self.grid_size), dtype=str)
-        grid[:] = '.'
-        
-        # Place agents
-        for agent_id in self.agents:
-            pos = self.agent_positions[agent_id]
-            if grid[pos[1], pos[0]] == '.':
-                grid[pos[1], pos[0]] = str(agent_id)
-            else:
-                grid[pos[1], pos[0]] += str(agent_id)
-        
-        # Place targets
-        for agent_id in self.agents:
-            pos = self.target_positions[agent_id]
-            if grid[pos[1], pos[0]] == '.':
-                grid[pos[1], pos[0]] = f'T{agent_id}'
-            else:
-                grid[pos[1], pos[0]] += f'T{agent_id}'
-        
-        print(f"Step: {self.step_count}")
-        for row in reversed(grid):
-            print(' '.join(f'{cell:>4}' for cell in row))
-        print()
-
-
-class PettingZooWrapper(MultiAgentEnv):
-    """
-    Wrapper for PettingZoo environments.
-    """
-    
-    def __init__(self, env_name: str, **kwargs):
-        try:
-            from pettingzoo import AECEnv
-            from pettingzoo.utils import parallel_to_aec
-            import importlib
-            
-            # Import the environment
-            module_path, env_func = env_name.rsplit('.', 1)
-            module = importlib.import_module(module_path)
-            env_class = getattr(module, env_func)
-            
-            # Create environment
-            self.env = env_class(**kwargs)
-            
-            # Convert to parallel if needed
-            if hasattr(self.env, 'parallel_env'):
-                self.env = self.env.parallel_env()
-            
-            # Get number of agents
-            self.env.reset()
-            num_agents = len(self.env.possible_agents)
-            super().__init__(num_agents)
-            
-            self.agent_mapping = {i: agent for i, agent in enumerate(self.env.possible_agents)}
-            self.reverse_mapping = {agent: i for i, agent in self.agent_mapping.items()}
-            
-        except ImportError:
-            raise ImportError("PettingZoo not installed. Install with: pip install pettingzoo")
-    
-    def reset(self) -> Dict[int, np.ndarray]:
-        obs_dict = self.env.reset()
-        
-        # Convert to our format
-        observations = {}
-        for agent_name, obs in obs_dict.items():
-            if agent_name in self.reverse_mapping:
-                agent_id = self.reverse_mapping[agent_name]
-                observations[agent_id] = obs.astype(np.float32)
-        
-        return observations
-    
-    def step(self, actions: Dict[int, int]) -> Tuple[
-        Dict[int, np.ndarray],
-        Dict[int, float],
-        Dict[int, bool], 
-        Dict[str, Any]
-    ]:
-        # Convert actions to PettingZoo format
-        pz_actions = {}
-        for agent_id, action in actions.items():
-            agent_name = self.agent_mapping[agent_id]
-            pz_actions[agent_name] = action
-        
-        # Step environment
-        obs_dict, reward_dict, done_dict, info_dict = self.env.step(pz_actions)
-        
-        # Convert back to our format
-        observations = {}
-        rewards = {}
-        dones = {}
-        
-        for agent_name in self.env.possible_agents:
-            if agent_name in self.reverse_mapping:
-                agent_id = self.reverse_mapping[agent_name]
-                
-                if agent_name in obs_dict:
-                    observations[agent_id] = obs_dict[agent_name].astype(np.float32)
-                if agent_name in reward_dict:
-                    rewards[agent_id] = float(reward_dict[agent_name])
-                if agent_name in done_dict:
-                    dones[agent_id] = bool(done_dict[agent_name])
-        
-        return observations, rewards, dones, info_dict
-    
-    def get_obs_dim(self) -> int:
-        return self.env.observation_space(self.env.possible_agents[0]).shape[0]
-    
-    def get_action_dim(self) -> int:
-        return self.env.action_space(self.env.possible_agents[0]).n
-
-
-class ToyCausalEnv(MultiAgentEnv):
-    """
-    Toy environment for testing PCI-MAPPO with causal inference.
-    
-    Features:
-    - 2 agents, 5-step episodes
-    - Left/Right actions with 0.9 success probability
-    - Causal events: 20% chance of high reward (+3) with observable precursors
-    - Cross-agent causal signals: one agent's reward precursor visible to other agent
-    """
-    
-    def __init__(self, num_agents: int = 2, episode_length: int = 5, seed: int = None):
-        super().__init__(num_agents, seed)
-        
-        if num_agents != 2:
-            raise ValueError("ToyCausalEnv only supports 2 agents")
-        
-        self.episode_length = episode_length
-        self.step_count = 0
-        
-        # Action space: 0=left, 1=right
-        self.action_dim = 2
-        
-        # Observation space: [high_reward_signal, reward_location]
-        # high_reward_signal: 0 (normal) or 1 (high reward precursor)
-        # reward_location: -1 (left) or 1 (right)
-        self.obs_dim = 2       
-        # Probabilities
-        self.action_success_prob = 0.9
-        self.reward_locations = []
-        self.reward_events = np.zeros(self.episode_length)
-
-    def reset(self) -> Dict[int, np.ndarray]:
-        """Reset environment for new episode."""
-        self.step_count = 0
-        
-        # 리스트 초기화 (누적 방지)
-        self.reward_locations = []
-        self.reward_events = np.zeros(self.episode_length)
-        
-        for t in range(self.episode_length):
-            if self._np_random is not None:
-                self.reward_locations.append([self._np_random.choice([-1, 1]), self._np_random.choice([-1, 1])])
-                event_prob = self._np_random.random()
-            else:
-                self.reward_locations.append([np.random.choice([-1, 1]), np.random.choice([-1, 1])])
-                event_prob = np.random.random()
-            
-            if event_prob < 0.8:  # 80% normal events
-                pass
-            elif event_prob < 0.9:  # 10% agent 1's high reward signal to agent 2
-                self.reward_events[t] = 1
-            else:   # 10% agent 2's high reward signal to agent 1
-                self.reward_events[t] = 2
-
-        return self._get_observations()
-    
-    def step(self, actions: Dict[int, int]) -> Tuple[
-        Dict[int, np.ndarray],
-        Dict[int, float],
-        Dict[int, bool],
-        Dict[str, Any]
-    ]:
-        """Take step in environment."""
-
-        rewards = {}
-        
-        # according to event type, reward is determined
-        # for normal event, reward is +1 if agent chooses correct action
-        # for high reward event, reward is +3 if other agent chooses correct action, the other agent does not get reward.
-        
-        def _action_matches_location(action, location):
-            """Convert between action space (0=left, 1=right) and location space (-1=left, 1=right)"""
-            return (action == 0 and location == -1) or (action == 1 and location == 1)
-        
-        if self.reward_events[self.step_count] == 0: # normal
-            for agent_id in self.agents:
-                if _action_matches_location(actions[agent_id], self.reward_locations[self.step_count][agent_id]):
-                    rewards[agent_id] = 1.0
-                else:
-                    rewards[agent_id] = 0.0
-
-        elif self.reward_events[self.step_count] == 1: # agent 1's high reward signal to agent 2
-            if (_action_matches_location(actions[1], self.reward_locations[self.step_count][1]) and 
-                _action_matches_location(actions[0], self.reward_locations[self.step_count][0])):
-                rewards[0] = 3.0
-            else:
-                rewards[0] = 0.0
-            rewards[1] = 0.0
-
-        elif self.reward_events[self.step_count] == 2: # agent 2's high reward signal to agent 1
-            if (_action_matches_location(actions[0], self.reward_locations[self.step_count][0]) and 
-                _action_matches_location(actions[1], self.reward_locations[self.step_count][1])):
-                rewards[1] = 3.0
-            else:
-                rewards[1] = 0.0
-            rewards[0] = 0.0
-
-        self.step_count += 1
-        
-        # Check if episode is done
-        done = self.step_count >= self.episode_length
-        dones = {agent_id: done for agent_id in self.agents}
-        
-        # Get observations (only if episode is not done to avoid index error)
-        if done:
-            # Return dummy observations when episode is done
-            observations = {agent_id: np.zeros(self.obs_dim, dtype=np.float32) for agent_id in self.agents}
-        else:
-            observations = self._get_observations()
-        # Info
-        info = {
-            'step_count': self.step_count,
-            'reward_events': self.reward_events.copy(),
-            'reward_locations': self.reward_locations.copy()
-        }
-        
-        return observations, rewards, dones, info
-    
-    def _get_observations(self) -> Dict[int, np.ndarray]:
-        """Get observations for all agents."""
-        observations = {}
-        if self.reward_events[self.step_count] == 0: # normal
-            observations[0] = np.array([0, self.reward_locations[self.step_count][0]], dtype=np.float32)
-            observations[1] = np.array([0, self.reward_locations[self.step_count][1]], dtype=np.float32)
-        elif self.reward_events[self.step_count] == 1: # agent 1's high reward signal to agent 2
-            observations[0] = np.array([0, self.reward_locations[self.step_count][0]], dtype=np.float32)
-            observations[1] = np.array([1, self.reward_locations[self.step_count][1]], dtype=np.float32)
-        else: # agent 2's high reward signal to agent 1
-            observations[0] = np.array([1, self.reward_locations[self.step_count][0]], dtype=np.float32)
-            observations[1] = np.array([0, self.reward_locations[self.step_count][1]], dtype=np.float32)
-        
-        return observations
-    
-    def get_obs_dim(self) -> int:
-        return self.obs_dim
-    
-    def get_action_dim(self) -> int:
-        return self.action_dim
-    
-    def render(self, mode='human'):
-        """Render the environment state."""
-        print(f"Step: {self.step_count}")
-        print(f"Reward events: {self.reward_events}")
-        print(f"Reward locations: {self.reward_locations}")
-
-
-class DecTigerEnv(MultiAgentEnv):
-    """
-    Dec-Tiger 환경을 PCI-MAPPO의 MultiAgentEnv 인터페이스에 맞게 구현합니다.
-    두 에이전트가 협력하여 호랑이가 있는 문을 찾아 열어야 하는 협력 게임입니다.
-    """
-    
-    # Action constants
-    OPEN_LEFT = 0
-    OPEN_RIGHT = 1
-    LISTEN = 2
-    
-    def __init__(self, 
-                 seed: int = 0,
-                 max_steps: int = 4,
-                 failure_obs_prob: float = 0.15,
-                 fully_observable: bool = False,
-                 **kwargs):
-        """
-        Dec-Tiger 환경 초기화
-        
-        Args:
-            seed: 랜덤 시드
-            max_steps: 최대 스텝 수
-            failure_obs_prob: 관찰 실패 확률
-            fully_observable: 완전 관찰 가능 여부
-        """
-        # 에이전트 수는 항상 2
-        super().__init__(num_agents=2)
-        
-        # Actions: 0:open-left, 1:open-right, 2:listen
-        self._actions = ["open-left", "open-right", "listen"]
-        self.maxtimestep = max_steps
-        
-        # Observation space: each agent has 2-dimensional observation (hear-left, hear-right)
-        self.obs_dim = 2
-        
-        # Action space: each agent has 3 actions
-        self.action_dim = 3
-        
-        # Environment parameters
-        self.failure_obs_prob = failure_obs_prob
-        self.fully_observable = fully_observable
-        
-        # State: tiger position (0: left, 1: right)
-        self.state = None
-        self.steps = 0
-        
-        # RNG setup
-        self.py_random = random.Random(seed)
-        np.random.seed(seed)
-        
-        self.reset()
-    
-    def seed(self, seed: int):
-        """Seed both Python random and NumPy RNG."""
-        self.py_random.seed(seed)
-        np.random.seed(seed)
-        return [seed]
-    
-    def reset(self) -> Dict[int, np.ndarray]:
-        """Reset environment and return initial observations."""
-        self.steps = 0
-        
-        # Randomize tiger position (0: left, 1: right)
-        self.state = np.zeros(2, dtype=np.float32)
-        tiger_position = np.random.randint(0, 2)
-        self.state[tiger_position] = 1
-        
-        # Generate completely random observations for each agent
-        obs = np.zeros((self.num_agents, 2), dtype=np.float32)
-        tiger_observations = np.rint(np.random.rand(self.num_agents))
-        
-        for agent in range(self.num_agents):
-            if self.fully_observable:
-                # Fully observable: agents know the true tiger position
-                obs[agent][tiger_position] = 1
-            else:
-                # Completely random observations (independent of true state)
-                obs_index = int(tiger_observations[agent])
-                obs[agent][obs_index] = 1
-        
-        # Convert to PCI-MAPPO format
-        observations = {}
-        for agent_id in range(self.num_agents):
-            observations[agent_id] = obs[agent]
-        
-        return observations
-    
-    def step(self, actions: Dict[int, int]) -> Tuple[
-        Dict[int, np.ndarray],  # observations
-        Dict[int, float],       # rewards
-        Dict[int, bool],        # dones
-        Dict[str, Any]          # info
-    ]:
-        """
-        Execute actions in the environment.
-        actions: Dict[int, int] - {agent_id: action}
-        returns: (observations, rewards, dones, info)
-        """
-        # Convert PCI-MAPPO format to Dec-Tiger format
-        a0, a1 = int(actions[0]), int(actions[1])
-        ja = (self._actions[a0], self._actions[a1])
-        
-        # Get tiger position
-        tiger_position = np.argmax(self.state)
-        
-        # Initialize reward and observations
-        reward = 0.0
-        obs = np.zeros((self.num_agents, 2), dtype=np.float32)
-        done = False  # Initialize done variable
-        # Check if both agents choose the same action
-        if a0 == a1:
-            if a0 == self.LISTEN:
-                # Both agents listen
-                reward = -0.2
-                
-                # Generate observations for both agents
-                for agent in range(self.num_agents):
-                    rand = np.random.rand()
-                    if rand <= self.failure_obs_prob:
-                        # Failed observation: wrong position
-                        other_position = (tiger_position + 1) % 2
-                        obs[agent][other_position] = 1
-                    else:
-                        # Successful observation: correct position
-                        obs[agent][tiger_position] = 1
-            else:
-                # Both agents open the same door
-                done = True
-                if tiger_position == a0:
-                    # Opened door with tiger: penalty
-                    reward = -5.0
-                else:
-                    # Opened door without tiger: reward
-                    reward = 2.0
-                
-                # Generate random observations after opening
-                for agent in range(self.num_agents):
-                    random_index = np.random.randint(0, 2)
-                    obs[agent][random_index] = 1
-        else:
-            # Agents choose different actions
-            rewards = []
-            
-            for agent, action_agent in enumerate([a0, a1]):
-                if action_agent == self.LISTEN:
-                    # Agent listens: small penalty
-                    reward -= 0.1
-                else:
-                    # Agent opens a door
-                    done = True
-                    if tiger_position == action_agent:
-                        # Opened door with tiger: penalty
-                        rewards.append(-10.0)
-                    else:
-                        # Opened door without tiger: reward
-                        rewards.append(1.0)
-                
-                # Generate random observation for this agent
-                random_index = np.random.randint(0, 2)
-                obs[agent][random_index] = 1
-            
-            # If any agent opened a door, add the minimum reward
-            if rewards:
-                reward += min(rewards)
-        
-        # Update step counter
-        self.steps += 1
-        
-        # Check episode limit
-        if self.steps >= self.maxtimestep:
-            done = True
-        
-        info = {
-            'state': self.state,
-            'action': ja,
-            'tiger_position': tiger_position,
-            'steps': self.steps,
-            'episode_limit': self.steps >= self.maxtimestep
-        }
-        
-        # Convert to PCI-MAPPO format
-        observations = {}
-        rewards = {}
-        dones = {}
-        
-        for agent_id in range(self.num_agents):
-            observations[agent_id] = obs[agent_id]
-            rewards[agent_id] = float(reward)  # Same reward for all agents
-            dones[agent_id] = done
-        
-        return observations, rewards, dones, info
-    
-    def get_obs_dim(self) -> int:
-        """Get observation dimension."""
-        return self.obs_dim
-    
-    def get_action_dim(self) -> int:
-        """Get action dimension."""
-        return self.action_dim
-    
-    def render(self, mode='human'):
-        """Render the environment state."""
-        if mode == 'human':
-            tiger_pos = "left" if np.argmax(self.state) == 0 else "right"
-            print(f"Tiger position: {tiger_pos}")
-            print(f"Step: {self.steps}/{self.maxtimestep}")
-        return None
-
 
 class StagHuntEnv(MultiAgentEnv):
     """
@@ -1604,6 +934,162 @@ class StagHuntEnv(MultiAgentEnv):
             self._fig = None
             self._ax = None
 
+class LBForagingWrapper(MultiAgentEnv):
+    """
+    LBForaging environment wrapper
+    """
+    def __init__(
+        self,
+        seed: int = None,
+        field_size: int = 7,
+        num_agents: int = 2,
+        max_food: int = 2,
+        sight: int = 2,
+        max_episode_steps: int = 50,
+        force_coop: bool = False,
+        player_level: Tuple[int, int] = (1, 1),
+        food_level: Tuple[int, int] = (1, 3),
+    ):
+        super().__init__(num_agents=num_agents, seed=seed)
+        
+        self.field_size = field_size
+        self.max_food = max_food
+        self.sight = sight
+        self.player_level = player_level
+        self.food_level = food_level
+        self.max_episode_steps = max_episode_steps
+        self.force_coop = force_coop
+        
+        # Gymnasium 환경 생성
+        from gymnasium.envs.registration import register
+        env_id = f"Foraging-{field_size}x{field_size}-{num_agents}p-{max_food}f"
+        if force_coop:
+            env_id += "-coop"
+        env_id += "-v3"
+        self.env_id = env_id
+        try:
+            env_registered = env_id in gym.envs.registry
+        except:
+            env_registered = False
+
+        self.kwargs = {"players": num_agents,
+                    "min_player_level": player_level[0],
+                    "max_player_level": player_level[1],
+                    "min_food_level": food_level[0],
+                    "max_food_level": food_level[1],
+                    "field_size": (field_size, field_size),
+                    "max_num_food": max_food,
+                    "sight": sight,
+                    "max_episode_steps": max_episode_steps,
+                    "force_coop": force_coop,
+                    "grid_observation": True
+        }
+        # 환경이 이미 등록되어 있으면 unregister하고 다시 등록
+        if env_registered:
+            try:
+                from gymnasium.envs.registration import registry
+                del registry[env_id]
+            except:
+                pass
+        
+        # 항상 새로 등록하여 올바른 설정으로 환경 생성
+        register(
+            id=env_id,
+            entry_point="lbforaging.foraging:ForagingEnv",
+            kwargs=self.kwargs,
+        )
+        self.env = gym.make(env_id)
+        self.env_id = env_id
+        print(f"LBF env: {self.env_id}")
+        self.agent_names = [f"agent_{i}" for i in range(self.num_agents)]
+        self.agent_mapping = {i: f"agent_{i}" for i in range(self.num_agents)}
+        self.reverse_mapping = {f"agent_{i}": i for i in range(self.num_agents)}
+
+        # Observation 및 action 차원 확인
+        # Gymnasium의 reset 표준에 따라 seed를 전달
+        obs_array, _ = self.env.reset(seed=self._seed) 
+        # LBForaging의 관찰은 (N, obs_dim) 배열이므로, obs_dim은 두 번째 차원입니다.
+        # grid_observation인 경우 shape의 전체 크기를 사용
+        if self.kwargs.get("grid_observation", False):
+            self.obs_dim = int(np.prod(obs_array[0].shape))
+        else:
+            self.obs_dim = len(obs_array[0]) 
+        if hasattr(self.env.action_space, '__getitem__'):
+            self.action_dim = self.env.action_space[0].n
+        else:
+            self.action_dim = self.env.action_space.n
+
+    def reset(self) -> Dict[int, np.ndarray]:
+        """환경을 리셋하고 초기 관찰을 반환합니다."""
+        obs_array, _ = self.env.reset() # (observation_array, info_dict)
+        # numpy 배열을 Dict[agent_id: np.ndarray] 형식으로 변환
+        # grid_observation인 경우 3차원 텐서를 1차원 벡터로 flatten
+        observations = {i: obs_array[i].astype(np.float32).flatten() for i in range(self.num_agents)}
+        return observations
+
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],
+        Dict[int, float],
+        Dict[int, bool],
+        Dict[str, Any]
+    ]:
+        """환경에서 한 스텝을 진행합니다."""
+        # 1. PCI-MAPPO Dict[int: int] 액션을 LBForaging의 np.ndarray[int] 형식으로 변환
+        # LBForaging은 (N,) 형태의 np.int64 배열을 기대합니다.
+        gym_actions = np.array([actions[i] for i in range(self.num_agents)], dtype=np.int64)
+        
+        # 2. 환경 스텝 실행
+        # Gymnasium의 step 표준: (obs_array, reward_array, terminated, truncated, info)
+        step_result = self.env.step(gym_actions)
+        obs_array, reward_array, terminated, truncated, info = step_result
+        
+        # 3. LBForaging의 배열 결과를 PCI-MAPPO의 Dict[int: value] 형식으로 변환
+        observations = {}
+        rewards = {}
+        dones = {}
+        
+        for i in range(self.num_agents):
+            # 관찰: (obs_dim,) 형태로 변환
+            observations[i] = obs_array[i].astype(np.float32).flatten()
+            # reward: each agent's maximum reward in one episode is 1.0
+            rewards[i] = float(reward_array[i])
+        # 4. Done 처리 (terminated와 truncated를 합쳐서 episode_done 계산)
+        episode_done = bool(terminated) or bool(truncated)
+        
+        # 모든 에이전트에 동일하게 적용
+        for agent_id in self.agents:
+            dones[agent_id] = episode_done
+
+        # Info 정보
+        info_dict = {
+            # 'step_count': self.env._elapsed_steps,
+            'max_cycles': self.max_episode_steps,
+            'episode_done': episode_done,
+            'raw_info': info
+        }
+        # for debugging
+        # self.env.render()
+        return observations, rewards, dones, info_dict
+    
+    # get_obs_dim, get_action_dim, render, close는 기존 로직을 유지합니다.
+    def get_obs_dim(self) -> int:
+        """관찰 차원을 반환합니다."""
+        return self.obs_dim
+    
+    def get_action_dim(self) -> int:
+        """액션 차원을 반환합니다."""
+        return self.action_dim
+    
+    def render(self, mode='human'):
+        """환경 상태를 렌더링합니다."""
+        if hasattr(self.env, 'render'):
+            return self.env.render(mode=mode)
+        return None
+    
+    def close(self):
+        """환경을 닫습니다."""
+        if hasattr(self.env, 'close'):
+            self.env.close()
 
 class MPESimpleSpreadEnv(MultiAgentEnv):
     """
@@ -1948,7 +1434,653 @@ class SimpleStagHuntEnv(MultiAgentEnv):
         
         return None
         
+class SimpleCooperativeEnv(MultiAgentEnv):
+    """
+    Simple cooperative environment for testing PCI-MAPPO.
+    Agents need to coordinate to maximize collective reward.
+    """
+    
+    def __init__(
+        self, 
+        num_agents: int = 3,
+        grid_size: int = 5,
+        max_steps: int = 50,
+        cooperation_bonus: float = 2.0,
+        seed: int = None
+    ):
+        super().__init__(num_agents, seed)
+        
+        self.grid_size = grid_size
+        self.max_steps = max_steps
+        self.cooperation_bonus = cooperation_bonus
+        
+        # State
+        self.agent_positions = {}
+        self.target_positions = {}
+        self.step_count = 0
+        
+        # Action space: 0=stay, 1=up, 2=down, 3=left, 4=right
+        self.action_dim = 5
+        
+        # Observation space: [agent_x, agent_y, target_x, target_y, other_agent_positions...]
+        self.obs_dim = 2 + 2 + 2 * (num_agents - 1)
+        
+    def reset(self) -> Dict[int, np.ndarray]:
+        """Reset environment."""
+        self.step_count = 0
+        
+        # Random initial positions
+        for agent_id in self.agents:
+            if self._np_random is not None:
+                self.agent_positions[agent_id] = [
+                    self._np_random.randint(0, self.grid_size),
+                    self._np_random.randint(0, self.grid_size)
+                ]
+                
+                self.target_positions[agent_id] = [
+                    self._np_random.randint(0, self.grid_size),
+                    self._np_random.randint(0, self.grid_size)
+                ]
+            else:
+                self.agent_positions[agent_id] = [
+                    np.random.randint(0, self.grid_size),
+                    np.random.randint(0, self.grid_size)
+                ]
+                
+                self.target_positions[agent_id] = [
+                    np.random.randint(0, self.grid_size),
+                    np.random.randint(0, self.grid_size)
+                ]
+        
+        return self._get_observations()
+    
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],
+        Dict[int, float], 
+        Dict[int, bool],
+        Dict[str, Any]
+    ]:
+        """Take step in environment."""
+        self.step_count += 1
+        
+        # Update positions based on actions
+        for agent_id, action in actions.items():
+            pos = self.agent_positions[agent_id]
+            
+            if action == 1:  # up
+                pos[1] = min(pos[1] + 1, self.grid_size - 1)
+            elif action == 2:  # down
+                pos[1] = max(pos[1] - 1, 0)
+            elif action == 3:  # left
+                pos[0] = max(pos[0] - 1, 0)
+            elif action == 4:  # right
+                pos[0] = min(pos[0] + 1, self.grid_size - 1)
+            # action == 0 is stay
+        
+        # Compute rewards
+        rewards = self._compute_rewards()
+        
+        # Check if done
+        done = self.step_count >= self.max_steps
+        dones = {agent_id: done for agent_id in self.agents}
+        
+        # Get observations
+        observations = self._get_observations()
+        
+        # Info
+        info = {
+            'step_count': self.step_count,
+            'cooperation_events': self._count_cooperation_events()
+        }
+        
+        return observations, rewards, dones, info
+    
+    def _get_observations(self) -> Dict[int, np.ndarray]:
+        """Get observations for all agents."""
+        observations = {}
+        
+        for agent_id in self.agents:
+            obs = []
+            
+            # Agent position
+            obs.extend(self.agent_positions[agent_id])
+            
+            # Target position
+            obs.extend(self.target_positions[agent_id])
+            
+            # Other agents' positions
+            for other_id in self.agents:
+                if other_id != agent_id:
+                    obs.extend(self.agent_positions[other_id])
+            
+            observations[agent_id] = np.array(obs, dtype=np.float32)
+        
+        return observations
+    
+    def _compute_rewards(self) -> Dict[int, float]:
+        """Compute rewards for all agents."""
+        rewards = {}
+        
+        for agent_id in self.agents:
+            # Distance to target
+            agent_pos = np.array(self.agent_positions[agent_id])
+            target_pos = np.array(self.target_positions[agent_id])
+            distance = np.linalg.norm(agent_pos - target_pos)
+            
+            # Base reward (negative distance)
+            reward = -distance / self.grid_size
+            
+            # Cooperation bonus
+            cooperation_reward = self._get_cooperation_reward(agent_id)
+            
+            rewards[agent_id] = reward + cooperation_reward
+        
+        return rewards
+    
+    def _get_cooperation_reward(self, agent_id: int) -> float:
+        """Compute cooperation reward for an agent."""
+        agent_pos = np.array(self.agent_positions[agent_id])
+        
+        cooperation_reward = 0.0
+        for other_id in self.agents:
+            if other_id != agent_id:
+                other_pos = np.array(self.agent_positions[other_id])
+                distance = np.linalg.norm(agent_pos - other_pos)
+                
+                # Reward for being close to other agents
+                if distance <= 1.5:  # Adjacent or same cell
+                    cooperation_reward += self.cooperation_bonus
+        
+        return cooperation_reward
+    
+    def _count_cooperation_events(self) -> int:
+        """Count cooperation events (agents in close proximity)."""
+        count = 0
+        for i, agent_id in enumerate(self.agents):
+            for other_id in self.agents[i+1:]:
+                agent_pos = np.array(self.agent_positions[agent_id])
+                other_pos = np.array(self.agent_positions[other_id])
+                distance = np.linalg.norm(agent_pos - other_pos)
+                
+                if distance <= 1.5:
+                    count += 1
+        
+        return count
+    
+    def get_obs_dim(self) -> int:
+        return self.obs_dim
+    
+    def get_action_dim(self) -> int:
+        return self.action_dim
+    
+    def render(self, mode='human'):
+        """Render the environment (optional)."""
+        grid = np.zeros((self.grid_size, self.grid_size), dtype=str)
+        grid[:] = '.'
+        
+        # Place agents
+        for agent_id in self.agents:
+            pos = self.agent_positions[agent_id]
+            if grid[pos[1], pos[0]] == '.':
+                grid[pos[1], pos[0]] = str(agent_id)
+            else:
+                grid[pos[1], pos[0]] += str(agent_id)
+        
+        # Place targets
+        for agent_id in self.agents:
+            pos = self.target_positions[agent_id]
+            if grid[pos[1], pos[0]] == '.':
+                grid[pos[1], pos[0]] = f'T{agent_id}'
+            else:
+                grid[pos[1], pos[0]] += f'T{agent_id}'
+        
+        print(f"Step: {self.step_count}")
+        for row in reversed(grid):
+            print(' '.join(f'{cell:>4}' for cell in row))
+        print()
+
+class PettingZooWrapper(MultiAgentEnv):
+    """
+    Wrapper for PettingZoo environments.
+    """
+    
+    def __init__(self, env_name: str, **kwargs):
+        try:
+            from pettingzoo import AECEnv
+            from pettingzoo.utils import parallel_to_aec
+            import importlib
+            
+            # Import the environment
+            module_path, env_func = env_name.rsplit('.', 1)
+            module = importlib.import_module(module_path)
+            env_class = getattr(module, env_func)
+            
+            # Create environment
+            self.env = env_class(**kwargs)
+            
+            # Convert to parallel if needed
+            if hasattr(self.env, 'parallel_env'):
+                self.env = self.env.parallel_env()
+            
+            # Get number of agents
+            self.env.reset()
+            num_agents = len(self.env.possible_agents)
+            super().__init__(num_agents)
+            
+            self.agent_mapping = {i: agent for i, agent in enumerate(self.env.possible_agents)}
+            self.reverse_mapping = {agent: i for i, agent in self.agent_mapping.items()}
+            
+        except ImportError:
+            raise ImportError("PettingZoo not installed. Install with: pip install pettingzoo")
+    
+    def reset(self) -> Dict[int, np.ndarray]:
+        obs_dict = self.env.reset()
+        
+        # Convert to our format
+        observations = {}
+        for agent_name, obs in obs_dict.items():
+            if agent_name in self.reverse_mapping:
+                agent_id = self.reverse_mapping[agent_name]
+                observations[agent_id] = obs.astype(np.float32)
+        
+        return observations
+    
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],
+        Dict[int, float],
+        Dict[int, bool], 
+        Dict[str, Any]
+    ]:
+        # Convert actions to PettingZoo format
+        pz_actions = {}
+        for agent_id, action in actions.items():
+            agent_name = self.agent_mapping[agent_id]
+            pz_actions[agent_name] = action
+        
+        # Step environment
+        obs_dict, reward_dict, done_dict, info_dict = self.env.step(pz_actions)
+        
+        # Convert back to our format
+        observations = {}
+        rewards = {}
+        dones = {}
+        
+        for agent_name in self.env.possible_agents:
+            if agent_name in self.reverse_mapping:
+                agent_id = self.reverse_mapping[agent_name]
+                
+                if agent_name in obs_dict:
+                    observations[agent_id] = obs_dict[agent_name].astype(np.float32)
+                if agent_name in reward_dict:
+                    rewards[agent_id] = float(reward_dict[agent_name])
+                if agent_name in done_dict:
+                    dones[agent_id] = bool(done_dict[agent_name])
+        
+        return observations, rewards, dones, info_dict
+    
+    def get_obs_dim(self) -> int:
+        return self.env.observation_space(self.env.possible_agents[0]).shape[0]
+    
+    def get_action_dim(self) -> int:
+        return self.env.action_space(self.env.possible_agents[0]).n
+
+class ToyCausalEnv(MultiAgentEnv):
+    """
+    Toy environment for testing PCI-MAPPO with causal inference.
+    
+    Features:
+    - 2 agents, 5-step episodes
+    - Left/Right actions with 0.9 success probability
+    - Causal events: 20% chance of high reward (+3) with observable precursors
+    - Cross-agent causal signals: one agent's reward precursor visible to other agent
+    """
+    
+    def __init__(self, num_agents: int = 2, episode_length: int = 5, seed: int = None):
+        super().__init__(num_agents, seed)
+        
+        if num_agents != 2:
+            raise ValueError("ToyCausalEnv only supports 2 agents")
+        
+        self.episode_length = episode_length
+        self.step_count = 0
+        
+        # Action space: 0=left, 1=right
+        self.action_dim = 2
+        
+        # Observation space: [high_reward_signal, reward_location]
+        # high_reward_signal: 0 (normal) or 1 (high reward precursor)
+        # reward_location: -1 (left) or 1 (right)
+        self.obs_dim = 2       
+        # Probabilities
+        self.action_success_prob = 0.9
+        self.reward_locations = []
+        self.reward_events = np.zeros(self.episode_length)
+
+    def reset(self) -> Dict[int, np.ndarray]:
+        """Reset environment for new episode."""
+        self.step_count = 0
+        
+        # 리스트 초기화 (누적 방지)
+        self.reward_locations = []
+        self.reward_events = np.zeros(self.episode_length)
+        
+        for t in range(self.episode_length):
+            if self._np_random is not None:
+                self.reward_locations.append([self._np_random.choice([-1, 1]), self._np_random.choice([-1, 1])])
+                event_prob = self._np_random.random()
+            else:
+                self.reward_locations.append([np.random.choice([-1, 1]), np.random.choice([-1, 1])])
+                event_prob = np.random.random()
+            
+            if event_prob < 0.8:  # 80% normal events
+                pass
+            elif event_prob < 0.9:  # 10% agent 1's high reward signal to agent 2
+                self.reward_events[t] = 1
+            else:   # 10% agent 2's high reward signal to agent 1
+                self.reward_events[t] = 2
+
+        return self._get_observations()
+    
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],
+        Dict[int, float],
+        Dict[int, bool],
+        Dict[str, Any]
+    ]:
+        """Take step in environment."""
+
+        rewards = {}
+        
+        # according to event type, reward is determined
+        # for normal event, reward is +1 if agent chooses correct action
+        # for high reward event, reward is +3 if other agent chooses correct action, the other agent does not get reward.
+        
+        def _action_matches_location(action, location):
+            """Convert between action space (0=left, 1=right) and location space (-1=left, 1=right)"""
+            return (action == 0 and location == -1) or (action == 1 and location == 1)
+        
+        if self.reward_events[self.step_count] == 0: # normal
+            for agent_id in self.agents:
+                if _action_matches_location(actions[agent_id], self.reward_locations[self.step_count][agent_id]):
+                    rewards[agent_id] = 1.0
+                else:
+                    rewards[agent_id] = 0.0
+
+        elif self.reward_events[self.step_count] == 1: # agent 1's high reward signal to agent 2
+            if (_action_matches_location(actions[1], self.reward_locations[self.step_count][1]) and 
+                _action_matches_location(actions[0], self.reward_locations[self.step_count][0])):
+                rewards[0] = 3.0
+            else:
+                rewards[0] = 0.0
+            rewards[1] = 0.0
+
+        elif self.reward_events[self.step_count] == 2: # agent 2's high reward signal to agent 1
+            if (_action_matches_location(actions[0], self.reward_locations[self.step_count][0]) and 
+                _action_matches_location(actions[1], self.reward_locations[self.step_count][1])):
+                rewards[1] = 3.0
+            else:
+                rewards[1] = 0.0
+            rewards[0] = 0.0
+
+        self.step_count += 1
+        
+        # Check if episode is done
+        done = self.step_count >= self.episode_length
+        dones = {agent_id: done for agent_id in self.agents}
+        
+        # Get observations (only if episode is not done to avoid index error)
+        if done:
+            # Return dummy observations when episode is done
+            observations = {agent_id: np.zeros(self.obs_dim, dtype=np.float32) for agent_id in self.agents}
+        else:
+            observations = self._get_observations()
+        # Info
+        info = {
+            'step_count': self.step_count,
+            'reward_events': self.reward_events.copy(),
+            'reward_locations': self.reward_locations.copy()
+        }
+        
+        return observations, rewards, dones, info
+    
+    def _get_observations(self) -> Dict[int, np.ndarray]:
+        """Get observations for all agents."""
+        observations = {}
+        if self.reward_events[self.step_count] == 0: # normal
+            observations[0] = np.array([0, self.reward_locations[self.step_count][0]], dtype=np.float32)
+            observations[1] = np.array([0, self.reward_locations[self.step_count][1]], dtype=np.float32)
+        elif self.reward_events[self.step_count] == 1: # agent 1's high reward signal to agent 2
+            observations[0] = np.array([0, self.reward_locations[self.step_count][0]], dtype=np.float32)
+            observations[1] = np.array([1, self.reward_locations[self.step_count][1]], dtype=np.float32)
+        else: # agent 2's high reward signal to agent 1
+            observations[0] = np.array([1, self.reward_locations[self.step_count][0]], dtype=np.float32)
+            observations[1] = np.array([0, self.reward_locations[self.step_count][1]], dtype=np.float32)
+        
+        return observations
+    
+    def get_obs_dim(self) -> int:
+        return self.obs_dim
+    
+    def get_action_dim(self) -> int:
+        return self.action_dim
+    
+    def render(self, mode='human'):
+        """Render the environment state."""
+        print(f"Step: {self.step_count}")
+        print(f"Reward events: {self.reward_events}")
+        print(f"Reward locations: {self.reward_locations}")
+
+class DecTigerEnv(MultiAgentEnv):
+    """
+    Dec-Tiger 환경을 PCI-MAPPO의 MultiAgentEnv 인터페이스에 맞게 구현합니다.
+    두 에이전트가 협력하여 호랑이가 있는 문을 찾아 열어야 하는 협력 게임입니다.
+    """
+    
+    # Action constants
+    OPEN_LEFT = 0
+    OPEN_RIGHT = 1
+    LISTEN = 2
+    
+    def __init__(self, 
+                 seed: int = 0,
+                 max_steps: int = 4,
+                 failure_obs_prob: float = 0.15,
+                 fully_observable: bool = False,
+                 **kwargs):
+        """
+        Dec-Tiger 환경 초기화
+        
+        Args:
+            seed: 랜덤 시드
+            max_steps: 최대 스텝 수
+            failure_obs_prob: 관찰 실패 확률
+            fully_observable: 완전 관찰 가능 여부
+        """
+        # 에이전트 수는 항상 2
+        super().__init__(num_agents=2)
+        
+        # Actions: 0:open-left, 1:open-right, 2:listen
+        self._actions = ["open-left", "open-right", "listen"]
+        self.maxtimestep = max_steps
+        
+        # Observation space: each agent has 2-dimensional observation (hear-left, hear-right)
+        self.obs_dim = 2
+        
+        # Action space: each agent has 3 actions
+        self.action_dim = 3
+        
+        # Environment parameters
+        self.failure_obs_prob = failure_obs_prob
+        self.fully_observable = fully_observable
+        
+        # State: tiger position (0: left, 1: right)
+        self.state = None
+        self.steps = 0
+        
+        # RNG setup
+        self.py_random = random.Random(seed)
+        np.random.seed(seed)
+        
+        self.reset()
+    
+    def seed(self, seed: int):
+        """Seed both Python random and NumPy RNG."""
+        self.py_random.seed(seed)
+        np.random.seed(seed)
+        return [seed]
+    
+    def reset(self) -> Dict[int, np.ndarray]:
+        """Reset environment and return initial observations."""
+        self.steps = 0
+        
+        # Randomize tiger position (0: left, 1: right)
+        self.state = np.zeros(2, dtype=np.float32)
+        tiger_position = np.random.randint(0, 2)
+        self.state[tiger_position] = 1
+        
+        # Generate completely random observations for each agent
+        obs = np.zeros((self.num_agents, 2), dtype=np.float32)
+        tiger_observations = np.rint(np.random.rand(self.num_agents))
+        
+        for agent in range(self.num_agents):
+            if self.fully_observable:
+                # Fully observable: agents know the true tiger position
+                obs[agent][tiger_position] = 1
+            else:
+                # Completely random observations (independent of true state)
+                obs_index = int(tiger_observations[agent])
+                obs[agent][obs_index] = 1
+        
+        # Convert to PCI-MAPPO format
+        observations = {}
+        for agent_id in range(self.num_agents):
+            observations[agent_id] = obs[agent]
+        
+        return observations
+    
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],  # observations
+        Dict[int, float],       # rewards
+        Dict[int, bool],        # dones
+        Dict[str, Any]          # info
+    ]:
+        """
+        Execute actions in the environment.
+        actions: Dict[int, int] - {agent_id: action}
+        returns: (observations, rewards, dones, info)
+        """
+        # Convert PCI-MAPPO format to Dec-Tiger format
+        a0, a1 = int(actions[0]), int(actions[1])
+        ja = (self._actions[a0], self._actions[a1])
+        
+        # Get tiger position
+        tiger_position = np.argmax(self.state)
+        
+        # Initialize reward and observations
+        reward = 0.0
+        obs = np.zeros((self.num_agents, 2), dtype=np.float32)
+        done = False  # Initialize done variable
+        # Check if both agents choose the same action
+        if a0 == a1:
+            if a0 == self.LISTEN:
+                # Both agents listen
+                reward = -0.2
+                
+                # Generate observations for both agents
+                for agent in range(self.num_agents):
+                    rand = np.random.rand()
+                    if rand <= self.failure_obs_prob:
+                        # Failed observation: wrong position
+                        other_position = (tiger_position + 1) % 2
+                        obs[agent][other_position] = 1
+                    else:
+                        # Successful observation: correct position
+                        obs[agent][tiger_position] = 1
+            else:
+                # Both agents open the same door
+                done = True
+                if tiger_position == a0:
+                    # Opened door with tiger: penalty
+                    reward = -5.0
+                else:
+                    # Opened door without tiger: reward
+                    reward = 2.0
+                
+                # Generate random observations after opening
+                for agent in range(self.num_agents):
+                    random_index = np.random.randint(0, 2)
+                    obs[agent][random_index] = 1
+        else:
+            # Agents choose different actions
+            rewards = []
+            
+            for agent, action_agent in enumerate([a0, a1]):
+                if action_agent == self.LISTEN:
+                    # Agent listens: small penalty
+                    reward -= 0.1
+                else:
+                    # Agent opens a door
+                    done = True
+                    if tiger_position == action_agent:
+                        # Opened door with tiger: penalty
+                        rewards.append(-10.0)
+                    else:
+                        # Opened door without tiger: reward
+                        rewards.append(1.0)
+                
+                # Generate random observation for this agent
+                random_index = np.random.randint(0, 2)
+                obs[agent][random_index] = 1
+            
+            # If any agent opened a door, add the minimum reward
+            if rewards:
+                reward += min(rewards)
+        
+        # Update step counter
+        self.steps += 1
+        
+        # Check episode limit
+        if self.steps >= self.maxtimestep:
+            done = True
+        
+        info = {
+            'state': self.state,
+            'action': ja,
+            'tiger_position': tiger_position,
+            'steps': self.steps,
+            'episode_limit': self.steps >= self.maxtimestep
+        }
+        
+        # Convert to PCI-MAPPO format
+        observations = {}
+        rewards = {}
+        dones = {}
+        
+        for agent_id in range(self.num_agents):
+            observations[agent_id] = obs[agent_id]
+            rewards[agent_id] = float(reward)  # Same reward for all agents
+            dones[agent_id] = done
+        
+        return observations, rewards, dones, info
+    
+    def get_obs_dim(self) -> int:
+        """Get observation dimension."""
+        return self.obs_dim
+    
+    def get_action_dim(self) -> int:
+        """Get action dimension."""
+        return self.action_dim
+    
+    def render(self, mode='human'):
+        """Render the environment state."""
+        if mode == 'human':
+            tiger_pos = "left" if np.argmax(self.state) == 0 else "right"
+            print(f"Tiger position: {tiger_pos}")
+            print(f"Step: {self.steps}/{self.maxtimestep}")
+        return None
+
 def dict_to_tensor(obs_dict: Dict[int, np.ndarray], device: str = "cpu") -> Dict[int, torch.Tensor]:
     """Convert observation dictionary to tensor dictionary."""
     return {agent_id: torch.tensor(obs, dtype=torch.float32, device=device) 
             for agent_id, obs in obs_dict.items()}
+

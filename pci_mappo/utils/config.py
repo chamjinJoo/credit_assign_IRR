@@ -1,6 +1,6 @@
 import yaml
 import argparse
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 
 
@@ -18,6 +18,7 @@ class NetworkConfig:
 @dataclass
 class AlgorithmConfig:
     """Algorithm configuration."""
+    type: str = "pci_mappo"  # Algorithm type: pci_mappo, mappo, or ippo
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
@@ -85,7 +86,17 @@ class EnvironmentConfig:
     local_ratio: float = 0.5
     max_cycles: int = 25
     continuous_actions: bool = False
-    
+
+    # For LBForaging environment
+    env_id: str = "Foraging-8x8-2p-1f-v3"
+    field_size: int = 7
+    max_food: int = 2
+    player_level: Tuple[int, int] = (1, 1)
+    food_level: Tuple[int, int] = (1, 3)
+    sight: int = 7
+    max_episode_steps: int = 50
+    force_coop: bool = False
+
     # For Simple Stag Hunt environment
     cooperation_reward: int = 5
     defect_alone_reward: int = 1
@@ -183,6 +194,8 @@ def parse_args() -> argparse.Namespace:
                         help='Training device (cpu/cuda)')
     
     # Algorithm
+    parser.add_argument('--algorithm-type', '--model', type=str, default=None,
+                        help='Algorithm type: pci_mappo, mappo, or ippo')
     parser.add_argument('--causal-lambda', type=float, default=None,
                         help='Causal reward shaping coefficient')
     parser.add_argument('--causal-lambda-schedule', action='store_true', default=False,
@@ -256,6 +269,13 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     if hasattr(args, 'log_interval') and args.log_interval:
         config.training.log_interval = args.log_interval
     
+    # Support both 'model' and 'algorithm_type' for backward compatibility
+    algorithm_type = getattr(args, 'algorithm_type', None) or getattr(args, 'model', None)
+    if algorithm_type:
+        # Convert hyphen to underscore for convenience (e.g., pci-mappo -> pci_mappo)
+        algorithm_type = algorithm_type.replace('-', '_')
+        config.algorithm.type = algorithm_type
+    
     if hasattr(args, 'causal_lambda') and args.causal_lambda is not None:
         config.algorithm.causal_lambda = args.causal_lambda
     if hasattr(args, 'lr') and args.lr:
@@ -269,7 +289,6 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.wandb.project = args.wandb_project
     if hasattr(args, 'wandb_run_name') and args.wandb_run_name:
         config.wandb.run_name = args.wandb_run_name
-    
     # Reproducibility settings
     if hasattr(args, 'seed') and args.seed:
         config.training.seed = args.seed
