@@ -10,11 +10,11 @@ Example usage:
 
 import os
 import torch
-from pci_mappo.utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
-from pci_mappo.utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
-from pci_mappo.envs import create_environment, get_available_environments
-from pci_mappo.algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm
-from pci_mappo.training import PCIMAPPOTrainer
+from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
+from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
+from envs import create_environment, get_available_environments
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm
+from runner import Trainer
 
 
 def create_algorithm(env, config):
@@ -251,7 +251,7 @@ def main():
         # run_name이 없으면 알고리즘 타입만 사용
         wandb_run_name = algorithm_type
     
-    trainer = PCIMAPPOTrainer(
+    trainer = Trainer(
         env=env,
         algorithm=algorithm,
         max_iterations=config.training.max_iterations,

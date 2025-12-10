@@ -57,6 +57,7 @@ environment:
   forage_reward: 3.0
   stag_reward: 5.0
   mauling_punishment: -1.0
+  
 # Weights & Biases Configuration
 wandb:
   use_wandb: false
