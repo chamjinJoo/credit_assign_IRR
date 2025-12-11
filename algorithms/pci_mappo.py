@@ -471,6 +471,12 @@ class PCIMAPPOAlgorithm:
         solved_K_w2_sum = torch.linalg.solve(reg_K_w1, K_w2_sum)  # Shape: [batch_size, 1]
         linear_term = phi_q_col.T @ solved_K_w2_sum  # Shape: [1, 1]
 
+        # K_w2_expectation = K_w2.mean(dim=0)  # 각 열의 평균
+        # solved_K_w2_expectation = torch.linalg.solve(
+        #     reg_K_w1, K_w2_expectation.unsqueeze(1)
+        #     )  # [batch_size, 1]
+        # linear_term = phi_q_col.T @ solved_K_w2_expectation  # [1, 1]
+
         action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size 
 
         # --- Combine Losses and Backward Pass ---

@@ -63,15 +63,6 @@ class MultiAgentEnv(ABC):
 class StagHuntEnv(MultiAgentEnv):
     """
     Reference: https://github.com/NullDefault/Gym-Stag-Hunt/tree/master
-    Stag-Hunt 환경을 PCI-MAPPO의 MultiAgentEnv 인터페이스에 맞게 구현합니다.
-    두 에이전트가 협력하여 Stag를 사냥하거나 개별적으로 Hare를 사냥할 수 있는 게임입니다.
-    ╔════════════════════════════╗
-    ║ ·2   ·   H·    ·    · 1  · ║
-    ║ ·    ·    ·    ·    ·    · ║
-    ║ ·    ·    ·  S ·    ·    · ║
-    ║ ·    ·    ·    ·   H·    · ║
-    ║ ·    ·    ·    ·    ·    · ║
-    ╚════════════════════════════╝
     """
     # Action constants
     STAY = 0
@@ -90,6 +81,7 @@ class StagHuntEnv(MultiAgentEnv):
         forage_reward: float = 3.0,
         stag_reward: float = 5.0,
         mauling_punishment: float = -1.0,
+        coop_bonus: float = 1.0,
         seed: int = None,
         **kwargs):
         """
@@ -135,19 +127,12 @@ class StagHuntEnv(MultiAgentEnv):
         
         # spwan positions should be symmetrically distributed around the center
         self.agent_spawn_positions = self._get_symmetric_spawn_positions(num_agents)
-
-        # self.agent_spawn_positions = [
-        #     (0, self.grid_size_y-1), 
-        #     (self.grid_size_x-1, self.grid_size_y-1), 
-        #     (self.grid_size_x-1, 0),
-        #     (0, 0),
-        #     (self.grid_size_x//2, self.grid_size_y//2)
-        # ]  
-        
+       
         # Rewards
         self.forage_reward = forage_reward
         self.stag_reward = stag_reward
         self.mauling_punishment = mauling_punishment
+        self.coop_bonus = coop_bonus
 
         # Allocate agents to each stag: stag_i -> (agent i, agent i+1), 마지막 stag는 (agent N, agent 1)
         self.required_agents = {}
@@ -157,7 +142,7 @@ class StagHuntEnv(MultiAgentEnv):
             else:
                 self.required_agents[stag_id] = [stag_id, stag_id + 1]
 
-        print(f"mauling_punishment: {self.mauling_punishment}")
+        print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
         print(f"stag allocated agents: {self.required_agents}")
         
     def _get_empty_positions(self):
@@ -292,18 +277,18 @@ class StagHuntEnv(MultiAgentEnv):
     def reset(self) -> Dict[int, np.ndarray]:
         """환경을 리셋하고 초기 관찰을 반환합니다."""
         self.step_count = 0
-       
+        self.stag_positions = {}
+        self.stag_alive = {}
+   
         for i, agent_id in enumerate(self.agents):
             self.agent_positions[agent_id] = self._spawn_object_randomly() # random spawn
             # self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
-        # n개의 Stag를 서로 상하좌우로 붙어있지 않게 배치 (이동하지 않음)
-        self.stag_positions = {}
-        self.stag_alive = {}
+
         stag_positions = self._spawn_stags_with_separation(self.num_agents)
-        for stag_id in range(self.num_agents):  # num_agents만큼의 stag 생성
-            self.stag_positions[stag_id] = stag_positions[stag_id]
+        for i, stag_id in enumerate(self.agents):  # num_agents만큼의 stag 생성
+            self.stag_positions[stag_id] = stag_positions[i]
             self.stag_alive[stag_id] = True  # 모든 stag를 살아있는 상태로 초기화
-        
+    
         # 식물들을 빈 위치에 랜덤 스폰
         try:
             self.hare_positions = {}
@@ -497,46 +482,6 @@ class StagHuntEnv(MultiAgentEnv):
             # 경계 체크
             if (0 <= new_x < self.grid_size_x and 0 <= new_y < self.grid_size_y):
                 new_positions[agent_id] = (new_x, new_y)
-                # target_pos = (new_x, new_y)
-                # Stag 위치로의 이동 제한: stag 사냥 조건을 만족할 때만 허용
-                # if target_pos in self.stag_positions.values():
-                #     # 목표 위치가 stag 위치인지 확인
-                #     stag_at_target = None
-                #     for stag_id, stag_pos in self.stag_positions.items():
-                #         if stag_pos == target_pos:
-                #             stag_at_target = stag_id
-                #             break
-                    
-                #     if stag_at_target is not None:
-                #         # 해당 stag 위치로 이동하는 에이전트들 확인
-                #         agents_moving_to_stag = []
-                #         for other_agent_id, other_action in actions.items():
-                #             other_current_x, other_current_y = self.agent_positions[other_agent_id]
-                #             other_new_x, other_new_y = other_current_x, other_current_y
-                            
-                #             # 다른 에이전트의 이동 계산
-                #             if other_action == self.UP:
-                #                 other_new_x, other_new_y = other_current_x, other_current_y + 1
-                #             elif other_action == self.DOWN:
-                #                 other_new_x, other_new_y = other_current_x, other_current_y - 1
-                #             elif other_action == self.LEFT:
-                #                 other_new_x, other_new_y = other_current_x - 1, other_current_y
-                #             elif other_action == self.RIGHT:
-                #                 other_new_x, other_new_y = other_current_x + 1, other_current_y
-                            
-                #             # 같은 stag 위치로 이동하는지 확인
-                #             if (other_new_x, other_new_y) == target_pos:
-                #                 agents_moving_to_stag.append(other_agent_id)
-                        
-                #         # stag 사냥 조건 확인: stag i는 agent i와 agent i+1이 필요 (마지막 stag n은 agent n과 agent 1)
-                #         required_agents = self.required_agents[stag_at_target]
-                        
-                #         # 필수 에이전트들이 모두 stag 위치로 이동하는지 확인
-                #         if not all(agent_id in agents_moving_to_stag for agent_id in required_agents):
-                #             # 조건을 만족하지 않으면 이동 차단
-                #             new_x, new_y = current_x, current_y
-                
-                # new_positions[agent_id] = (new_x, new_y)
             else:
                 # 경계 밖으로 이동하려 하면 현재 위치 유지
                 new_positions[agent_id] = (current_x, current_y)
@@ -553,7 +498,7 @@ class StagHuntEnv(MultiAgentEnv):
 
     def _process_hunting(self, rewards: Dict[int, float]) -> Dict:
         """사냥 처리: stag i는 agent i와 agent i+1이 동시에 사냥해야 성공
-        stag i가 agent i에게만 reward 제공
+        stag i가 agent i에게 stag_reward 제공, 협력에 참여한 agent에게는 coop_bonus 제공
         
         Returns:
             hunting_info: 사냥 정보 딕셔너리
@@ -618,10 +563,14 @@ class StagHuntEnv(MultiAgentEnv):
             for agent_id in agents_at_stag:
                 if agent_id not in required_agents:
                     rewards[agent_id] += self.mauling_punishment
+  
             # 필수 에이전트들이 모두 stag 위치에 있는지 확인
             if all(agent_id in agents_at_stag for agent_id in required_agents):
-                # 협력 사냥 성공 - stag i는 agent i에게만 reward 제공
+                # 협력 사냥 성공 - stag i는 agent i에게 stag_reward 제공, 협력에 참여한 agent에게는 coop_bonus 제공
                 rewards[stag_id] += self.stag_reward
+                for agent_id in agents_at_stag:
+                    if agent_id != stag_id:
+                        rewards[agent_id] += self.coop_bonus
                 # 협력 사냥 정보 기록
                 hunting_info['stag_hunts'][stag_id] = agents_at_stag.copy()
                 # 사냥된 stag를 죽은 상태로 표시 

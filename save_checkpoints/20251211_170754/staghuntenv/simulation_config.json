@@ -1,6 +1,6 @@
 {
   "simulation_info": {
-    "timestamp": "2025-12-10T12:44:24.930935",
+    "timestamp": "2025-12-11T17:07:54.673550",
     "environment": "StagHuntEnv",
     "num_agents": 3,
     "obs_dim": 69,
@@ -16,8 +16,8 @@
     "device": "cpu"
   },
   "directories": {
-    "base_save_dir": "./checkpoints",
-    "simulation_dir": "./checkpoints/20251210_124424/staghuntenv/checkpoints",
-    "checkpoint_dir": "./checkpoints/20251210_124424/staghuntenv/checkpoints"
+    "base_save_dir": "./save_checkpoints",
+    "simulation_dir": "./save_checkpoints/20251211_170754/staghuntenv/checkpoints",
+    "checkpoint_dir": "./save_checkpoints/20251211_170754/staghuntenv/checkpoints"
   }
 }

@@ -7,7 +7,7 @@ max_steps_per_iteration=1024
 log_interval=2
 device="cpu"
 config="configs/stag_hunt.yaml"
-seed=331
+seed=42
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

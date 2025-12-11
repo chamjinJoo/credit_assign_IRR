@@ -78,6 +78,7 @@ class EnvironmentConfig:
 
     # For Stag-Hunt environment
     stag_move_prob: float = 0.7
+    coop_bonus: float = 1.0
     forage_reward: float = 3.0
     stag_reward: float = 5.0
     mauling_punishment: float = -1.0

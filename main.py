@@ -246,7 +246,7 @@ def main():
     wandb_run_name = config.wandb.run_name
     if wandb_run_name:
         # run_name이 있으면 앞에 알고리즘 타입 추가
-        wandb_run_name = f"{algorithm_type}_{wandb_run_name}"
+        wandb_run_name = f"{algorithm_type}_{wandb_run_name}_seed{actual_seed}"
     else:
         # run_name이 없으면 알고리즘 타입만 사용
         wandb_run_name = algorithm_type
