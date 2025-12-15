@@ -4,9 +4,8 @@ checkpoints/
 # logs
 logs/
 
-# backup pcimappo
-pci_mappo_backup/
-pci_mappo_withdynamics/
+# Notes
+Notes.md
 
 # tensorboard
 tensorboard/

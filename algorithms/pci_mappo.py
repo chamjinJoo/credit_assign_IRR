@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
 import numpy as np
-from typing import Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional
 from collections import defaultdict
 import random
 
@@ -14,143 +14,57 @@ from utils.buffer import ExperienceBuffer
 class RBFKernel(nn.Module):
     """
     An improved RBF Kernel implementation.
-    - `forward` is simplified for efficiency and consistency.
-    - Includes a helper method to set `gamma` dynamically based on data.
     """
     def __init__(self, gamma: float = 1.0):
         super().__init__()
-        # gamma can be initialized but it's best to set it from data.
         self.log_gamma = nn.Parameter(torch.log(torch.tensor(gamma)), requires_grad=False)
 
     def set_gamma(self, x: torch.Tensor):
-        """
-        Sets the gamma parameter based on the median heuristic for the input data.
-        This should be called periodically (e.g., once per update) with a batch of features.
-        
-        Args:
-            x: A batch of feature vectors, shape [batch_size, feature_dim].
-        """
         with torch.no_grad():
-            # We need at least 2 points to compute pairwise distances.
-            if x.size(0) < 2:
-                return
-
-            # pdist computes pairwise distances and returns a condensed 1D vector.
+            if x.size(0) < 2: return
             dists_sq = torch.pdist(x, p=2).pow(2)
-            
-            # The median provides a robust estimate of the typical distance scale.
             median_dist_sq = dists_sq.median()
-            
-            # The heuristic is gamma = 1 / (2 * median_dist^2)
-            gamma = 1.0 / (2 * median_dist_sq + 1e-8) # Add epsilon for numerical stability
-            
-            # Update the non-trainable parameter.
+            gamma = 1.0 / (2 * median_dist_sq + 1e-8)
             self.log_gamma.data.fill_(torch.log(gamma))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the symmetric Gram matrix K(x, x).
-        This is a special case of the asymmetric forward pass.
-        """
-        # Reusing the asymmetric method is cleaner and often more efficient.
         return self.forward_asymmetric(x, x)
 
     def forward_asymmetric(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the asymmetric kernel matrix K(x1, x2) = exp(-gamma * ||x1 - x2||^2).
-        This implementation is efficient and numerically stable.
-        
-        Args:
-            x1: Tensor of shape [batch_size_1, feature_dim]
-            x2: Tensor of shape [batch_size_2, feature_dim]
-            
-        Returns:
-            Kernel matrix of shape [batch_size_1, batch_size_2]
-        """
         gamma = torch.exp(self.log_gamma)
-        # Compute squared Euclidean distances using the broadcast trick
         x1_norm_sq = x1.pow(2).sum(dim=-1, keepdim=True)
         x2_norm_sq = x2.pow(2).sum(dim=-1, keepdim=True)
-        # dists = ||x1||^2 - 2*<x1, x2> + ||x2||^2
         dists_sq = x1_norm_sq - 2 * torch.matmul(x1, x2.T) + x2_norm_sq.T
-        # Clamp for numerical stability before applying exp
         dists_sq = torch.clamp(dists_sq, min=0)
         return torch.exp(-gamma * dists_sq)
 
 class LinearKernel(nn.Module):
-    """
-    Linear Kernel for RKHS. Models linear relationships.
-    K(x, y) = x^T * y
-    """
     def __init__(self):
         super().__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the symmetric Gram matrix K(x, x) = x * x^T.
-        """
         return torch.matmul(x, x.T)
 
     def forward_asymmetric(self, x1: torch.Tensor, x2: torch.Tensor) -> torch.Tensor:
-        """
-        Computes the asymmetric kernel matrix K(x1, x2) = x1 * x2^T.
-        
-        Args:
-            x1: Tensor of shape [batch_size_1, feature_dim]
-            x2: Tensor of shape [batch_size_2, feature_dim]
-            
-        Returns:
-            Kernel matrix of shape [batch_size_1, batch_size_2]
-        """
         return torch.matmul(x1, x2.T)
 
 class PCIMAPPOAgent:
-    """
-    Single agent for PCI-MAPPO algorithm.
-    Each agent has its own policy network.
-    """
-    
-    def __init__(
-        self,
-        agent_id: int,
-        obs_dim: int,
-        action_dim: int,
-        hidden_dim: int = 64,
-        lr: float = 3e-4
-    ):
+    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, lr: float = 3e-4, lr_critic: float = 3e-4):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        
-        # Policy network
         self.policy_net = PolicyNetwork(obs_dim, action_dim, hidden_dim)
-        
-        # Optimizer for the policy network
+        self.value_net = ValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         
     def get_action(self, obs: torch.Tensor) -> Tuple[int, float]:
-        """
-        Get action from policy.
-        
-        Args:
-            obs: Observation tensor
-        
-        Returns:
-            action: Selected action
-            log_prob: Log probability of action
-        """
         with torch.no_grad():
             action, log_prob = self.policy_net.get_action_and_log_prob(obs.unsqueeze(0))
-        
         return action.item(), log_prob.item()
 
 
 class PCIMAPPOAlgorithm:
-    """
-    PCI-MAPPO Algorithm implementation following the pseudocode.
-    z_t = \mathbf{o}_{t-1}, w_t = \mathbf{o}_t
-    """
-    
     def __init__(
         self,
         num_agents: int,
@@ -161,12 +75,17 @@ class PCIMAPPOAlgorithm:
         lr: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
-        causal_lambda: float = 0.1,
+        causal_lambda: float = 1.0,
         causal_lambda_schedule: bool = False,
+        causal_lambda_adaptive_per_agent: bool = False,
+        causal_lambda_adaptive_alpha: float = 0.9,
+        causal_lambda_adaptive_min: float = 0.1,
+        causal_lambda_adaptive_max: float = 1.0,
+        causal_lambda_adaptive_error_threshold: float = 0.5,
         causal_lambda_start: float = 0.0,
         causal_lambda_final: float = 0.2,
         causal_lambda_warmup_steps: int = 10000,
-        causal_lambda_startingpoint: int = 0,  # Starting iteration for causal lambda scheduling
+        causal_lambda_startingpoint: int = 0,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_epsilon: float = 0.2,
@@ -175,39 +94,46 @@ class PCIMAPPOAlgorithm:
         max_grad_norm: float = 0.5,
         ppo_epochs: int = 4,
         batch_size: int = 64,
-        num_batches: int = 4,  # Number of batches K for training
-        # Epsilon greedy parameters for causal data collection
+        num_batches: int = 4,
         epsilon_start: float = 0.6,
         epsilon_end: float = 0.0,
         epsilon_decay_steps: int = 1000,
-        # Buffer size limits for FIFO queue behavior
-        max_buffer_size: int = 10000,  # Maximum size for main buffer
-        max_causal_buffer_size: int = 2000,  # Maximum size for causal buffer
-        device: str = "cpu",  # Device for computation
-        # RKHS Kernel parameters for analytical loss
-        rkhs_gamma: float = 1.0,  # Gamma parameter for RBF kernel
-        # Environment required_agents for scenario classification
+        max_buffer_size: int = 10000,
+        max_causal_buffer_size: int = 2000,
+        device: str = "cpu",
+        rkhs_gamma: float = 1.0,
         env_required_agents: Optional[Dict[int, List[int]]] = None,
+        # Optimization parameter
+        causal_mini_batch_size: int = 256,  # [ADDED] Chunk size for RKHS solver
+        # Value network parameter sharing
+        use_value_parameter_sharing: bool = False,  # If True, use single shared value network for all agents
     ):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.w_dim = w_dim
-        
-        # Store environment's required_agents for accurate scenario classification
         self.env_required_agents = env_required_agents
-        
-        # Device setup
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
+        self.causal_mini_batch_size = causal_mini_batch_size # Critical for speed
+        self.use_value_parameter_sharing = use_value_parameter_sharing
         
-        # Causal lambda scheduling parameters
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
+        self.causal_lambda_adaptive_per_agent = causal_lambda_adaptive_per_agent
+        self.causal_lambda_adaptive_alpha = causal_lambda_adaptive_alpha
+        self.causal_lambda_adaptive_min = causal_lambda_adaptive_min
+        self.causal_lambda_adaptive_max = causal_lambda_adaptive_max
+        self.causal_lambda_adaptive_error_threshold = causal_lambda_adaptive_error_threshold
         self.causal_lambda_start = causal_lambda_start
         self.causal_lambda_final = causal_lambda_final
         self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
         self.causal_lambda_startingpoint = causal_lambda_startingpoint
-        self.training_steps = 0  # Track training steps for scheduling
+        self.training_steps = 0
+        
+        # Agent별 adaptive lambda를 위한 error tracking
+        if self.causal_lambda_adaptive_per_agent:
+            self.adaptive_error_ema_per_agent = {i: None for i in range(num_agents)}
+            self.adaptive_lambda_per_agent = {i: causal_lambda for i in range(num_agents)}
         
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -219,13 +145,11 @@ class PCIMAPPOAlgorithm:
         self.batch_size = batch_size
         self.num_batches = num_batches
         
-        # Create experience buffer with FIFO queue behavior
         self.buffer_manager = ExperienceBuffer(
             max_buffer_size=max_buffer_size,
             max_causal_buffer_size=max_causal_buffer_size
         )
         
-        # Create agents
         self.agents = {}
         for i in range(num_agents):
             self.agents[i] = PCIMAPPOAgent(
@@ -233,327 +157,303 @@ class PCIMAPPOAlgorithm:
                 obs_dim=obs_dim,
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
-                lr=lr
+                lr=lr,
+                lr_critic=lr_critic
             )
         
-        # Value netowrk option 1: no parameter sharing
-        # self.value_nets = {
-        #     i: ValueNetwork(
-        #         obs_dim=obs_dim,
-        #         hidden_dim=hidden_dim
-        #     ) for i in range(num_agents)
-        # }
-        # # Optimizer per value network
-        # self.value_optimizers = {
-        #     i: optim.Adam(self.value_nets[i].parameters(), lr=lr) for i in range(num_agents)
-        # }
-
-        # Value network option 2: parameter sharing
-        self.value_net = ValueNetwork(
-            obs_dim=obs_dim,
-            hidden_dim=hidden_dim,
-        )
+        # Value network parameter sharing 설정
+        if self.use_value_parameter_sharing:
+            # 하나의 shared value network 생성
+            self.shared_value_net = ValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim)
+            self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
+            # for checkpointing and loading (호환성을 위해 딕셔너리 유지)
+            self.value_nets = {agent_id: self.shared_value_net for agent_id in range(num_agents)}
+            self.value_optimizers = {agent_id: self.shared_value_optimizer for agent_id in range(num_agents)}
+        else:
+            # 각 agent별로 별도의 value network 사용
+            self.value_nets = {agent_id: agent.value_net for agent_id, agent in self.agents.items()}
+            self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
-        # Optimizer for the shared value network
-        self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
-        
-        # Causal inference networks (shared across agents)
-        # h_φ(a, w) - Outcome Bridge network
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
             action_dim=action_dim,
             num_agents=num_agents,
-            w_dim=obs_dim * num_agents,
-            outcome_dim=num_agents,  # Predict rewards for all agents
+            w_dim=obs_dim * (num_agents-1),
+            outcome_dim=num_agents-1,
             hidden_dim=hidden_dim,
-            action_embedding_dim=8  # Action embedding dimension
+            action_embedding_dim=8
         )
         
-        # q_θ(z, a) - Action Bridge network
         self.action_bridge_net = ActionBridgeNetwork(
-            z_dim=obs_dim * num_agents,  # Use concatenated observations as context
+            z_dim=obs_dim * num_agents,
             action_dim=action_dim,
             num_agents=num_agents,
             hidden_dim=hidden_dim,
-            action_embedding_dim=8  # Action embedding dimension
+            action_embedding_dim=8
         )
         
-        # RKHS Kernel
         self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)
         self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device)
         
-        # Stabilizer
-        self.stabilizer_lambda = 1.0  # Minimax 게임의 안정화 항 강도
-        self.tikhonov_gamma = 1e-4    # 역행렬 계산 시 수치적 안정성을 위한 정규화 항
+        self.stabilizer_lambda = 1.0
+        self.tikhonov_gamma = 1e-4
 
-        # Action embedding for kernel input
         self.action_embedding_for_kernel = nn.Embedding(action_dim, 8)
         
-        # Optimizers for causal networks
         self.outcome_bridge_optimizer = optim.Adam(self.outcome_bridge_net.parameters(), lr=lr_bridge)
         self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_critic)
         self.kernel_action_embed_optimizer = optim.Adam(self.action_embedding_for_kernel.parameters(), lr=lr_critic)
         
-        # Move all networks to device
         self._move_networks_to_device()
     
     def _move_networks_to_device(self):
-        """Move all networks to the specified device."""
-        # Move agent networks
         for agent in self.agents.values():
             agent.policy_net.to(self.device)
-        
-        # Move value network (shared across agents)
-        self.value_net.to(self.device)
+            if not self.use_value_parameter_sharing:
+                agent.value_net.to(self.device)
+        if self.use_value_parameter_sharing:
+            self.shared_value_net.to(self.device)
         self.outcome_bridge_net.to(self.device)
         self.action_bridge_net.to(self.device)
         self.critic_kernel_z.to(self.device)
         self.critic_kernel_w.to(self.device)
         self.action_embedding_for_kernel.to(self.device)
     
-    def get_current_causal_lambda(self) -> float:
-        """
-        Get current causal lambda value based on scheduling.
-        If scheduling is enabled, lambda increases from causal_lambda_start to causal_lambda_final over warmup_steps.
-        Scheduling starts from causal_lambda_startingpoint iteration.
-        """
+    def get_current_causal_lambda(self, agent_id: Optional[int] = None) -> float:
+        # Agent별 adaptive lambda 사용
+        if self.causal_lambda_adaptive_per_agent and agent_id is not None:
+            return self.adaptive_lambda_per_agent[agent_id]
+        
         if not self.causal_lambda_schedule:
             return self.causal_lambda
-        
-        # Check if we should start scheduling yet
         if self.training_steps < self.causal_lambda_startingpoint:
             return self.causal_lambda_start
-        
-        # Calculate effective steps for scheduling (subtract starting point)
         effective_steps = self.training_steps - self.causal_lambda_startingpoint
-        
-        # Linear warmup from causal_lambda_start to causal_lambda_final
         if effective_steps >= self.causal_lambda_warmup_steps:
             return self.causal_lambda_final
         else:
-            # Linear interpolation: causal_lambda_start -> causal_lambda_final over warmup_steps
             progress = effective_steps / self.causal_lambda_warmup_steps
             return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
     
     def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 16) -> Dict[str, float]:
-        """
-        - The Outcome Bridge loss (for h_φ) correctly extends Eq. (24) to the multi-agent case.
-        - The Action Bridge loss (for q_θ) is corrected to include a Monte Carlo approximation
-        of the linear term from Eq. (25), making it more theoretically sound.
-        
-        Args:
-            batch_data: A list of transition dictionaries from the mini-batch.
-            mc_samples_k_w2 (int): The number of Monte Carlo samples to use for approximating the K_w2 matrix.
-
-        Returns:
-            A dictionary containing loss values for monitoring.
-        """
-        # Skip causal network updates if causal lambda is 0
         if self.get_current_causal_lambda() == 0.0:
-            return {
-                'outcome_bridge_loss': 0.0,
-                'action_bridge_loss': 0.0,
-            }
+            return {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
         
         batch_size = len(batch_data)
-        # === Vectorized Data Preparation ===
-        # Swap: o_{t-1} becomes z_t, o_t becomes w_t
-        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data])
-        w_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data])
-        a_t_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
-        r_t_batch = torch.tensor([[t['bold_r_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
+        num_agents = self.num_agents
+        device = self.device
 
-        # === Part 1: Update Outcome Bridge Network h_φ ===
-        r_hat_outcome = self.outcome_bridge_net(a_t_batch, w_t_batch)
-        residuals = r_t_batch - r_hat_outcome
-    
-        action_embeds = self.action_embedding_for_kernel(a_t_batch).view(batch_size, -1)
-        kernel_input_features_z = torch.cat([z_t_batch, action_embeds], dim=1)
-        # self.critic_kernel_z.set_gamma(kernel_input_features_z) # for RBF kernel
-        K_z = self.critic_kernel_z(kernel_input_features_z) # Shape: [batch_size, batch_size]
+        # === 1. Data Preparation (Vectorized) ===
+        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device)
+        obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
+        action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
+        reward_batch = torch.tensor([[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
 
-        # 1-1. Loss without Stabilizer
-        # quadratic_forms = torch.matmul(residuals.T, torch.matmul(K_z, residuals))
-        # outcome_bridge_loss = torch.trace(quadratic_forms) / (self.num_agents * batch_size)
-
-        # 1-2. Loss with Stabilizer
-        # ------------------------------------------------------------
-        # reg_K_z_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z) # (γI + λK_z)^-1
-        # loss_matrix_h = residuals.T @ K_z @ reg_K_z_inv @ residuals
-        # outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
-        # ------------------------------------------------------------
-        # 역행렬 대신 Cholesky 분해를 사용한 선형 시스템 풀이 (더 빠르고 수치적으로 안정적)
-        reg_K_z = self.tikhonov_gamma * torch.eye(batch_size, device=K_z.device) + self.stabilizer_lambda * K_z
-        # residuals.T @ K_z @ inv(reg_K_z) @ residuals 계산
-        # = (residuals.T @ K_z) @ solve(reg_K_z, residuals)
-        K_z_residuals = residuals.T @ K_z  # Shape: [num_agents, batch_size]
-        solved_residuals = torch.linalg.solve(reg_K_z, residuals)  # Shape: [batch_size, num_agents]
-        loss_matrix_h = K_z_residuals @ solved_residuals  # Shape: [num_agents, num_agents]
-        outcome_bridge_loss = torch.trace(loss_matrix_h) / batch_size
-
-        # === Part 2: Update Action Bridge Network q_θ ===
-        # 1. Compute joint policy probabilities π(a_t|o_t)
-        with torch.no_grad():
-            log_probs_list = [self.agents[i].policy_net.evaluate_actions(
-                torch.stack([t['bold_o_t'][i] for t in batch_data]), a_t_batch[:, i]
-            )[0] for i in range(self.num_agents)]
-            joint_probs = torch.exp(torch.stack(log_probs_list, dim=1).sum(dim=1))
-
-        # 2. Compute the weighted IPW term φ_q
-        action_bridge_output = self.action_bridge_net(z_t_batch, a_t_batch) # Shape: [batch_size, num_agents]
-        phi_q = joint_probs * action_bridge_output.squeeze() # Shape: [batch_size]
-        # 3. Calculate Gram matrix K_w1 (Quadratic term)
-        kernel_input_features_w = torch.cat([w_t_batch, action_embeds], dim=1)
-        # self.critic_kernel_w.set_gamma(kernel_input_features_w) # for RBF kernel
-        K_w1 = self.critic_kernel_w(kernel_input_features_w)
-
-        # 4. Vectorized Approximation of Gram matrix K_w2
-        with torch.no_grad():
-            # a. Expand batch for parallel sampling
-            # Shape: [batch_size * M, obs_dim] for each agent
-            expanded_obs_per_agent = {
-                i: torch.stack([t['bold_o_t'][i] for t in batch_data]).repeat_interleave(mc_samples_k_w2, dim=0)
-                for i in range(self.num_agents)
-            }
-
-            # b. Sample M actions for each state in the batch in parallel
-            # Shape: [batch_size * M, num_agents]
-            sampled_actions_list = []
-            for i in range(self.num_agents):
-                logits = self.agents[i].policy_net(expanded_obs_per_agent[i])
-                dist = torch.distributions.Categorical(logits=logits)
-                sampled_actions_list.append(dist.sample())
-            
-            sampled_actions_tensor = torch.stack(sampled_actions_list, dim=1)
-
-            # c. Create feature vectors for all sampled actions
-            w_t_expanded = w_t_batch.repeat_interleave(mc_samples_k_w2, dim=0) # Shape: [batch_size * M, w_dim]
-            sampled_action_embeds = self.action_embedding_for_kernel(sampled_actions_tensor).view(batch_size * mc_samples_k_w2, -1)
-            features_w_sampled = torch.cat([w_t_expanded, sampled_action_embeds], dim=1) # Shape: [batch_size * M, feature_dim]
-            
-            # d. Compute all kernel values in one go
-            # kernel_input_features_w: [batch_size, feature_dim]
-            # features_w_sampled: [batch_size * M, feature_dim]
-            # K_w2_raw: [batch_size, batch_size * M]
-            # self.critic_kernel_w.set_gamma(features_w_sampled) # for RBF kernel
-            K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_input_features_w, features_w_sampled)
-            
-            # e. Reshape and average to get the final K_w2
-            # Reshape to -> [batch_size, batch_size, M]
-            K_w2_reshaped = K_w2_raw.view(batch_size, batch_size, mc_samples_k_w2)
-            K_w2 = K_w2_reshaped.mean(dim=2) # Average over the M samples -> [batch_size, batch_size]
-
-        # 5. Compute the full Action Bridge loss (as before)
-        phi_q_col = phi_q.unsqueeze(1)
-        # 5-1. Without Stabilizer
-        # quadratic_term = torch.matmul(phi_q_col.T, torch.matmul(K_w1, phi_q_col)).squeeze()
-        # linear_term = torch.matmul(phi_q, K_w2.sum(dim=1))
-        # action_bridge_loss = (quadratic_term - 2.0 * linear_term) / batch_size
-
-        # 5-2. With Stabilizer
-        # 이전 버전 (bottleneck of training time)
-        # ------------------------------------------------------------
-        # reg_K_w1_inv = torch.linalg.inv(self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1)
-        # quadratic_term = phi_q_col.T @ K_w1 @ reg_K_w1_inv @ phi_q_col
-        # linear_term = phi_q_col.T @ reg_K_w1_inv @ K_w2.sum(dim=1).unsqueeze(1)
-        # action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size
-        # ------------------------------------------------------------
-        # 역행렬 대신 선형 시스템 풀이 사용
-        reg_K_w1 = self.tikhonov_gamma * torch.eye(batch_size, device=K_w1.device) + self.stabilizer_lambda * K_w1
-        # quadratic_term = phi_q_col.T @ K_w1 @ inv(reg_K_w1) @ phi_q_col
-        # = (phi_q_col.T @ K_w1) @ solve(reg_K_w1, phi_q_col)
-        K_w1_phi_q = phi_q_col.T @ K_w1  # Shape: [1, batch_size]
-        solved_phi_q = torch.linalg.solve(reg_K_w1, phi_q_col)  # Shape: [batch_size, 1]
-        quadratic_term = K_w1_phi_q @ solved_phi_q  # Shape: [1, 1]
-
-        # linear_term = phi_q_col.T @ inv(reg_K_w1) @ K_w2.sum(dim=1).unsqueeze(1)
-        # = phi_q_col.T @ solve(reg_K_w1, K_w2.sum(dim=1).unsqueeze(1))
-        K_w2_sum = K_w2.sum(dim=1).unsqueeze(1)  # Shape: [batch_size, 1]
-        solved_K_w2_sum = torch.linalg.solve(reg_K_w1, K_w2_sum)  # Shape: [batch_size, 1]
-        linear_term = phi_q_col.T @ solved_K_w2_sum  # Shape: [1, 1]
-
-        # K_w2_expectation = K_w2.mean(dim=0)  # 각 열의 평균
-        # solved_K_w2_expectation = torch.linalg.solve(
-        #     reg_K_w1, K_w2_expectation.unsqueeze(1)
-        #     )  # [batch_size, 1]
-        # linear_term = phi_q_col.T @ solved_K_w2_expectation  # [1, 1]
-
-        action_bridge_loss = (quadratic_term - 2.0 * linear_term).squeeze() / batch_size 
-
-        # --- Combine Losses and Backward Pass ---
-        # We now have two distinct loss terms for the shared action embedding.
-        total_loss = outcome_bridge_loss + action_bridge_loss
-
-        self.outcome_bridge_optimizer.zero_grad()
-        self.action_bridge_optimizer.zero_grad()
-        self.kernel_action_embed_optimizer.zero_grad()
-
-        total_loss.backward()
-
-        self.outcome_bridge_optimizer.step()
-        self.action_bridge_optimizer.step()
-        self.kernel_action_embed_optimizer.step()
+        A_super = action_batch.view(-1)
+        expanded_obs = obs_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)
+        mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
+        W_super = expanded_obs[mask].view(batch_size * num_agents, -1)
         
-        return {
-            'outcome_bridge_loss': outcome_bridge_loss.item(),
-            'action_bridge_loss': action_bridge_loss.item(),
+        expanded_rewards = reward_batch.unsqueeze(1).expand(-1, num_agents, -1)
+        mask_rewards = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
+        Y_super = expanded_rewards[mask_rewards].view(batch_size * num_agents, -1)
+
+        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0)
+        
+        with torch.no_grad():
+            log_probs_list = []
+            for i in range(num_agents):
+                obs_i = obs_batch[:, i, :]
+                act_i = action_batch[:, i]
+                _, lp = self.agents[i].policy_net.evaluate_actions(obs_i, act_i)
+                log_probs_list.append(lp)
+            policy_log_probs = torch.stack(log_probs_list, dim=1).view(-1)
+            policy_probs_super = torch.exp(policy_log_probs)
+
+        obs_super = obs_batch.view(-1, self.obs_dim)
+
+        # === 2. Mini-batch Training Loop ===
+        total_samples = A_super.size(0) 
+        indices = torch.arange(total_samples, device=device)
+
+        avg_outcome_loss = 0.0
+        avg_action_loss = 0.0
+        agent_residual_errors = {i: [] for i in range(num_agents)}
+        num_updates = 0
+        chunk_size = self.causal_mini_batch_size 
+
+        for i in range(0, total_samples, chunk_size):
+            idx = indices[i:i + chunk_size]
+            current_batch_size = idx.size(0)
+            
+            a_mb = A_super[idx]
+            w_mb = W_super[idx]
+            y_mb = Y_super[idx]
+            z_mb = Z_super[idx]
+            pi_mb = policy_probs_super[idx]
+            o_mb = obs_super[idx]
+            batch_agent_ids = idx % num_agents
+
+            # --- Update Outcome Bridge h_φ ---
+            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb)
+            residuals_mb = y_mb - r_hat_mb
+            
+            if self.causal_lambda_adaptive_per_agent:
+                for j, agent_id in enumerate(batch_agent_ids):
+                    residual_error = torch.norm(residuals_mb[j], p=2).item()
+                    agent_residual_errors[agent_id.item()].append(residual_error)
+            
+            action_embeds_mb = self.action_embedding_for_kernel(a_mb)
+            kernel_feat_z = torch.cat([z_mb, action_embeds_mb], dim=1)
+            K_z = self.critic_kernel_z(kernel_feat_z)
+
+            reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
+            solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
+            
+            # Compute per-sample loss
+            per_sample_loss_h = (residuals_mb * (K_z @ solved_residuals)).sum(dim=1) # [B]
+            
+            loss_h = per_sample_loss_h.mean()
+            
+            # --- Update Action Bridge q_θ ---
+            q_val_mb = self.action_bridge_net(z_mb, a_mb)
+            phi_q_mb = pi_mb * q_val_mb.squeeze()
+            phi_q_col = phi_q_mb.unsqueeze(1)
+
+            kernel_feat_w = torch.cat([w_mb, action_embeds_mb], dim=1)
+            K_w1 = self.critic_kernel_w(kernel_feat_w)
+            K_w2_sum_mb = self._compute_kw2_sum_minibatch(w_mb, kernel_feat_w, o_mb, batch_agent_ids, mc_samples_k_w2)
+            
+            reg_K_w1 = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_w1
+            
+            solved_phi_q = torch.linalg.solve(reg_K_w1, phi_q_col)
+            quadratic_term = phi_q_col.T @ K_w1 @ solved_phi_q
+            
+            solved_K_w2_sum = torch.linalg.solve(reg_K_w1, K_w2_sum_mb)
+            linear_term = phi_q_col.T @ solved_K_w2_sum
+            
+            # Action Bridge Loss is scalar by definition in current RKHS formulation
+            # But we can try to balance if we had per-sample components.
+            # Here it's a global objective (trace), so balancing is implicit in K.
+            loss_q = (quadratic_term - 2.0 * linear_term).squeeze() / current_batch_size
+
+            total_loss = loss_h + loss_q
+            
+            self.outcome_bridge_optimizer.zero_grad()
+            self.action_bridge_optimizer.zero_grad()
+            self.kernel_action_embed_optimizer.zero_grad()
+            total_loss.backward()
+            self.outcome_bridge_optimizer.step()
+            self.action_bridge_optimizer.step()
+            self.kernel_action_embed_optimizer.step()
+
+            avg_outcome_loss += loss_h.item()
+            avg_action_loss += loss_q.item()
+            num_updates += 1
+
+        return_dict = {
+            'outcome_bridge_loss': avg_outcome_loss / num_updates,
+            'action_bridge_loss': avg_action_loss / num_updates,
         }
+        
+        if self.causal_lambda_adaptive_per_agent:
+            for agent_id in range(num_agents):
+                if len(agent_residual_errors[agent_id]) > 0:
+                    avg_error = np.mean(agent_residual_errors[agent_id])
+                    
+                    if self.adaptive_error_ema_per_agent[agent_id] is None:
+                        self.adaptive_error_ema_per_agent[agent_id] = avg_error
+                    else:
+                        self.adaptive_error_ema_per_agent[agent_id] = (
+                            self.causal_lambda_adaptive_alpha * self.adaptive_error_ema_per_agent[agent_id] +
+                            (1 - self.causal_lambda_adaptive_alpha) * avg_error
+                        )
+                    
+                    error_ratio = self.adaptive_error_ema_per_agent[agent_id] / (
+                        self.causal_lambda_adaptive_error_threshold + 1e-8
+                    )
+                    
+                    lambda_factor = 1.0 / (1.0 + error_ratio)
+                    new_lambda = self.causal_lambda * lambda_factor
+                    self.adaptive_lambda_per_agent[agent_id] = np.clip(
+                        new_lambda,
+                        self.causal_lambda_adaptive_min,
+                        self.causal_lambda_adaptive_max
+                    )
+                    
+                    return_dict[f'adaptive_lambda_agent_{agent_id}'] = self.adaptive_lambda_per_agent[agent_id]
+                    return_dict[f'adaptive_error_ema_agent_{agent_id}'] = self.adaptive_error_ema_per_agent[agent_id]
+        
+        return return_dict
+
+    def _compute_kw2_sum_minibatch(self, w_mb, kernel_feat_w, o_mb, batch_agent_ids, M):
+        batch_size = w_mb.size(0)
+        
+        w_expanded = w_mb.repeat_interleave(M, dim=0)
+        
+        sampled_action_embeds = torch.zeros(
+            batch_size * M, 
+            self.action_embedding_for_kernel.embedding_dim, 
+            device=self.device
+        )
+        
+        with torch.no_grad():
+            unique_agents = torch.unique(batch_agent_ids)
+            for ag_id in unique_agents:
+                mask = (batch_agent_ids == ag_id)
+                if not mask.any(): continue
+                
+                obs_ag = o_mb[mask]
+                obs_exp = obs_ag.repeat_interleave(M, dim=0)
+                
+                logits = self.agents[ag_id.item()].policy_net(obs_exp)
+                dist = torch.distributions.Categorical(logits=logits)
+                actions_sampled = dist.sample()
+                embeds = self.action_embedding_for_kernel(actions_sampled)
+                
+                mask_expanded = mask.unsqueeze(1).expand(-1, M).reshape(-1)
+                sampled_action_embeds[mask_expanded] = embeds
+
+        features_w_sampled = torch.cat([w_expanded, sampled_action_embeds], dim=1)
+        
+        # kernel_feat_w is passed from caller!
+        K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_feat_w, features_w_sampled)
+        
+        K_w2_mean = K_w2_raw.view(batch_size, batch_size, M).mean(dim=2)
+        K_w2_sum = K_w2_mean.sum(dim=1).unsqueeze(1)
+        
+        return K_w2_sum
+
     
     def _concatenate_observations(self, observations: Dict[int, torch.Tensor]) -> torch.Tensor:
         """
-        Concatenate all agents' observations into a single tensor.
-        
-        Args:
-            observations: Dict mapping agent_id to observation tensor
-            
-        Returns:
-            Concatenated observations [num_agents * obs_dim]
+        Helper function to concatenate observations for all agents.
         """
-        # Sort by agent_id to ensure consistent ordering
         sorted_obs = [observations[i] for i in range(self.num_agents) if i in observations]
-        
         if not sorted_obs:
-            # If no observations, return zero tensor
             device = next(self.agents[0].policy_net.parameters()).device
             return torch.zeros(self.num_agents * self.obs_dim, device=device)
-        
-        # Concatenate all observations
         return torch.cat(sorted_obs, dim=-1)
     
     def reset_agents(self):
-        """Reset agents for new episode (no RNN state to reset)."""
         pass
     
     def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
-        """
-        Get actions from all agents.
-        
-        Args:
-            observations: Dict mapping agent_id to observation tensor
-            
-        Returns:
-            Dict mapping agent_id to (action, log_prob)
-        """
         actions = {}
-        
-        # Get actions from all agents
         for agent_id, obs in observations.items():
             action, log_prob = self.agents[agent_id].get_action(obs)
             actions[agent_id] = (action, log_prob)
-        
         return actions
     
     def store_transition(
         self,
-        prev_observations: Dict[int, torch.Tensor],  # o_{t-1}
-        observations: Dict[int, torch.Tensor],       # o_t
-        actions: Dict[int, int],                     # a_t
-        rewards: Dict[int, float],                   # r_t
-        next_observations: Dict[int, torch.Tensor],  # o_{t+1}
+        prev_observations: Dict[int, torch.Tensor],
+        observations: Dict[int, torch.Tensor],
+        actions: Dict[int, int],
+        rewards: Dict[int, float],
+        next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
         info: Dict = None
     ):
-        """Store transition in buffer with proper causal structure."""
-        # Store transition using buffer manager with (o_{t-1}, o_t, a_t, r_t, o_{t+1}) structure
         self.buffer_manager.store_transition(
             prev_observations=prev_observations,
             observations=observations,
@@ -562,7 +462,7 @@ class PCIMAPPOAlgorithm:
             next_observations=next_observations,
             dones=dones,
             hidden_states={i: None for i in range(self.num_agents)},
-            info=info  # No hidden states needed
+            info=info
         )
     
     def compute_gae(
@@ -573,15 +473,10 @@ class PCIMAPPOAlgorithm:
         dones: List[bool]
     ) -> Tuple[List[float], List[float]]:
         """
-        Compute Generalized Advantage Estimation.
-        
-        Returns:
-            advantages: GAE advantages
-            returns: Discounted returns
+        Helper function to compute Generalized Advantage Estimation.
         """
         advantages = []
         returns = []
-        
         gae = 0
         next_value = next_value
         
@@ -603,25 +498,11 @@ class PCIMAPPOAlgorithm:
     
     def _classify_delta_scenario(self, transition: Dict, agent_id: int) -> str:
         """
-        Delta statistics를 분류하기 위해 현재 transition의 상황을 분석합니다.
-        
-        required_agents 정보를 활용하여 정확한 협력 관계를 판단:
-        - 'stag_reward': 현재 agent가 required_agents에 포함된 stag 사냥에 참여해서 
-                        다른 agent가 stag reward를 받음
-        - 'forage_reward': 다른 agent가 hare를 사냥함 (협력 없음)
-        - 'no_reward': 아무도 reward를 받지 않음
-        
-        Args:
-            transition: 현재 transition 데이터
-            agent_id: 분석 대상 agent ID
-            
-        Returns:
-            scenario: 'stag_reward', 'forage_reward', 또는 'no_reward'
+        Helper function to classify delta scenario.
         """
         info = transition.get('info', {})
-        stag_hunts = info.get('stag_hunts', {})  # {stag_id: [participating_agent_ids]}
+        stag_hunts = info.get('stag_hunts', {})
         
-        # 다른 agent들의 보상 확인
         other_agents_stag_reward = False
         other_agents_forage_reward = False
         
@@ -632,430 +513,291 @@ class PCIMAPPOAlgorithm:
                 elif transition['bold_r_t'][other_agent_id] == 3.0:
                     other_agents_forage_reward = True
         
-        # required_agents 정보를 활용한 협력 관계 판단
         if other_agents_stag_reward and self.env_required_agents is not None:
-            # Stag 사냥이 성공한 경우, 현재 agent가 해당 stag의 required_agents에 포함되는지 확인
             for stag_id, participants in stag_hunts.items():
-                # 이 stag 사냥에 필요한 agents
                 required = self.env_required_agents.get(stag_id, [])
-                
-                # 현재 agent가 required_agents에 포함되어 있는지 확인
                 if agent_id in required:
-                    # 실제로 참여했는지도 확인
                     if agent_id in participants:
-                        # 현재 agent가 협력에 참여해서 다른 agent가 stag reward를 받음
                         return 'stag_reward'
         
         if other_agents_forage_reward:
-            # 다른 agent가 hare를 사냥함 (협력 없음)
             return 'forage_reward'
         
-        # 아무도 reward를 받지 않음
         return 'no_reward'
-    
-    def causal_intrinsic_reward(
+
+    def compute_causal_rewards(
         self,
-        agent_id: int,
-        w_t: torch.Tensor,      # Observed proxy variable w_t = o_t
-        z_t: torch.Tensor,      # Context variable z_t = o_{t-1}
-        o_t: torch.Tensor,      # Observation for agent i
-        current_actions: Dict[int, int],  # Current joint action a_t
-        current_rewards: Dict[int, float],  # Current joint reward r_t
-    ) -> Tuple[float, np.ndarray]:
-        """
-        Args:
-            agent_id: ID of the agent i for whom the shaping term is calculated.
-            w_t: Proxy w_t, typically the concatenated current observation o_t.
-            z_t: Proxy z_t, typically the concatenated previous observation o_(t-1).
-            o_t: The individual observation for agent i.
-            current_actions: The joint action a_t actually taken at the timestep.
-            current_rewards: The joint reward r_t actually received.
-
-        Returns:
-            Delta_i_t: The final scalar causal reward shaping term for agent i.
-            r_hat_all_numpy: A numpy array of all counterfactual reward predictions for monitoring.
-        """
-        # Return 0 if causal lambda is 0 (no causal inference)
-        if self.get_current_causal_lambda() == 0.0:
-            return 0.0, np.zeros((self.action_dim, self.num_agents))
-        
-        with torch.no_grad():
-            # === 1. Compute All Counterfactual Outcomes (including the factual one) ===
-            # DR Correction Term (calculated once based on the factual action)
-            current_actions_tensor = torch.tensor([current_actions[j] for j in range(self.num_agents)],
-                                                dtype=torch.long, device=self.device)
-            r_pred_t = self.outcome_bridge_net(current_actions_tensor.unsqueeze(0), w_t.unsqueeze(0))
-            current_rewards_tensor = torch.tensor([current_rewards[j] for j in range(self.num_agents)],
-                                                dtype=torch.float32, device=self.device)
-            error_t = current_rewards_tensor - r_pred_t.squeeze()
-            weight_t = self.action_bridge_net(z_t.unsqueeze(0), current_actions_tensor.unsqueeze(0))
-            
-            DR_correction_t = weight_t * error_t # DR_correction_t: [1, num_agents]
-            
-            # Create a matrix of all possible counterfactual joint actions for agent i
-            action_matrix = current_actions_tensor.unsqueeze(0).repeat(self.action_dim, 1)
-            action_matrix[:, agent_id] = torch.arange(self.action_dim, device=self.device)
-            w_t_expanded = w_t.unsqueeze(0).expand(self.action_dim, -1)
-            # r_hat_all contains predicted reward vectors for each of agent i's possible actions.
-            reg_estimates = self.outcome_bridge_net(action_matrix, w_t_expanded) # Shape: [action_dim, num_agents]
-            
-            r_hat_all = reg_estimates + DR_correction_t  # Shape: [action_dim, num_agents]
-
-            # === 2. Weight Predictions by Policy Probabilities ===
-            # Get agent i's current policy probabilities for each action
-            action_logits = self.agents[agent_id].policy_net(o_t.unsqueeze(0))
-            action_probs = torch.softmax(action_logits, dim=-1).squeeze()  # Shape: [action_dim]
-
-            # Identify the action agent i actually took
-            factual_action_idx = current_actions[agent_id]
-
-            # a) Get the weighted reward prediction for the action that was actually taken
-            prob_factual = action_probs[factual_action_idx]
-            r_hat_factual = r_hat_all[factual_action_idx] # Shape: [num_agents]
-            r_hat_factual_weighted = prob_factual * r_hat_all[factual_action_idx] # Shape: [num_agents]
-            
-            # b) Get the weighted average reward prediction for all other possible actions
-            # Create a mask to select all actions EXCEPT the factual one
-            mask = torch.ones(self.action_dim, dtype=torch.bool, device=self.device)
-            mask[factual_action_idx] = False
-            
-            r_hat_counterfactuals = r_hat_all[mask] # Shape: [action_dim - 1, num_agents]
-            
-            # === 3. Compute the Difference-Based Causal Effect ===
-            # Baseline using policy probabilities (commented out - not used)
-            # probs_counterfactuals = action_probs[mask]  # Shape: [action_dim - 1]
-            # sum_probs_counterfactuals = probs_counterfactuals.sum()
-            # if sum_probs_counterfactuals > 1e-8:
-            #     # weighted_sum = (확률 * 보상).sum()
-            #     weighted_sum_counterfactuals = (probs_counterfactuals.unsqueeze(1) * r_hat_counterfactuals).sum(dim=0)
-            #     # baseline = weighted_sum / 확률의 합
-            #     baseline = weighted_sum_counterfactuals / sum_probs_counterfactuals
-            # else:
-            #     # 비교할 반사실적 행동이 없는 경우 (행동이 1개뿐인 경우 등)
-            #     baseline = torch.zeros_like(r_hat_factual)
-            
-            counterfactual_count = mask.sum().clamp(min=1).to(r_hat_counterfactuals.dtype)
-            baseline = r_hat_counterfactuals.sum(dim=0) / (counterfactual_count + 1e-8)  # Shape: [num_agents]
-                
-            # === 3. 최종 인과 효과 벡터 계산 === #
-            causal_effect_vector = r_hat_factual - baseline # Shape: [num_agents]
-            # causal_effect_vector = current_rewards - baseline # Shape: [num_agents]
-            # === 4. Calculate Final Shaping Term Δ^i_t ===
-            # Average the causal effects over all *other* agents.
-            other_agents = [j for j in range(self.num_agents) if j != agent_id]
-            if other_agents:
-                Delta_i_t = causal_effect_vector[other_agents].max().item()
-                #Delta_i_t = causal_effect_vector[other_agents].mean().item()
-            else:
-                Delta_i_t = 0.0
-        
-        return Delta_i_t, r_hat_all.cpu().numpy()
-    
-    def causal_intrinsic_reward_batch(
-        self,
-        agent_id: int,
-        w_t_batch: torch.Tensor,      # [batch_size, w_dim]
-        z_t_batch: torch.Tensor,      # [batch_size, z_dim]
-        o_t_batch: torch.Tensor,      # [batch_size, obs_dim]
-        actions_batch: torch.Tensor,  # [batch_size, num_agents]
-        rewards_batch: torch.Tensor,  # [batch_size, num_agents]
-        baseline_type: str = 'weighted',
+        w_t_batch: torch.Tensor,
+        z_t_batch: torch.Tensor,
+        full_obs_batch: torch.Tensor,
+        actions_batch: torch.Tensor,
+        rewards_batch: torch.Tensor,
+        baseline_type: str = 'average',
         merging_method: str = 'max',
     ) -> torch.Tensor:
         """
-        Vectorized batch version of causal_intrinsic_reward.
-        
-        Args:
-            agent_id: ID of the agent i for whom the shaping term is calculated.
-            w_t_batch: Batch of proxy w_t, [batch_size, w_dim]
-            z_t_batch: Batch of proxy z_t, [batch_size, z_dim]
-            o_t_batch: Batch of individual observations for agent i, [batch_size, obs_dim]
-            actions_batch: Batch of joint actions, [batch_size, num_agents]
-            rewards_batch: Batch of joint rewards, [batch_size, num_agents]
-            baseline_type: Type of baseline to use, 'weighted' or 'averaged'
-            merging_method: Method to merge counterfactual rewards, 'max' or 'mean'
-        Returns:
-            Delta_batch: Causal reward shaping terms, [batch_size]
+        Computes causal rewards for ALL agents simultaneously.
+        Optimized with chunking to avoid OOM on large batches during inference.
         """
-        # Return zeros if causal lambda is 0
         if self.get_current_causal_lambda() == 0.0:
-            return torch.zeros(w_t_batch.size(0), device=self.device)
+            return torch.zeros_like(rewards_batch)
+
+        batch_size = actions_batch.size(0)
+        num_agents = self.num_agents
+        action_dim = self.action_dim
         
-        batch_size = w_t_batch.size(0)
+        # Prepare Outputs
+        Delta_all = torch.zeros(batch_size, num_agents, device=self.device)
         
+        infer_chunk_size = batch_size # no chunking if chunking size = batch_size
         with torch.no_grad():
-            # === 1. Compute DR Correction Term for all samples ===
-            r_pred_batch = self.outcome_bridge_net(actions_batch, w_t_batch)  # [batch_size, num_agents]
-            error_batch = rewards_batch - r_pred_batch  # [batch_size, num_agents]
-            weight_batch = self.action_bridge_net(z_t_batch, actions_batch)  # [batch_size, num_agents]
-            DR_correction_batch = weight_batch * error_batch  # [batch_size, num_agents]
-            
-            # === 2. Create action matrices for all counterfactual actions ===
-            action_matrix = actions_batch.unsqueeze(1).repeat(1, self.action_dim, 1)
-            action_range = torch.arange(self.action_dim, device=self.device).unsqueeze(0).repeat(batch_size, 1)
-            action_matrix[:, :, agent_id] = action_range
-            
-            # Reshape for batch processing: [batch_size * action_dim, num_agents]
-            action_matrix_flat = action_matrix.view(batch_size * self.action_dim, self.num_agents)
-            
-            # Expand w_t for all counterfactual actions: [batch_size * action_dim, w_dim]
-            w_t_expanded = w_t_batch.unsqueeze(1).repeat(1, self.action_dim, 1).view(batch_size * self.action_dim, -1)
-            
-            # Get all counterfactual reward predictions: [batch_size * action_dim, num_agents]
-            reg_estimates_flat = self.outcome_bridge_net(action_matrix_flat, w_t_expanded)
-            
-            # Add DR correction: [batch_size, action_dim, num_agents]
-            reg_estimates = reg_estimates_flat.view(batch_size, self.action_dim, self.num_agents)
-            r_hat_all = reg_estimates + DR_correction_batch.unsqueeze(1)
-            
-            # === 3. Get policy probabilities for agent i ===
-            action_logits = self.agents[agent_id].policy_net(o_t_batch)  # [batch_size, action_dim]
-            action_probs = torch.softmax(action_logits, dim=-1)  # [batch_size, action_dim]
-            
-            # === 4. Extract factual and counterfactual predictions ===
-            factual_actions = actions_batch[:, agent_id]
-            
-            # Gather factual predictions: [batch_size, num_agents]
-            r_hat_factual = r_hat_all[torch.arange(batch_size, device=self.device), factual_actions]
+            for i in range(0, batch_size, infer_chunk_size):
+                # Slice inputs
+                end = min(i + infer_chunk_size, batch_size)
+                
+                # Slices [chunk, ...]
+                act_b = actions_batch[i:end]
+                w_b = w_t_batch[i:end]
+                z_b = z_t_batch[i:end]
+                r_b = rewards_batch[i:end]
+                obs_b = full_obs_batch[i:end]
+                
+                curr_bs = act_b.size(0)
+                
+                # --- Vectorized Logic (Same as before but on chunk) ---
+                actions_flat = act_b.view(-1)
+                w_t_flat = w_b.view(-1, w_b.size(-1))
+                z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(-1, z_b.size(-1))
 
-            # === 5. Compute counterfactual baseline ===
-            mask = torch.ones(batch_size, self.action_dim, dtype=torch.bool, device=self.device)
-            mask[torch.arange(batch_size, device=self.device), factual_actions] = False
-            
-            # Zero out the rewards of the factual actions as well to ensure they don't contribute
-            r_hat_all_masked = r_hat_all.clone()
-            
-            if baseline_type == 'weighted':
-                probs_counterfactuals = action_probs.clone()
-                probs_counterfactuals[~mask] = 0.0
-                sum_probs_counterfactuals = probs_counterfactuals.sum(dim=1, keepdim=True)
-                weighted_sum_rewards = (probs_counterfactuals.unsqueeze(2) * r_hat_all_masked).sum(dim=1)
-                baseline = weighted_sum_rewards / (sum_probs_counterfactuals + 1e-8)
-            
-            elif baseline_type == 'averaged':
-                r_hat_all_masked[~mask.unsqueeze(-1).expand_as(r_hat_all)] = 0.0
-                counterfactual_count = mask.sum(dim=1, keepdim=True).clamp(min=1).to(r_hat_all_masked.dtype)
-                baseline = r_hat_all_masked.sum(dim=1) / (counterfactual_count + 1e-8) # Shape: [B, N]
-            
-            # === 6. Compute causal effect vector ===
+                r_pred_flat = self.outcome_bridge_net(actions_flat, w_t_flat)
+                weight_flat = self.action_bridge_net(z_t_repeated, actions_flat)
 
-            causal_effect_vector = r_hat_factual - baseline  # [B, N]
-            # causal_effect_vector = rewards_batch - baseline  # [B, N]
+                mask_indices = torch.tensor([
+                    [j for j in range(num_agents) if j != k] 
+                    for k in range(num_agents)
+                ], device=self.device)
+                
+                others_rewards = r_b.unsqueeze(1).expand(-1, num_agents, -1)
+                others_rewards = torch.gather(others_rewards, 2, mask_indices.unsqueeze(0).expand(curr_bs, -1, -1))
+                others_rewards_flat = others_rewards.view(-1, num_agents - 1)
+                
+                error_flat = others_rewards_flat - r_pred_flat
+                DR_correction_flat = weight_flat * error_flat
+
+                actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
+                w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
+                
+                reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
+                reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents - 1)
+                r_hat_all = reg_estimates_cf + DR_correction_flat.unsqueeze(1)
+
+                probs_list = []
+                for k in range(num_agents):
+                    logits = self.agents[k].policy_net(obs_b[:, k, :])
+                    probs = torch.softmax(logits, dim=-1)
+                    probs_list.append(probs)
+                action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
+
+                factual_indices = actions_flat
+                r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
+
+                mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
+                mask.scatter_(1, factual_indices.unsqueeze(1), False)
+                
+                if baseline_type == 'weighted':
+                    probs_cf = action_probs_flat.clone()
+                    probs_cf.scatter_(1, factual_indices.unsqueeze(1), 0.0)
+                    sum_probs = probs_cf.sum(dim=1, keepdim=True)
+                    baseline = (probs_cf.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
+                elif baseline_type == 'average':
+                    r_hat_masked = r_hat_all.clone()
+                    mask_expanded = mask.unsqueeze(-1).expand_as(r_hat_all)
+                    r_hat_masked[~mask_expanded] = 0.0
+                    count = mask.sum(dim=1, keepdim=True).float()
+                    baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
+                else:
+                    raise ValueError(f"Invalid baseline type: {baseline_type}")
+
+                causal_effect = r_hat_factual - baseline
+                
+                if merging_method == 'max':
+                    delta_flat, _ = causal_effect.max(dim=1)
+                elif merging_method == 'mean':
+                    delta_flat = causal_effect.mean(dim=1)
+                
+                Delta_chunk = delta_flat.view(curr_bs, num_agents)
+                Delta_all[i:end] = Delta_chunk
             
-            # === 7. Extract effects for other agents ===
-            # Create mask for other agents: [num_agents]
-            other_agents_mask = torch.ones(self.num_agents, dtype=torch.bool, device=self.device)
-            other_agents_mask[agent_id] = False
-            
-            # Get effects for other agents: [batch_size, num_agents-1]
-            causal_effects_others = causal_effect_vector[:, other_agents_mask]
-            if merging_method == 'max':
-                Delta_batch = causal_effects_others.max(dim=1)[0] # why [0]? because max returns a tuple (value, index)
-            elif merging_method == 'mean':
-                Delta_batch = causal_effects_others.mean(dim=1) 
-            else:
-                raise ValueError(f"Invalid merging method: {merging_method}, must be 'max' or 'mean'")
-        return Delta_batch
+        return Delta_all
 
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
-        """
-        Updates agent policies and the centralized value function.
-        The entropy loss bug is also fixed.
-        """
         agent_losses = defaultdict(float)
 
-        # === Batch-level Data Preparation ===
-        agent_obs_tensors = {}
-        for agent_id in range(self.num_agents):
-            if agent_id in batch_data[0]['bold_o_t']:
-                agent_obs_tensors[agent_id] = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
-
-        # === 1. Collect Agent-specific Shaped Rewards and Delta Statistics ===
-        all_agent_shaped_rewards = {}
-        all_agent_rewards = {}  # Original rewards for value network
-        all_agent_dones = {}
-        
-        # Delta statistics for wandb logging
-        delta_stats = {
-            'no_reward': [],
-            'forage_reward': [],
-            'stag_reward': []
-        }
-        
-        # Prepare batch data for vectorized computation
-        w_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data]).to(self.device)
-        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device)
+        full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(self.device)
         actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
         rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
+        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device)
+        dones_batch = torch.tensor([[t['dones'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
+
+        B, N, D = full_obs_batch.shape
+        expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
+        mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
+        w_t_all = expanded_obs[mask].view(B, N, (N-1)*D)
+
+        with torch.no_grad():
+            Delta_all = self.compute_causal_rewards(
+                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='average', merging_method='max'
+            )
+            
+            # Agent별로 다른 lambda 적용
+            if self.causal_lambda_adaptive_per_agent:
+                causal_lambdas = torch.tensor([
+                    self.get_current_causal_lambda(agent_id=i) for i in range(self.num_agents)
+                ], device=self.device).unsqueeze(0)  # [1, N]
+                shaped_rewards_all = rewards_batch + causal_lambdas * Delta_all
+            else:
+                shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * Delta_all
+            
+            for i in range(N):
+                for t, transition in enumerate(batch_data):
+                    scenario = self._classify_delta_scenario(transition, i)
+                    # agent별로 delta를 구분하여 저장
+                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += Delta_all[t, i].item()
+                    agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
+
+        agent_returns = {}
+        agent_advantages = {}
         
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
-                
-            agent_obs = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
-            agent_rewards = torch.tensor([t['bold_r_t'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
-            agent_dones = torch.tensor([t['dones'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             
-            shaped_rewards = []
-            # Use vectorized batch computation
-            with torch.no_grad():
-                Delta_batch = self.causal_intrinsic_reward_batch(
-                    agent_id, w_t_batch, z_t_batch, agent_obs, actions_batch, rewards_batch,
-                    baseline_type='averaged', merging_method='max'
-                )
-                
-                # Compute shaped rewards
-                shaped_rewards = agent_rewards + self.get_current_causal_lambda() * Delta_batch
-                
-                # Collect delta statistics for wandb logging
-                for t, transition in enumerate(batch_data):
-                    scenario = self._classify_delta_scenario(transition, agent_id)
-                    delta_stats[scenario].append(Delta_batch[t].item())
+            agent_obs = full_obs_batch[:, agent_id, :]
+            agent_shaped_rewards = shaped_rewards_all[:, agent_id]
+            agent_dones = dones_batch[:, agent_id]
             
-            all_agent_shaped_rewards[agent_id] = shaped_rewards
-            all_agent_rewards[agent_id] = agent_rewards
-            all_agent_dones[agent_id] = agent_dones
-
-        # === 2. Compute Individual Agent Returns/Advantages using SHAPED rewards ===
-        agent_returns = {}
-        agent_advantages = {}
-        agent_values = {}
-        next_agent_values = {}
-        
-        for agent_id in range(self.num_agents):
-            if agent_id not in batch_data[0]['bold_o_t']:
-                continue
-                
-            # Get current values for this agent
             with torch.no_grad():
-                agent_values[agent_id] = self.value_net(agent_obs_tensors[agent_id]).squeeze()
-            
-            # Estimate next state value for bootstrapping the SHAPED-return calculation
-            with torch.no_grad():
-                last = batch_data[-1]
-                is_terminal = all_agent_dones[agent_id][-1].item()
-                if not is_terminal:
-                    next_obs_agent = last['next_observations'][agent_id]
-                    next_agent_values[agent_id] = self.value_net(next_obs_agent.unsqueeze(0)).item()
+                # value network 사용 (parameter sharing 여부에 따라)
+                if self.use_value_parameter_sharing:
+                    agent_values = self.shared_value_net(agent_obs).squeeze()
+                    last_next_obs = batch_data[-1]['next_observations'][agent_id].to(self.device)
+                    next_val = self.shared_value_net(last_next_obs.unsqueeze(0)).item() * (1 - agent_dones[-1].item())
                 else:
-                    next_agent_values[agent_id] = 0.0
+                    agent_values = self.agents[agent_id].value_net(agent_obs).squeeze()
+                    last_next_obs = batch_data[-1]['next_observations'][agent_id].to(self.device)
+                    next_val = self.agents[agent_id].value_net(last_next_obs.unsqueeze(0)).item() * (1 - agent_dones[-1].item())
 
-            advantages_shaped, returns_agent_shaped = self.compute_gae(
-                all_agent_shaped_rewards[agent_id].tolist(), 
-                agent_values[agent_id].tolist(), 
-                next_agent_values[agent_id], 
-                all_agent_dones[agent_id].tolist()
+            advantages, returns = self.compute_gae(
+                agent_shaped_rewards.tolist(),
+                agent_values.tolist(),
+                next_val,
+                agent_dones.tolist()
             )
-            agent_returns[agent_id] = torch.tensor(returns_agent_shaped, dtype=torch.float32, device=self.device)
-            agent_advantages[agent_id] = torch.tensor(advantages_shaped, dtype=torch.float32, device=self.device)
-
-        # === Agent-Specific Policy Updates ===
-        for agent_id in range(self.num_agents):
-            if agent_id not in batch_data[0]['bold_o_t']:
-                continue
             
-            agent_obs = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
-            agent_actions = torch.tensor([t['bold_a_t'][agent_id] for t in batch_data], dtype=torch.long, device=self.device)
+            agent_returns[agent_id] = torch.tensor(returns, dtype=torch.float32, device=self.device)
+            agent_advantages[agent_id] = torch.tensor(advantages, dtype=torch.float32, device=self.device)
 
+        for agent_id in range(self.num_agents):
+            if agent_id not in batch_data[0]['bold_o_t']: continue
+            
+            agent_obs = full_obs_batch[:, agent_id, :]
+            my_actions = actions_batch[:, agent_id]
+            adv = (agent_advantages[agent_id] - agent_advantages[agent_id].mean()) / (agent_advantages[agent_id].std() + 1e-8)
+            
             with torch.no_grad():
                 logits = self.agents[agent_id].policy_net(agent_obs)
-                old_log_probs_tensor = F.log_softmax(logits, dim=-1).gather(1, agent_actions.unsqueeze(1)).squeeze(1)
+                old_log_probs = F.log_softmax(logits, dim=-1).gather(1, my_actions.unsqueeze(1)).squeeze(1)
 
-            # 3. Advantage for the POLICY update (using agent-specific SHAPED rewards)
-            advantages_tensor = agent_advantages[agent_id]
-            advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
-
-            # === PPO Policy Update Loop (for this agent) ===
             for _ in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(agent_obs, agent_actions)
-                ratio = torch.exp(new_log_probs - old_log_probs_tensor.detach())
-
-                # Policy loss uses the agent-specific advantage from SHAPED rewards
-                surr1 = ratio * advantages_tensor
-                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages_tensor
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(agent_obs, my_actions)
+                ratio = torch.exp(new_log_probs - old_log_probs.detach())
+                
+                surr1 = ratio * adv
+                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv
                 policy_loss = -torch.min(surr1, surr2).mean()
-                
                 entropy_loss = -entropy.mean()
-                
-                # Use '+' to maximize entropy.
-                agent_policy_loss = policy_loss + self.entropy_coef * entropy_loss
+                loss = policy_loss + self.entropy_coef * entropy_loss
                 
                 self.agents[agent_id].optimizer.zero_grad()
-                agent_policy_loss.backward()
+                loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.agents[agent_id].policy_net.parameters(), self.max_grad_norm)
                 self.agents[agent_id].optimizer.step()
-
+                
                 agent_losses[f'agent_{agent_id}_policy_loss'] += policy_loss.item()
                 agent_losses[f'agent_{agent_id}_entropy_loss'] += entropy_loss.item()
-        
-        # === Value Function Update ===
-        for _ in range(self.ppo_epochs):
-            total_value_loss = 0.0
-            
-            # Train value network on individual agent returns
-            for agent_id in range(self.num_agents):
-                if agent_id not in batch_data[0]['bold_o_t']:
-                    continue
-                    
-                # Get new values for this agent using the shared value network
-                new_agent_values = self.value_net(agent_obs_tensors[agent_id]).squeeze()
-                agent_value_loss = F.mse_loss(new_agent_values, agent_returns[agent_id])
-                total_value_loss += agent_value_loss
-            
-            # Average the value loss across all agents
-            if len(agent_returns) > 0:
-                avg_value_loss = total_value_loss / len(agent_returns)
+
+        # Value network 업데이트 (parameter sharing 여부에 따라)
+        if self.use_value_parameter_sharing:
+            # Shared value network 업데이트: 모든 agent의 데이터를 합쳐서 학습
+            for _ in range(self.ppo_epochs):
+                total_val_loss = 0.0
+                valid_agents = 0
                 
-                self.value_optimizer.zero_grad()
-                (self.value_coef * avg_value_loss).backward()
-                torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), self.max_grad_norm)
-                self.value_optimizer.step()
+                for agent_id in range(self.num_agents):
+                    if agent_id not in batch_data[0]['bold_o_t']: continue
+                    agent_obs = full_obs_batch[:, agent_id, :]
+                    new_vals = self.shared_value_net(agent_obs).squeeze()
+                    val_loss = F.mse_loss(new_vals, agent_returns[agent_id])
+                    total_val_loss += val_loss
+                    valid_agents += 1
+                    agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
+                
+                if valid_agents > 0:
+                    avg_val_loss = total_val_loss / valid_agents
+                    self.shared_value_optimizer.zero_grad()
+                    (self.value_coef * avg_val_loss).backward()
+                    torch.nn.utils.clip_grad_norm_(self.shared_value_net.parameters(), self.max_grad_norm)
+                    self.shared_value_optimizer.step()
+        else:
+            # Agent별 value network 업데이트
+            for agent_id in range(self.num_agents):
+                if agent_id not in batch_data[0]['bold_o_t']: continue
+                
+                for _ in range(self.ppo_epochs):
+                    agent_obs = full_obs_batch[:, agent_id, :]
+                    new_vals = self.agents[agent_id].value_net(agent_obs).squeeze()
+                    val_loss = F.mse_loss(new_vals, agent_returns[agent_id])
+                    
+                    self.agents[agent_id].value_optimizer.zero_grad()
+                    (self.value_coef * val_loss).backward()
+                    torch.nn.utils.clip_grad_norm_(self.agents[agent_id].value_net.parameters(), self.max_grad_norm)
+                    self.agents[agent_id].value_optimizer.step()
+                    agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
 
-                agent_losses['value_loss'] += avg_value_loss.item()
-
-        # Average losses for logging
-        for key in list(agent_losses.keys()):
-            agent_losses[key] /= self.ppo_epochs
+        for k in list(agent_losses.keys()):
+            if 'delta' not in k:
+                if k == 'value_loss':
+                    # value_loss는 agent별 평균만 계산
+                    total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
+                    agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
+                else:
+                    agent_losses[k] /= self.ppo_epochs
+            elif 'sum' in k:
+                count_key = k.replace('sum', 'count')
+                if agent_losses[count_key] > 0:
+                    agent_losses[k.replace('sum', 'mean')] = agent_losses[k] / agent_losses[count_key]
+                del agent_losses[k]
         
-        # Add delta statistics to losses for wandb logging
-        for scenario, deltas in delta_stats.items():
-            if deltas:  # Only add if we have data
-                agent_losses[f'delta_{scenario}_mean'] = np.mean(deltas)
-                agent_losses[f'delta_{scenario}_std'] = np.std(deltas)
-                agent_losses[f'delta_{scenario}_count'] = len(deltas)
         return dict(agent_losses)
 
     def update(self, **kwargs):
-        """
-        Main update function that orchestrates the training process for one iteration.
-        """
-        if self.buffer_manager.is_main_buffer_empty():
-            return {}
-
+        if self.buffer_manager.is_main_buffer_empty(): return {}
         transitions = self.buffer_manager.get_main_buffer_transitions()
         
-        # Partition into K mini-batches
+        # With Chunking, we can process larger batches, but standard PPO usually batches.
         batch_size = max(1, len(transitions) // self.num_batches)
         batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
-        
         total_losses = defaultdict(float)
         
-        # Loop through each mini-batch to perform updates
         for batch_data in batches:
             if not batch_data: continue
             
-            # Phase 1: Update Causal Networks (only if causal lambda > 0)
             if self.get_current_causal_lambda() > 0.0:
                 causal_losses = self.update_causal_networks(batch_data, mc_samples_k_w2=16)
             else:
-                causal_losses = {
-                    'outcome_bridge_loss': 0.0,
-                    'action_bridge_loss': 0.0,
-                }
+                causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
             
-            # Phase 2: Update Agent Policies and Value Function
             agent_and_value_losses = self.update_agents(batch_data)
 
-            # Accumulate losses from both phases for logging
             for loss_name, loss_value in causal_losses.items():
                 total_losses[loss_name] += loss_value
             for loss_name, loss_value in agent_and_value_losses.items():
@@ -1064,7 +806,6 @@ class PCIMAPPOAlgorithm:
         self.buffer_manager.clear_buffer()
         self.training_steps += 1
         
-        # Average losses over the number of mini-batches for accurate logging
         num_valid_batches = len([b for b in batches if b])
         if num_valid_batches == 0: return {}
 
@@ -1073,15 +814,11 @@ class PCIMAPPOAlgorithm:
 
         return final_losses
 
-    # Buffer management
     def clear_buffer(self):
-        """Clear main experience buffer."""
         self.buffer_manager.clear_buffer()
     
     def clear_causal_buffer(self):
-        """Clear causal experience buffer."""
         self.buffer_manager.clear_causal_buffer()
     
     def get_buffer_info(self) -> Dict[str, int]:
-        """Get current buffer sizes and limits for monitoring."""
         return self.buffer_manager.get_buffer_info()

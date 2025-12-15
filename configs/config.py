@@ -29,11 +29,18 @@ class AlgorithmConfig:
     batch_size: int = 64
     causal_lambda: float = 0.1
     causal_lambda_schedule: bool = False
+    causal_lambda_adaptive_per_agent: bool = False
+    causal_lambda_adaptive_alpha: float = 0.9
+    causal_lambda_adaptive_min: float = 0.1
+    causal_lambda_adaptive_max: float = 1.0
+    causal_lambda_adaptive_error_threshold: float = 0.5
     causal_lambda_start: float = 0.0
     causal_lambda_final: float = 0.2
     causal_lambda_warmup_steps: int = 10000
     causal_lambda_startingpoint: int = 0  # Starting iteration for causal lambda scheduling
     num_batches: int = 4  # Number of batches K for training
+    causal_mini_batch_size: int = 256  # Chunk size for RKHS solver
+    use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     # Epsilon greedy parameters for causal data collection
     epsilon_start: float = 0.6
     epsilon_end: float = 0.0
@@ -201,6 +208,10 @@ def parse_args() -> argparse.Namespace:
                         help='Causal reward shaping coefficient')
     parser.add_argument('--causal-lambda-schedule', action='store_true', default=False,
                         help='Enable causal lambda scheduling')
+    parser.add_argument('--causal-lambda-adaptive-per-agent', type=str, default=None,
+                        help='Enable adaptive causal lambda per agent (true/false)')
+    parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
+                        help='Use shared value network for all agents (true/false)')
     parser.add_argument('--lr', type=float, default=3e-4,
                         help='Learning rate')
     
@@ -279,6 +290,14 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     
     if hasattr(args, 'causal_lambda') and args.causal_lambda is not None:
         config.algorithm.causal_lambda = args.causal_lambda
+    if hasattr(args, 'use_value_parameter_sharing') and args.use_value_parameter_sharing is not None:
+        # Convert string to boolean
+        use_sharing = args.use_value_parameter_sharing.lower() in ('true', '1', 'yes', 'on')
+        config.algorithm.use_value_parameter_sharing = use_sharing
+    if hasattr(args, 'causal_lambda_adaptive_per_agent') and args.causal_lambda_adaptive_per_agent is not None:
+        # Convert string to boolean
+        use_adaptive = args.causal_lambda_adaptive_per_agent.lower() in ('true', '1', 'yes', 'on')
+        config.algorithm.causal_lambda_adaptive_per_agent = use_adaptive
     if hasattr(args, 'lr') and args.lr:
         config.network.lr = args.lr
         config.network.lr_bridge = args.lr

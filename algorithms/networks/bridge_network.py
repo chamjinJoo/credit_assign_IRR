@@ -30,18 +30,35 @@ class OutcomeBridgeNetwork(nn.Module):
         self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
         
         # Input is concatenation of all agents' action embeddings and confounder
-        input_dim = num_agents * action_embedding_dim + w_dim
+        input_dim = action_embedding_dim + w_dim
         
         # Bridge network with 3 hidden layers
-        self.bridge_network = nn.Sequential(
-            nn.Linear(input_dim, 3*hidden_dim),
-            nn.ReLU(),
-            nn.Linear(3*hidden_dim, 2*hidden_dim),
-            nn.ReLU(),
-            nn.Linear(2*hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, outcome_dim)
+        self.mlp = MLPBase(
+            input_dim=input_dim,
+            hidden_size=2*hidden_dim,
+            layer_N=2,
+            use_feature_normalization=True,
+            use_orthogonal=True,
+            use_ReLU=True,
+            use_layer_norm=True
         )
+        self.output_layer = nn.Linear(2*hidden_dim, outcome_dim)
+
+        self.bridge_network = nn.Sequential(
+            self.mlp,
+            self.output_layer
+        )
+
+        # Simple MLP with 3 hidden layers
+        # self.bridge_network = nn.Sequential(
+        #     nn.Linear(input_dim, 3*hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(3*hidden_dim, 2*hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(2*hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Linear(hidden_dim, outcome_dim)
+        # )
         
     def forward(
         self, 
@@ -50,24 +67,12 @@ class OutcomeBridgeNetwork(nn.Module):
     ) -> torch.Tensor:
         """
         Forward pass of bridge network.
-        Args:
-            actions: Full action vector a = (a^1_t, a^2_t, ..., a^n_t) [batch_size, num_agents]
-            w: Confounding variable w [batch_size, w_dim]
-            
-        Returns:
-            outcome: Predicted outcomes μ for all agents [batch_size, num_agents]
-                    Each column i contains the predicted reward for agent i
         """
         batch_size = actions.shape[0]
-        # Get action embeddings for all agents
-        # actions: [batch_size, num_agents] -> action_embeds: [batch_size, num_agents, action_embedding_dim]
-        action_embeds = self.action_embedding(actions)  # [batch_size, num_agents, action_embedding_dim]
-        
-        # Flatten action embeddings: [batch_size, num_agents * action_embedding_dim]
-        action_embeds_flat = action_embeds.view(batch_size, -1)
-        
+        action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
+  
         # Concatenate all action embeddings and confounder
-        bridge_input = torch.cat([action_embeds_flat, w], dim=-1)
+        bridge_input = torch.cat([action_embeds, w], dim=-1)
         
         # Forward through network
         outcome = self.bridge_network(bridge_input)
@@ -136,7 +141,7 @@ class ActionBridgeNetwork(nn.Module):
         self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
 
         # Input is concatenation of context and all agents' action embeddings
-        input_dim = z_dim + num_agents * action_embedding_dim
+        input_dim = z_dim + action_embedding_dim
 
         # Action bridge network using MLPBase
         self.action_bridge_network = MLPBase(
@@ -169,13 +174,11 @@ class ActionBridgeNetwork(nn.Module):
         batch_size = z.shape[0]
         
         # Get action embeddings for all agents
-        # actions: [batch_size, num_agents] -> action_embeds: [batch_size, num_agents, action_embedding_dim]
-        action_embeds = self.action_embedding(actions)  # [batch_size, num_agents, action_embedding_dim]
-        # Flatten action embeddings: [batch_size, num_agents * action_embedding_dim]
-        action_embeds_flat = action_embeds.view(batch_size, -1)
+        # actions: [batch_size, num_agents] -> action_embeds: [batch_size, action_embedding_dim]
+        action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
         
-        # Concatenate z and all action embeddings
-        action_bridge_input = torch.cat([z, action_embeds_flat], dim=-1)
+        # Concatenate z and action embeddings
+        action_bridge_input = torch.cat([z, action_embeds], dim=-1)
         
         # Forward through action bridge network
         encoded = self.action_bridge_network(action_bridge_input)  # [batch_size, hidden_dim]

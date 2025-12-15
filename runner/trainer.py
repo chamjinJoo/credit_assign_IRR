@@ -17,6 +17,33 @@ from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_cau
 from typing import Union
 
 
+def get_network_architectures() -> Dict[str, str]:
+    """
+    네트워크 아키텍처 정보를 추출합니다 (rnn.py 제외).
+    
+    Returns:
+        Dict[str, str]: 네트워크 파일명을 키로 하고 소스 코드를 값으로 하는 딕셔너리
+    """
+    import os
+    networks_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "algorithms", "networks")
+    architectures = {}
+    
+    # 제외할 파일
+    exclude_files = {"rnn.py", "__init__.py", "__pycache__"}
+    
+    # 네트워크 파일들 읽기
+    for filename in os.listdir(networks_dir):
+        if filename.endswith(".py") and filename not in exclude_files:
+            filepath = os.path.join(networks_dir, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    architectures[filename] = f.read()
+            except Exception as e:
+                architectures[filename] = f"Error reading file: {str(e)}"
+    
+    return architectures
+
+
 class Trainer:
     """
     Main trainer for PCI-MAPPO, MAPPO, and IPPO algorithms.
@@ -131,6 +158,13 @@ class Trainer:
                     "deterministic": getattr(self, 'deterministic', 'unknown')
                 }
             })
+            
+            # 네트워크 아키텍처 저장 (rnn.py 제외)
+            network_architectures = get_network_architectures()
+            for filename, source_code in network_architectures.items():
+                wandb.summary[f"network_architecture/{filename}"] = wandb.Html(
+                    f"<pre style='white-space: pre-wrap;'>{source_code}</pre>"
+                )
         
         # Training state
         self.iteration = 0
@@ -565,21 +599,24 @@ class Trainer:
                 wandb_data[f'update/{key}'] = value
             
             # Add delta statistics for causal reward shaping
-            # Group by scenario for better visualization
+            # Group by agent and scenario for better visualization
             delta_scenarios = ['no_reward', 'forage_reward', 'stag_reward']
-            for scenario in delta_scenarios:
-                mean_key = f'delta_{scenario}_mean'
-                std_key = f'delta_{scenario}_std'
-                count_key = f'delta_{scenario}_count'
-                
-                if mean_key in update_info:
-                    # Use consistent naming for wandb to group them in one plot
-                    wandb_data[f'causal_effect/delta_{scenario}'] = update_info[mean_key]
-                    # Also log std and count separately for reference
-                    if std_key in update_info:
-                        wandb_data[f'causal_effect/delta_{scenario}_std'] = update_info[std_key]
-                    if count_key in update_info:
-                        wandb_data[f'causal_effect/delta_{scenario}_count'] = update_info[count_key]
+            num_agents = getattr(self.algorithm, 'num_agents', 0)
+            
+            for agent_id in range(num_agents):
+                for scenario in delta_scenarios:
+                    mean_key = f'delta_agent_{agent_id}_{scenario}_mean'
+                    std_key = f'delta_agent_{agent_id}_{scenario}_std'
+                    count_key = f'delta_agent_{agent_id}_{scenario}_count'
+                    
+                    if mean_key in update_info:
+                        # Log with agent-specific naming
+                        wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}'] = update_info[mean_key]
+                        # Also log std and count separately for reference
+                        if std_key in update_info:
+                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_std'] = update_info[std_key]
+                        if count_key in update_info:
+                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_count'] = update_info[count_key]
             
             wandb.log(wandb_data, step=self.iteration)
     

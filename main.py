@@ -41,6 +41,11 @@ def create_algorithm(env, config):
             lr_critic=network_config.lr_critic,
             causal_lambda=algorithm_config.causal_lambda,
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
+            causal_lambda_adaptive_per_agent=getattr(algorithm_config, 'causal_lambda_adaptive_per_agent', False),
+            causal_lambda_adaptive_alpha=getattr(algorithm_config, 'causal_lambda_adaptive_alpha', 0.9),
+            causal_lambda_adaptive_min=getattr(algorithm_config, 'causal_lambda_adaptive_min', 0.1),
+            causal_lambda_adaptive_max=getattr(algorithm_config, 'causal_lambda_adaptive_max', 1.0),
+            causal_lambda_adaptive_error_threshold=getattr(algorithm_config, 'causal_lambda_adaptive_error_threshold', 0.5),
             causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
             causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.2),
             causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
@@ -62,6 +67,10 @@ def create_algorithm(env, config):
             rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
             # Environment required_agents for accurate scenario classification
             env_required_agents=env_required_agents,
+            # Optimization parameter
+            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
+            # Value network parameter sharing
+            use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
         )
     elif algorithm_type == 'mappo':
         algorithm = MAPPOAlgorithm(
