@@ -20,7 +20,7 @@ algorithm:
   ppo_epochs: 4
   batch_size: 64
   causal_lambda: 1.0
-  use_value_parameter_sharing: true
+  use_value_parameter_sharing: false
 
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_adaptive_per_agent: false    # Enable agent-specific adaptive lambda

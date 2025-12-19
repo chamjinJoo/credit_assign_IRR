@@ -532,39 +532,40 @@ class PCIMAPPOAlgorithm:
         full_obs_batch: torch.Tensor,
         actions_batch: torch.Tensor,
         rewards_batch: torch.Tensor,
-        baseline_type: str = 'average',
-        merging_method: str = 'max',
+        baseline_type: str = 'weighted',
+        merging_method: str = 'max', # Not used in Matrix return mode, but kept for interface compatibility
     ) -> torch.Tensor:
         """
-        Computes causal rewards for ALL agents simultaneously.
-        Optimized with chunking to avoid OOM on large batches during inference.
+        Computes the pairwise Causal Effect Matrix C.
+        C[b, i, j] = Effect of Agent i on Agent j in batch b.
+        
+        Returns:
+            C_matrix: [B, N, N] tensor
         """
         if self.get_current_causal_lambda() == 0.0:
-            return torch.zeros_like(rewards_batch)
+            return torch.zeros(actions_batch.size(0), self.num_agents, self.num_agents, device=self.device)
 
         batch_size = actions_batch.size(0)
         num_agents = self.num_agents
         action_dim = self.action_dim
         
-        # Prepare Outputs
-        Delta_all = torch.zeros(batch_size, num_agents, device=self.device)
+        # Prepare Output Matrix
+        C_matrix = torch.zeros(batch_size, num_agents, num_agents, device=self.device)
         
-        infer_chunk_size = batch_size # no chunking if chunking size = batch_size
+        infer_chunk_size = 1024 
+        
         with torch.no_grad():
             for i in range(0, batch_size, infer_chunk_size):
-                # Slice inputs
                 end = min(i + infer_chunk_size, batch_size)
                 
-                # Slices [chunk, ...]
                 act_b = actions_batch[i:end]
                 w_b = w_t_batch[i:end]
                 z_b = z_t_batch[i:end]
                 r_b = rewards_batch[i:end]
                 obs_b = full_obs_batch[i:end]
-                
                 curr_bs = act_b.size(0)
                 
-                # --- Vectorized Logic (Same as before but on chunk) ---
+                # --- Vectorized Logic ---
                 actions_flat = act_b.view(-1)
                 w_t_flat = w_b.view(-1, w_b.size(-1))
                 z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(-1, z_b.size(-1))
@@ -599,36 +600,53 @@ class PCIMAPPOAlgorithm:
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
 
                 factual_indices = actions_flat
-                r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
-
-                mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
-                mask.scatter_(1, factual_indices.unsqueeze(1), False)
+                # Original baseline calculation
+                # r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
+                # mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
+                # mask.scatter_(1, factual_indices.unsqueeze(1), False)
                 
+                # if baseline_type == 'weighted':
+                #     probs_cf = action_probs_flat.clone()
+                #     probs_cf.scatter_(1, factual_indices.unsqueeze(1), 0.0)
+                #     sum_probs = probs_cf.sum(dim=1, keepdim=True)
+                #     baseline = (probs_cf.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
+                # elif baseline_type == 'average':
+                #     r_hat_masked = r_hat_all.clone()
+                #     mask_expanded = mask.unsqueeze(-1).expand_as(r_hat_all)
+                #     r_hat_masked[~mask_expanded] = 0.0
+                #     count = mask.sum(dim=1, keepdim=True).float()
+                #     baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
+                # else:
+                #     raise ValueError(f"Invalid baseline type: {baseline_type}")
+
+                # New baseline calculation
+                r_factual = others_rewards_flat
                 if baseline_type == 'weighted':
-                    probs_cf = action_probs_flat.clone()
-                    probs_cf.scatter_(1, factual_indices.unsqueeze(1), 0.0)
-                    sum_probs = probs_cf.sum(dim=1, keepdim=True)
-                    baseline = (probs_cf.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
+                    # 모든 action의 확률을 사용 (factual action 포함)
+                    sum_probs = action_probs_flat.sum(dim=1, keepdim=True)
+                    baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
                 elif baseline_type == 'average':
-                    r_hat_masked = r_hat_all.clone()
-                    mask_expanded = mask.unsqueeze(-1).expand_as(r_hat_all)
-                    r_hat_masked[~mask_expanded] = 0.0
-                    count = mask.sum(dim=1, keepdim=True).float()
-                    baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
+                    # 모든 action을 포함하여 평균 계산 (factual action 포함)
+                    baseline = r_hat_all.mean(dim=1)
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                causal_effect = r_hat_factual - baseline
+                # [Modified] Maintain raw effects (allowing negative)
+                raw_effects = r_factual - baseline # [B*N, N-1]
                 
-                if merging_method == 'max':
-                    delta_flat, _ = causal_effect.max(dim=1)
-                elif merging_method == 'mean':
-                    delta_flat = causal_effect.mean(dim=1)
+                # Reshape to [B, N, N-1]
+                effects_reshaped = raw_effects.view(curr_bs, num_agents, num_agents - 1)
                 
-                Delta_chunk = delta_flat.view(curr_bs, num_agents)
-                Delta_all[i:end] = Delta_chunk
+                # Scatter values into N x N matrix (Diagonal is 0)
+                # target_indices: [B, N, N-1] -> expand for batch
+                batch_target_indices = mask_indices.unsqueeze(0).expand(curr_bs, -1, -1)
+                
+                C_chunk = torch.zeros(curr_bs, num_agents, num_agents, device=self.device)
+                C_chunk.scatter_(2, batch_target_indices, effects_reshaped)
+                
+                C_matrix[i:end] = C_chunk
             
-        return Delta_all
+        return C_matrix
 
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
         agent_losses = defaultdict(float)
@@ -645,24 +663,47 @@ class PCIMAPPOAlgorithm:
         w_t_all = expanded_obs[mask].view(B, N, (N-1)*D)
 
         with torch.no_grad():
-            Delta_all = self.compute_causal_rewards(
-                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='average', merging_method='max'
+            # [NEW] Compute Causal Effect Matrix C (N x N) off-diagonal matrix
+            C_matrix = self.compute_causal_rewards(
+                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='average'
             )
+            merging_method = 'max'
+            # Outbound & Inbound 계산 (Merging Method 적용)
+            if merging_method == 'max':
+                # max는 (values, indices)를 반환하므로 [0] 인덱싱 필요
+                Delta_out = C_matrix.max(dim=2)[0] # [B, N] - 내가 남에게 준 최대 영향
+                Delta_in = C_matrix.max(dim=1)[0]  # [B, N] - 남이 나에게 준 최대 영향
+            elif merging_method == 'mean':
+                Delta_out = C_matrix.mean(dim=2)
+                Delta_in = C_matrix.mean(dim=1)
+            elif merging_method == 'sum':
+                Delta_out = C_matrix.sum(dim=2)
+                Delta_in = C_matrix.sum(dim=1)
+            # 3. Synergistic Reward Calculation
+            # r = Out * (1 + alpha * tanh(In))
+            # If In < 0 (others harming me), tanh < 0 -> reward decreases
+            # If In > 0 (others helping me), tanh > 0 -> reward increases
+            alpha = 1.0
+            synergy_factor = 1.0 + alpha * torch.tanh(Delta_in)
+            Delta_final = Delta_out * synergy_factor
+
+            # Alternative: no synergy - only use outbound effect
+            # Delta_final = Delta_out
             
-            # Agent별로 다른 lambda 적용
+            # Apply Adaptive Lambda per agent
             if self.causal_lambda_adaptive_per_agent:
                 causal_lambdas = torch.tensor([
                     self.get_current_causal_lambda(agent_id=i) for i in range(self.num_agents)
-                ], device=self.device).unsqueeze(0)  # [1, N]
-                shaped_rewards_all = rewards_batch + causal_lambdas * Delta_all
+                ], device=self.device).unsqueeze(0)
+                shaped_rewards_all = rewards_batch + causal_lambdas * Delta_final
             else:
-                shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * Delta_all
+                shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * Delta_final
             
+            # Logging
             for i in range(N):
                 for t, transition in enumerate(batch_data):
                     scenario = self._classify_delta_scenario(transition, i)
-                    # agent별로 delta를 구분하여 저장
-                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += Delta_all[t, i].item()
+                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += Delta_final[t, i].item()
                     agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
 
         agent_returns = {}
@@ -676,15 +717,9 @@ class PCIMAPPOAlgorithm:
             agent_dones = dones_batch[:, agent_id]
             
             with torch.no_grad():
-                # value network 사용 (parameter sharing 여부에 따라)
-                if self.use_value_parameter_sharing:
-                    agent_values = self.shared_value_net(agent_obs).squeeze()
-                    last_next_obs = batch_data[-1]['next_observations'][agent_id].to(self.device)
-                    next_val = self.shared_value_net(last_next_obs.unsqueeze(0)).item() * (1 - agent_dones[-1].item())
-                else:
-                    agent_values = self.agents[agent_id].value_net(agent_obs).squeeze()
-                    last_next_obs = batch_data[-1]['next_observations'][agent_id].to(self.device)
-                    next_val = self.agents[agent_id].value_net(last_next_obs.unsqueeze(0)).item() * (1 - agent_dones[-1].item())
+                agent_values = self.agents[agent_id].value_net(agent_obs).squeeze()
+                last_next_obs = batch_data[-1]['next_observations'][agent_id].to(self.device)
+                next_val = self.agents[agent_id].value_net(last_next_obs.unsqueeze(0)).item() * (1 - agent_dones[-1].item())
 
             advantages, returns = self.compute_gae(
                 agent_shaped_rewards.tolist(),
@@ -725,48 +760,23 @@ class PCIMAPPOAlgorithm:
                 agent_losses[f'agent_{agent_id}_policy_loss'] += policy_loss.item()
                 agent_losses[f'agent_{agent_id}_entropy_loss'] += entropy_loss.item()
 
-        # Value network 업데이트 (parameter sharing 여부에 따라)
-        if self.use_value_parameter_sharing:
-            # Shared value network 업데이트: 모든 agent의 데이터를 합쳐서 학습
+        for agent_id in range(self.num_agents):
+            if agent_id not in batch_data[0]['bold_o_t']: continue
+            
             for _ in range(self.ppo_epochs):
-                total_val_loss = 0.0
-                valid_agents = 0
+                agent_obs = full_obs_batch[:, agent_id, :]
+                new_vals = self.agents[agent_id].value_net(agent_obs).squeeze()
+                val_loss = F.mse_loss(new_vals, agent_returns[agent_id])
                 
-                for agent_id in range(self.num_agents):
-                    if agent_id not in batch_data[0]['bold_o_t']: continue
-                    agent_obs = full_obs_batch[:, agent_id, :]
-                    new_vals = self.shared_value_net(agent_obs).squeeze()
-                    val_loss = F.mse_loss(new_vals, agent_returns[agent_id])
-                    total_val_loss += val_loss
-                    valid_agents += 1
-                    agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
-                
-                if valid_agents > 0:
-                    avg_val_loss = total_val_loss / valid_agents
-                    self.shared_value_optimizer.zero_grad()
-                    (self.value_coef * avg_val_loss).backward()
-                    torch.nn.utils.clip_grad_norm_(self.shared_value_net.parameters(), self.max_grad_norm)
-                    self.shared_value_optimizer.step()
-        else:
-            # Agent별 value network 업데이트
-            for agent_id in range(self.num_agents):
-                if agent_id not in batch_data[0]['bold_o_t']: continue
-                
-                for _ in range(self.ppo_epochs):
-                    agent_obs = full_obs_batch[:, agent_id, :]
-                    new_vals = self.agents[agent_id].value_net(agent_obs).squeeze()
-                    val_loss = F.mse_loss(new_vals, agent_returns[agent_id])
-                    
-                    self.agents[agent_id].value_optimizer.zero_grad()
-                    (self.value_coef * val_loss).backward()
-                    torch.nn.utils.clip_grad_norm_(self.agents[agent_id].value_net.parameters(), self.max_grad_norm)
-                    self.agents[agent_id].value_optimizer.step()
-                    agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
+                self.agents[agent_id].value_optimizer.zero_grad()
+                (self.value_coef * val_loss).backward()
+                torch.nn.utils.clip_grad_norm_(self.agents[agent_id].value_net.parameters(), self.max_grad_norm)
+                self.agents[agent_id].value_optimizer.step()
+                agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
 
         for k in list(agent_losses.keys()):
             if 'delta' not in k:
                 if k == 'value_loss':
-                    # value_loss는 agent별 평균만 계산
                     total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
                     agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
                 else:

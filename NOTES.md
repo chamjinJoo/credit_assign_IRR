@@ -7,18 +7,28 @@ set agent-wise proxy W^i_t = O^{-i}_t, Z^i_t = O_{t-1} (unchanged) -> 가능성 
 ## Value Network -> no PS
 ## Adaptive causal lambda 
 
-1. bridge network output layer extended | ValuenetPS                X
+**Bold** is best performance
 
-2. bridge network output layer extended | ValuenetPS |adaptive      X
+1. bridge network output layer extended | ValuenetPS                      X
 
-3. bridge network output layer extended | ValuenetPS                X
+2. bridge network output layer extended | ValuenetPS |adaptive            X
 
-4. bridge network output layer extended | ValuenetPS | adaptive     X
+3. bridge network output layer extended | ValuenetPS                      X
 
-5. bridge network | ValuenetPS | adaptive                           X
+4. bridge network output layer extended | ValuenetPS | adaptive           X
 
-6. bridge network | ValuenetPS                                      X
+5. bridge network | ValuenetPS | adaptive                                 X
 
-7. **bridge network | ValuenetNoPS**                                O
+6. bridge network | ValuenetPS                                            X
 
-8. **bridge network | ValuenetNoPS** | adaptive                     O
+7. bridge network | ValuenetNoPS                                          O
+
+8. bridge network | ValuenetNoPS | adaptive                               O
+
+9. **bridge network | ValuenetNoPS | Causal Reciprocity MAX**             O
+
+10. bridge network | ValuenetNoPS | Causal Reciprocity MEAN               O
+
+11. bridge network | ValuenetNoPS | Causal Reciprocity MAX | adaptive     X
+
+12. bridge network | ValuenetNoPS | Causal Reciprocity MEAN| adaptive     X

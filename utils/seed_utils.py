@@ -38,6 +38,7 @@ def set_global_seed(seed: Union[int, str], deterministic: bool = True) -> int:
     if deterministic:
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         torch.use_deterministic_algorithms(True)
     print(f"Global seed set to: {seed} (deterministic={deterministic})")
     return seed
@@ -98,7 +99,7 @@ def ensure_reproducible_environment():
     os.environ['MKL_NUM_THREADS'] = '1'
     os.environ['NUMEXPR_NUM_THREADS'] = '1'
     os.environ['OPENBLAS_NUM_THREADS'] = '1'
-    
+    os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
     # Set PyTorch threading
     torch.set_num_threads(1)
     
