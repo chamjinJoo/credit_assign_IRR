@@ -89,7 +89,7 @@ class EnvironmentConfig:
     forage_reward: float = 3.0
     stag_reward: float = 5.0
     mauling_punishment: float = -1.0
-
+    
     # For MPE Simple Spread environment
     local_ratio: float = 0.5
     max_cycles: int = 25

@@ -81,7 +81,7 @@ class StagHuntEnv(MultiAgentEnv):
         forage_reward: float = 3.0,
         stag_reward: float = 5.0,
         mauling_punishment: float = -1.0,
-        coop_bonus: float = 1.0,
+        coop_bonus: float = 0.0,
         seed: int = None,
         **kwargs):
         """
@@ -103,6 +103,7 @@ class StagHuntEnv(MultiAgentEnv):
         self.max_steps = max_steps
         self.stag_follows = stag_follows
         self.run_away_after_maul = run_away_after_maul
+
         # forage_quantity가 None이면 num_agents와 동일하게 설정
         self.forage_quantity = forage_quantity if forage_quantity is not None else num_agents
         self.step_count = 0
@@ -141,6 +142,10 @@ class StagHuntEnv(MultiAgentEnv):
                 self.required_agents[stag_id] = [stag_id, 0]
             else:
                 self.required_agents[stag_id] = [stag_id, stag_id + 1]
+
+        # ----------------------------TODO: HARD MODE ----------------------------
+        # self.required_agents = {0: [0, 1, 2], 1: [1, 2, 0], 2: [2, 0, 1]}
+        # ------------------------------------------------------------------------
 
         print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
         print(f"stag allocated agents: {self.required_agents}")
@@ -283,13 +288,12 @@ class StagHuntEnv(MultiAgentEnv):
         for i, agent_id in enumerate(self.agents):
             self.agent_positions[agent_id] = self._spawn_object_randomly() # random spawn
             # self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
-
+        
         stag_positions = self._spawn_stags_with_separation(self.num_agents)
         for i, stag_id in enumerate(self.agents):  # num_agents만큼의 stag 생성
             self.stag_positions[stag_id] = stag_positions[i]
             self.stag_alive[stag_id] = True  # 모든 stag를 살아있는 상태로 초기화
     
-        # 식물들을 빈 위치에 랜덤 스폰
         try:
             self.hare_positions = {}
             self.hare_alive = {}

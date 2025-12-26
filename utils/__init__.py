@@ -6,6 +6,7 @@ from configs.config import Config, NetworkConfig, AlgorithmConfig, TrainingConfi
 from utils.buffer import ExperienceBuffer
 from .seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info, ReproducibleContext
 from .value_network_utils import get_value_networks_dict, get_value_network_for_agent, is_value_network_shared
+from utils.env_profile import MARLProfiler
 
 # Import evaluation modules only when needed to avoid circular imports
 def get_causal_evaluator():
@@ -52,5 +53,6 @@ __all__ = [
     "ReproducibleContext",
     "get_value_networks_dict",
     "get_value_network_for_agent",
-    "is_value_network_shared"
+    "is_value_network_shared",
+    "MARLProfiler"
 ]

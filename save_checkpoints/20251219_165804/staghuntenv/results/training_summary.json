@@ -1,0 +1,18 @@
+{
+  "training_completed": "2025-12-19T18:11:13.441197",
+  "total_time_seconds": 4386.822354793549,
+  "total_time_hours": 1.2185617652204301,
+  "iterations_completed": 3000,
+  "total_steps": 3072000,
+  "average_time_per_iteration": 1.4622741182645163,
+  "best_eval_reward": 7.133333333333334,
+  "final_evaluation": {
+    "eval_mean_reward": 6.5,
+    "eval_std_reward": 0.6377042156569666,
+    "eval_mean_length": 46.1,
+    "eval_min_reward": 6.0,
+    "eval_max_reward": 7.4,
+    "is_best": false,
+    "causal_effects": null
+  }
+}

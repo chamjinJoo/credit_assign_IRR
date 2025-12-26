@@ -354,7 +354,9 @@ class PCIMAPPOAlgorithm:
             'outcome_bridge_loss': avg_outcome_loss / num_updates,
             'action_bridge_loss': avg_action_loss / num_updates,
         }
-        
+        # Adaptive lambda update: 
+        # calculate the error between the predicted outcome and the actual outcome, 
+        # and update the lambda accordingly.
         if self.causal_lambda_adaptive_per_agent:
             for agent_id in range(num_agents):
                 if len(agent_residual_errors[agent_id]) > 0:
@@ -600,7 +602,7 @@ class PCIMAPPOAlgorithm:
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
 
                 factual_indices = actions_flat
-                # Original baseline calculation
+                #-----Original baseline calculation-----#
                 # r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
                 # mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
                 # mask.scatter_(1, factual_indices.unsqueeze(1), False)
@@ -618,9 +620,9 @@ class PCIMAPPOAlgorithm:
                 #     baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
                 # else:
                 #     raise ValueError(f"Invalid baseline type: {baseline_type}")
+                ########################################
 
-                # New baseline calculation
-                r_factual = others_rewards_flat
+                # new baseline calculation: contain factual action
                 if baseline_type == 'weighted':
                     # 모든 action의 확률을 사용 (factual action 포함)
                     sum_probs = action_probs_flat.sum(dim=1, keepdim=True)
@@ -631,7 +633,8 @@ class PCIMAPPOAlgorithm:
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # [Modified] Maintain raw effects (allowing negative)
+                # using factual rewards instead of predicted rewards
+                r_factual = others_rewards_flat
                 raw_effects = r_factual - baseline # [B*N, N-1]
                 
                 # Reshape to [B, N, N-1]
@@ -665,7 +668,7 @@ class PCIMAPPOAlgorithm:
         with torch.no_grad():
             # [NEW] Compute Causal Effect Matrix C (N x N) off-diagonal matrix
             C_matrix = self.compute_causal_rewards(
-                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='average'
+                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted'
             )
             merging_method = 'max'
             # Outbound & Inbound 계산 (Merging Method 적용)
@@ -683,12 +686,12 @@ class PCIMAPPOAlgorithm:
             # r = Out * (1 + alpha * tanh(In))
             # If In < 0 (others harming me), tanh < 0 -> reward decreases
             # If In > 0 (others helping me), tanh > 0 -> reward increases
-            alpha = 1.0
-            synergy_factor = 1.0 + alpha * torch.tanh(Delta_in)
-            Delta_final = Delta_out * synergy_factor
+            # alpha = 1.0
+            # synergy_factor = 1.0 + alpha * torch.tanh(Delta_in)
+            #Delta_final = Delta_out * synergy_factor
 
             # Alternative: no synergy - only use outbound effect
-            # Delta_final = Delta_out
+            Delta_final = Delta_out
             
             # Apply Adaptive Lambda per agent
             if self.causal_lambda_adaptive_per_agent:
