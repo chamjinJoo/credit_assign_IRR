@@ -82,6 +82,7 @@ class StagHuntEnv(MultiAgentEnv):
         stag_reward: float = 5.0,
         mauling_punishment: float = -1.0,
         coop_bonus: float = 0.0,
+        required_agents: Dict[int, List[int]] = None,
         seed: int = None,
         **kwargs):
         """
@@ -125,10 +126,7 @@ class StagHuntEnv(MultiAgentEnv):
         self.stag_alive = {}  # {stag_id: bool} - stag 생존 상태 추적
         self.hare_positions = {}  # {hare_id: (x, y)} - hares for individual hunting
         self.hare_alive = {}  # {hare_id: bool} - hare 생존 상태 추적
-        
-        # spwan positions should be symmetrically distributed around the center
-        self.agent_spawn_positions = self._get_symmetric_spawn_positions(num_agents)
-       
+              
         # Rewards
         self.forage_reward = forage_reward
         self.stag_reward = stag_reward
@@ -136,19 +134,18 @@ class StagHuntEnv(MultiAgentEnv):
         self.coop_bonus = coop_bonus
 
         # Allocate agents to each stag: stag_i -> (agent i, agent i+1), 마지막 stag는 (agent N, agent 1)
-        self.required_agents = {}
-        for stag_id in range(num_agents):
-            if stag_id == num_agents - 1:  # 마지막 stag
-                self.required_agents[stag_id] = [stag_id, 0]
-            else:
-                self.required_agents[stag_id] = [stag_id, stag_id + 1]
+        if required_agents is not None:
+            self.required_agents = required_agents
+        else:
+            self.required_agents = {}
+            for stag_id in range(num_agents):
+                if stag_id == num_agents - 1:  # 마지막 stag
+                    self.required_agents[stag_id] = [stag_id, 0]
+                else:
+                    self.required_agents[stag_id] = [stag_id, stag_id + 1]
 
-        # ----------------------------TODO: HARD MODE ----------------------------
-        # self.required_agents = {0: [0, 1, 2], 1: [1, 2, 0], 2: [2, 0, 1]}
-        # ------------------------------------------------------------------------
-
-        print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
-        print(f"stag allocated agents: {self.required_agents}")
+        # print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
+        # print(f"stag allocated agents: {self.required_agents}")
         
     def _get_empty_positions(self):
         """비어있는 위치들을 반환합니다."""
@@ -169,54 +166,6 @@ class StagHuntEnv(MultiAgentEnv):
                 if (x, y) not in occupied_positions:
                     empty_positions.append((x, y))
         return empty_positions
-
-    def _get_symmetric_spawn_positions(self, num_agents):
-        """대칭적으로 분포된 스폰 위치를 반환합니다."""
-        spawn_positions = []
-
-        center_x = (self.grid_size_x - 1) / 2
-        center_y = (self.grid_size_y - 1) / 2
-        max_radius = (min(self.grid_size_x, self.grid_size_y) - 1) / 2
-        radius = max(1.0, max_radius)
-
-        for i in range(num_agents):
-            angle = 2 * math.pi * i / num_agents
-            attempt_radius = radius
-
-            while attempt_radius >= 0:
-                x = int(round(center_x + attempt_radius * math.cos(angle)))
-                y = int(round(center_y + attempt_radius * math.sin(angle)))
-
-                x = min(max(0, x), self.grid_size_x - 1)
-                y = min(max(0, y), self.grid_size_y - 1)
-
-                if (x, y) not in spawn_positions:
-                    spawn_positions.append((x, y))
-                    break
-
-                attempt_radius -= 1
-            if len(spawn_positions) <= i:
-                # 모든 반지름에서도 중복이 발생하면 아직 사용되지 않은 격자 좌표를 순차적으로 선택
-                for x in range(self.grid_size_x):
-                    for y in range(self.grid_size_y):
-                        if (x, y) not in spawn_positions:
-                            spawn_positions.append((x, y))
-                            break
-                    if len(spawn_positions) > i:
-                        break
-
-        # 여전히 부족하다면 남은 격자를 순서대로 채웁니다.
-        if len(spawn_positions) < num_agents:
-            for x in range(self.grid_size_x):
-                for y in range(self.grid_size_y):
-                    if (x, y) not in spawn_positions:
-                        spawn_positions.append((x, y))
-                    if len(spawn_positions) == num_agents:
-                        break
-                if len(spawn_positions) == num_agents:
-                    break
-
-        return spawn_positions
 
     def _spawn_object_randomly(self):
         """비어있는 위치에 객체를 랜덤하게 스폰합니다."""
@@ -287,7 +236,6 @@ class StagHuntEnv(MultiAgentEnv):
    
         for i, agent_id in enumerate(self.agents):
             self.agent_positions[agent_id] = self._spawn_object_randomly() # random spawn
-            # self.agent_positions[agent_id] = self.agent_spawn_positions[i] # fixed spawn
         
         stag_positions = self._spawn_stags_with_separation(self.num_agents)
         for i, stag_id in enumerate(self.agents):  # num_agents만큼의 stag 생성
@@ -575,6 +523,7 @@ class StagHuntEnv(MultiAgentEnv):
                 for agent_id in agents_at_stag:
                     if agent_id != stag_id:
                         rewards[agent_id] += self.coop_bonus
+
                 # 협력 사냥 정보 기록
                 hunting_info['stag_hunts'][stag_id] = agents_at_stag.copy()
                 # 사냥된 stag를 죽은 상태로 표시 
