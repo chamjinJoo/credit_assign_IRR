@@ -144,8 +144,8 @@ class StagHuntEnv(MultiAgentEnv):
                 else:
                     self.required_agents[stag_id] = [stag_id, stag_id + 1]
 
-        # print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
-        # print(f"stag allocated agents: {self.required_agents}")
+        print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
+        print(f"stag allocated agents: {self.required_agents}")
         
     def _get_empty_positions(self):
         """비어있는 위치들을 반환합니다."""
@@ -482,16 +482,22 @@ class StagHuntEnv(MultiAgentEnv):
                 # 모든 시도한 에이전트들을 기록
                 hunting_info['hare_attempts'].extend(agents_at_hare)
                 
-                # 여러 에이전트가 같은 hare를 사냥할 때 무작위로 하나 선택
+                # 1. 여러 에이전트가 같은 hare를 사냥할 때 무작위로 하나 선택
                 if self._np_random is not None:
                     selected_agent = agents_at_hare[self._np_random.randint(len(agents_at_hare))]
                 else:
                     selected_agent = agents_at_hare[np.random.randint(len(agents_at_hare))]
-                
                 rewards[selected_agent] += self.forage_reward
-                self.hare_alive[hare_id] = False  # hare를 수확된 상태로 표시
                 agent_foraged[selected_agent] = True
                 hunting_info['hare_hunts'].append(selected_agent)
+
+                # # 2. 모든 agent에게 보상 분배
+                # for agent_id in agents_at_hare:
+                #     rewards[agent_id] += self.forage_reward
+                #     agent_foraged[agent_id] = True
+                #     hunting_info['hare_hunts'].append(agent_id)
+
+                self.hare_alive[hare_id] = False  # hare를 수확된 상태로 표시
         
         # Stag 사냥 체크 (새로운 로직: stag i는 agent i와 agent i+1이 동시에 사냥해야 성공)
         # 각 stag별로 체크 (살아있는 stag만)
@@ -902,7 +908,9 @@ class LBForagingWrapper(MultiAgentEnv):
         )
         self.env = gym.make(env_id)
         self.env_id = env_id
-        print(f"LBF env: {self.env_id}")
+        
+        # print(f"LBF env: {self.env_id}")
+        
         self.agent_names = [f"agent_{i}" for i in range(self.num_agents)]
         self.agent_mapping = {i: f"agent_{i}" for i in range(self.num_agents)}
         self.reverse_mapping = {f"agent_{i}": i for i in range(self.num_agents)}

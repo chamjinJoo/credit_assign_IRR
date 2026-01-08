@@ -29,7 +29,7 @@ class OutcomeBridgeNetwork(nn.Module):
         # Action embedding layer
         self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
         
-        # Input is concatenation of all agents' action embeddings and confounder
+        # Input is an agent's action embedding and confounder
         input_dim = action_embedding_dim + w_dim
         
         # Bridge network with 3 hidden layers

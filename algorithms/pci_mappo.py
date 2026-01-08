@@ -106,7 +106,7 @@ class PCIMAPPOAlgorithm:
         # Optimization parameter
         causal_mini_batch_size: int = 256,  # [ADDED] Chunk size for RKHS solver
         # Value network parameter sharing
-        use_value_parameter_sharing: bool = False,  # If True, use single shared value network for all agents
+        use_value_parameter_sharing: bool = True,  # If False, use individual value networks for each agent
     ):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
@@ -264,11 +264,12 @@ class PCIMAPPOAlgorithm:
             for i in range(num_agents):
                 obs_i = obs_batch[:, i, :]
                 act_i = action_batch[:, i]
-                _, lp = self.agents[i].policy_net.evaluate_actions(obs_i, act_i)
+                lp, _ = self.agents[i].policy_net.evaluate_actions(obs_i, act_i) # log prob, entropy
+                # _, lp = self.agents[i].policy_net.evaluate_actions(obs_i, act_i)
                 log_probs_list.append(lp)
-            policy_log_probs = torch.stack(log_probs_list, dim=1).view(-1)
-            policy_probs_super = torch.exp(policy_log_probs)
-
+            policy_log_probs = torch.stack(log_probs_list, dim=1).view(-1) # each agent's log prob
+            policy_probs_super = torch.exp(policy_log_probs) 
+            
         obs_super = obs_batch.view(-1, self.obs_dim)
 
         # === 2. Mini-batch Training Loop ===
@@ -317,10 +318,15 @@ class PCIMAPPOAlgorithm:
             # --- Update Action Bridge q_θ ---
             q_val_mb = self.action_bridge_net(z_mb, a_mb)
             phi_q_mb = pi_mb * q_val_mb.squeeze()
+
+            # TODO: test
+            # phi_q_mb = q_val_mb
+            
             phi_q_col = phi_q_mb.unsqueeze(1)
 
             kernel_feat_w = torch.cat([w_mb, action_embeds_mb], dim=1)
             K_w1 = self.critic_kernel_w(kernel_feat_w)
+            
             K_w2_sum_mb = self._compute_kw2_sum_minibatch(w_mb, kernel_feat_w, o_mb, batch_agent_ids, mc_samples_k_w2)
             
             reg_K_w1 = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_w1
@@ -390,40 +396,78 @@ class PCIMAPPOAlgorithm:
     def _compute_kw2_sum_minibatch(self, w_mb, kernel_feat_w, o_mb, batch_agent_ids, M):
         batch_size = w_mb.size(0)
         
-        w_expanded = w_mb.repeat_interleave(M, dim=0)
+        # 1. Action Sampling (Target Policy)
+        # 각 데이터 i에 대해 M개의 action을 샘플링합니다.
+        # w_mb를 M번 반복하는 것이 아니라, 각 i마다 M개를 뽑아서 (B, M, Dim) 형태로 처리하는 게 좋습니다.
         
-        sampled_action_embeds = torch.zeros(
-            batch_size * M, 
-            self.action_embedding_for_kernel.embedding_dim, 
-            device=self.device
-        )
+        # ... (Action Sampling 로직은 기존과 동일하게 유지하되, 차원 관리만 주의) ...
+        # sampled_action_embeds: [Batch * M, EmbDim]
         
-        with torch.no_grad():
-            unique_agents = torch.unique(batch_agent_ids)
-            for ag_id in unique_agents:
-                mask = (batch_agent_ids == ag_id)
-                if not mask.any(): continue
-                
-                obs_ag = o_mb[mask]
-                obs_exp = obs_ag.repeat_interleave(M, dim=0)
-                
-                logits = self.agents[ag_id.item()].policy_net(obs_exp)
-                dist = torch.distributions.Categorical(logits=logits)
-                actions_sampled = dist.sample()
-                embeds = self.action_embedding_for_kernel(actions_sampled)
-                
-                mask_expanded = mask.unsqueeze(1).expand(-1, M).reshape(-1)
-                sampled_action_embeds[mask_expanded] = embeds
+        # 2. Kernel Features 구성
+        # Target 쪽 특징: (W_i, a'_ik)
+        # Source 쪽 특징(kernel_feat_w): (W_i, A_i)
+        
+        w_expanded = w_mb.repeat_interleave(M, dim=0) # [B*M, W_dim]
+        
+        # [수정] 전체 BxB 커널을 구하는 대신, '나의 W'와 '나의 샘플링된 Action' 간의 커널만 구합니다.
+        # kernel_feat_w_expanded: Source 특징을 M번 복사하여 Target과 1:1로 맞춥니다.
+        kernel_feat_w_expanded = kernel_feat_w.repeat_interleave(M, dim=0)
+        
+        features_w_sampled = torch.cat([w_expanded, sampled_action_embeds], dim=1) # Target (W, a')
+        
+        # [수정] forward_asymmetric 대신 element-wise 커널 계산이 필요합니다.
+        # 하지만 구현 편의상 diag 부분만 계산하는 함수가 없다면, 
+        # RBF 커널 등을 직접 계산하거나, 배치를 쪼개서 대각만 구해야 합니다.
+        # 여기서는 논리적으로 Diagonal만 필요하다는 점을 강조합니다.
+        # (Self-implementation of Diagonal Kernel for efficiency)
+        # K(x, y) = exp(-gamma * ||x - y||^2)
+        diff = kernel_feat_w_expanded - features_w_sampled
+        dist_sq = torch.sum(diff**2, dim=1)
+        K_diag_expanded = torch.exp(-self.critic_kernel_w.gamma * dist_sq) # [B*M]
+        
+        # 3. 평균 계산 (Expectation over pi)
+        K_w2_per_sample = K_diag_expanded.view(batch_size, M).mean(dim=1).unsqueeze(1) # [B, 1]
+        
+        return K_w2_per_sample
 
-        features_w_sampled = torch.cat([w_expanded, sampled_action_embeds], dim=1)
+    # Original version in 26.01.08
+    # def _compute_kw2_sum_minibatch(self, w_mb, kernel_feat_w, o_mb, batch_agent_ids, M):
+    #     batch_size = w_mb.size(0)
         
-        # kernel_feat_w is passed from caller!
-        K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_feat_w, features_w_sampled)
+    #     w_expanded = w_mb.repeat_interleave(M, dim=0)
         
-        K_w2_mean = K_w2_raw.view(batch_size, batch_size, M).mean(dim=2)
-        K_w2_sum = K_w2_mean.sum(dim=1).unsqueeze(1)
+    #     sampled_action_embeds = torch.zeros(
+    #         batch_size * M, 
+    #         self.action_embedding_for_kernel.embedding_dim, 
+    #         device=self.device
+    #     )
         
-        return K_w2_sum
+    #     with torch.no_grad():
+    #         unique_agents = torch.unique(batch_agent_ids)
+    #         for ag_id in unique_agents:
+    #             mask = (batch_agent_ids == ag_id)
+    #             if not mask.any(): continue
+                
+    #             obs_ag = o_mb[mask]
+    #             obs_exp = obs_ag.repeat_interleave(M, dim=0)
+                
+    #             logits = self.agents[ag_id.item()].policy_net(obs_exp)
+    #             dist = torch.distributions.Categorical(logits=logits)
+    #             actions_sampled = dist.sample()
+    #             embeds = self.action_embedding_for_kernel(actions_sampled)
+                
+    #             mask_expanded = mask.unsqueeze(1).expand(-1, M).reshape(-1)
+    #             sampled_action_embeds[mask_expanded] = embeds
+
+    #     features_w_sampled = torch.cat([w_expanded, sampled_action_embeds], dim=1)
+        
+    #     # kernel_feat_w is passed from caller!
+    #     K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_feat_w, features_w_sampled)
+        
+    #     K_w2_mean = K_w2_raw.view(batch_size, batch_size, M).mean(dim=2)
+    #     K_w2_sum = K_w2_mean.sum(dim=1).unsqueeze(1)
+        
+    #     return K_w2_sum
 
     
     def _concatenate_observations(self, observations: Dict[int, torch.Tensor]) -> torch.Tensor:
@@ -535,7 +579,6 @@ class PCIMAPPOAlgorithm:
         actions_batch: torch.Tensor,
         rewards_batch: torch.Tensor,
         baseline_type: str = 'weighted',
-        merging_method: str = 'max', # Not used in Matrix return mode, but kept for interface compatibility
     ) -> torch.Tensor:
         """
         Computes the pairwise Causal Effect Matrix C.
@@ -586,14 +629,15 @@ class PCIMAPPOAlgorithm:
                 
                 error_flat = others_rewards_flat - r_pred_flat
                 DR_correction_flat = weight_flat * error_flat
-
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
                 
                 reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
                 reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents - 1)
-                r_hat_all = reg_estimates_cf + DR_correction_flat.unsqueeze(1)
-
+                
+                # r_hat_all = reg_estimates_cf + DR_correction_flat.unsqueeze(1)
+                r_hat_all = reg_estimates_cf # no q
+                
                 probs_list = []
                 for k in range(num_agents):
                     logits = self.agents[k].policy_net(obs_b[:, k, :])
@@ -601,8 +645,8 @@ class PCIMAPPOAlgorithm:
                     probs_list.append(probs)
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
 
-                factual_indices = actions_flat
                 #-----Original baseline calculation-----#
+                # factual_indices = actions_flat
                 # r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
                 # mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
                 # mask.scatter_(1, factual_indices.unsqueeze(1), False)
@@ -626,7 +670,7 @@ class PCIMAPPOAlgorithm:
                 if baseline_type == 'weighted':
                     # 모든 action의 확률을 사용 (factual action 포함)
                     sum_probs = action_probs_flat.sum(dim=1, keepdim=True)
-                    baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
+                    baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1) / sum_probs
                 elif baseline_type == 'average':
                     # 모든 action을 포함하여 평균 계산 (factual action 포함)
                     baseline = r_hat_all.mean(dim=1)
@@ -635,7 +679,12 @@ class PCIMAPPOAlgorithm:
 
                 # using factual rewards instead of predicted rewards
                 r_factual = others_rewards_flat
-                raw_effects = r_factual - baseline # [B*N, N-1]
+                
+                # using real rewards
+                raw_effects = r_factual - baseline
+                
+                # using causal domain information: prediction with factual action
+                # raw_effects = r_hat_factual - baseline
                 
                 # Reshape to [B, N, N-1]
                 effects_reshaped = raw_effects.view(curr_bs, num_agents, num_agents - 1)
@@ -675,13 +724,13 @@ class PCIMAPPOAlgorithm:
             if merging_method == 'max':
                 # max는 (values, indices)를 반환하므로 [0] 인덱싱 필요
                 Delta_out = C_matrix.max(dim=2)[0] # [B, N] - 내가 남에게 준 최대 영향
-                Delta_in = C_matrix.max(dim=1)[0]  # [B, N] - 남이 나에게 준 최대 영향
+                # Delta_in = C_matrix.max(dim=1)[0]  # [B, N] - 남이 나에게 준 최대 영향
             elif merging_method == 'mean':
                 Delta_out = C_matrix.mean(dim=2)
-                Delta_in = C_matrix.mean(dim=1)
+                # Delta_in = C_matrix.mean(dim=1)
             elif merging_method == 'sum':
                 Delta_out = C_matrix.sum(dim=2)
-                Delta_in = C_matrix.sum(dim=1)
+                # Delta_in = C_matrix.sum(dim=1)
             # 3. Synergistic Reward Calculation
             # r = Out * (1 + alpha * tanh(In))
             # If In < 0 (others harming me), tanh < 0 -> reward decreases

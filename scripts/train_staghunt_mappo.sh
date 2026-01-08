@@ -1,7 +1,7 @@
 #!/bin/bash
 env="StagHunt"
 model="mappo" # [pci-mappo, mappo, ippo]
-numagents=2
+numagents=3
 seed=42
 max_iterations=3000
 max_steps_per_iteration=1024
@@ -11,7 +11,7 @@ config="configs/stag_hunt.yaml"
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
-conda activate jaxmarl
+conda activate pcimarl
 
 python main.py --env ${env} --num-agents ${numagents} --config ${config} \
  --model ${model} --max-steps ${max_steps_per_iteration} \
