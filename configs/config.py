@@ -41,14 +41,8 @@ class AlgorithmConfig:
     num_batches: int = 4  # Number of batches K for training
     causal_mini_batch_size: int = 256  # Chunk size for RKHS solver
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
-    # Epsilon greedy parameters for causal data collection
-    epsilon_start: float = 0.6
-    epsilon_end: float = 0.0
-    epsilon_decay_steps: int = 1000
     # Buffer size limits for FIFO queue behavior
     max_buffer_size: int = 10000
-    max_causal_buffer_size: int = 2000
-
 
 @dataclass
 class TrainingConfig:
@@ -234,8 +228,6 @@ def parse_args() -> argparse.Namespace:
                         help='Random seed for reproducibility')
     parser.add_argument('--deterministic', action='store_true', default=True,
                         help='Use deterministic algorithms (slower but reproducible)')
-    parser.add_argument('--non-deterministic', action='store_true', default=False,
-                        help='Disable deterministic mode for faster training')
     
     # Evaluation and testing
     parser.add_argument('--eval', action='store_true',
@@ -312,7 +304,7 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     # Reproducibility settings
     if hasattr(args, 'seed') and args.seed:
         config.training.seed = args.seed
-    if hasattr(args, 'deterministic') and args.deterministic:
-        config.training.deterministic = not args.non_deterministic
+    if hasattr(args, 'deterministic'):
+        config.training.deterministic = args.deterministic
     
     return config

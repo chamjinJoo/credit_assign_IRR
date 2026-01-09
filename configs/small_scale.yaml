@@ -30,7 +30,6 @@ algorithm:
   epsilon_decay_steps: 1000
   # Buffer size limits for FIFO queue behavior
   max_buffer_size: 5000
-  max_causal_buffer_size: 1000
 
 # Training Configuration
 training:

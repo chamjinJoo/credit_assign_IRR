@@ -1,7 +1,7 @@
 #!/bin/bash
 env="StagHunt"
 model="pci-mappo" # [pci-mappo, mappo, ippo]
-numagents=4
+numagents=3
 causal_lambda=1.0
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false

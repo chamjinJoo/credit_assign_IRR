@@ -8,7 +8,6 @@ class OutcomeBridgeNetwork(nn.Module):
     Bridge network h_φ for causal inference.
     Maps full action vector and confounding variable (w) to outcome.
     """
-    
     def __init__(
         self, 
         action_dim: int, 
@@ -186,3 +185,67 @@ class ActionBridgeNetwork(nn.Module):
         # Output scalar action bridge value
         action_bridge_output = self.output_layer(encoded)  # [batch_size, 1]
         return action_bridge_output
+
+class RewardPredictor(nn.Module):
+    """
+    Simple Neural Network predicting the reward of complements 
+    Using current the concat of complements observation \mathbf{o}^{-i]_t and 
+    the action of the agent i
+    """
+    def __init__(
+        self,
+        obs_dim: int,
+        action_dim: int,
+        num_agents: int,
+        output_dim: int,
+        hidden_dim: int = 64,
+        action_embedding_dim: int = 8
+    ):
+        super(RewardPredictor, self).__init__()
+        self.action_dim = action_dim
+        self.num_agents = num_agents
+        self.hidden_dim = hidden_dim
+        self.action_embedding_dim = action_embedding_dim
+        self.output_dim = output_dim
+        
+        # Action embedding layer
+        self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
+        
+        # Input is an agent's action embedding and confounder
+        input_dim = action_embedding_dim + obs_dim
+        
+        # Bridge network with 3 hidden layers
+        self.mlp = MLPBase(
+            input_dim=input_dim,
+            hidden_size=2*hidden_dim,
+            layer_N=2,
+            use_feature_normalization=True,
+            use_orthogonal=True,
+            use_ReLU=True,
+            use_layer_norm=True
+        )
+        self.output_layer = nn.Linear(2*hidden_dim, output_dim)
+
+        self.bridge_network = nn.Sequential(
+            self.mlp,
+            self.output_layer
+        )
+        
+    def forward(
+        self, 
+        actions: torch.Tensor, 
+        obs: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Forward pass of bridge network.
+        """
+        batch_size = actions.shape[0]
+        action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
+  
+        # Concatenate all action embeddings and confounder
+        x = torch.cat([action_embeds, obs], dim=-1)
+        
+        # Forward through network
+        output = self.bridge_network(x)
+        
+        return output

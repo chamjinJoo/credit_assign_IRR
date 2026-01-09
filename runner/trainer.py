@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, X_PCIAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -93,7 +93,7 @@ class Trainer:
         self.advanced_causal_evaluator = None
 
         # Initialize causal effect evaluator (only for PCI-MAPPO and StagHuntEnv)
-        if algorithm_type == 'pci_mappo' and env.__class__.__name__ == "StagHuntEnv":
+        if isinstance(algorithm, (PCIMAPPOAlgorithm, X_PCIAlgorithm)) and env.__class__.__name__ == "StagHuntEnv":
             CausalEffectEvaluator = get_causal_evaluator()
             self.causal_evaluator = CausalEffectEvaluator(
                 algorithm=algorithm,
@@ -759,6 +759,29 @@ class Trainer:
                     state['value_net'] = self.algorithm.value_net.state_dict()
                 if hasattr(self.algorithm, 'value_optimizer'):
                     state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
+                    
+        elif isinstance(self.algorithm, X_PCIAlgorithm):
+            # X-PCI specific states
+            state['reward_predictor'] = self.algorithm.reward_predictor.state_dict()
+            state['reward_predictor_optimizer'] = self.algorithm.reward_predictor_optimizer.state_dict()
+
+            from utils.value_network_utils import is_value_network_shared
+            
+            if not is_value_network_shared(self.algorithm):
+                # Individual value networks
+                state['value_nets'] = {}
+                state['value_optimizers'] = {}
+                for agent_id, value_net in self.algorithm.value_nets.items():
+                    state['value_nets'][agent_id] = value_net.state_dict()
+                
+                for agent_id, value_optimizer in self.algorithm.value_optimizers.items():
+                    state['value_optimizers'][agent_id] = value_optimizer.state_dict()
+            else:
+                # Parameter sharing: save single value_net
+                if hasattr(self.algorithm, 'value_net'):
+                    state['value_net'] = self.algorithm.value_net.state_dict()
+                if hasattr(self.algorithm, 'value_optimizer'):
+                    state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
         else:
             # MAPPO and IPPO: save shared value network
             if hasattr(self.algorithm, 'value_net'):
@@ -804,10 +827,16 @@ class Trainer:
                 self.algorithm.action_bridge_optimizer.load_state_dict(algorithm_state['action_bridge_optimizer'])
             if 'kernel_action_embed_optimizer' in algorithm_state:
                 self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
-            
-            # Load value networks and optimizers (support both individual and parameter sharing)
-            from utils.value_network_utils import is_value_network_shared
-            
+
+        elif isinstance(self.algorithm, X_PCIAlgorithm):
+            # X-PCI specific states
+            if 'reward_predictor' in algorithm_state:
+                self.algorithm.reward_predictor.load_state_dict(algorithm_state['reward_predictor'])
+            if 'reward_predictor_optimizer' in algorithm_state:
+                self.algorithm.reward_predictor_optimizer.load_state_dict(algorithm_state['reward_predictor_optimizer'])
+        
+        # Load value networks and optimizers for algorithms that support individual value networks
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, X_PCIAlgorithm)):
             if 'value_nets' in algorithm_state:
                 # Individual value networks
                 if hasattr(self.algorithm, 'value_nets'):

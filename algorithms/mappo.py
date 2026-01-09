@@ -74,9 +74,6 @@ class MAPPOAlgorithm:
         ppo_epochs: int = 4,
         batch_size: int = 64,
         num_batches: int = 4,  # Number of batches K for training
-        epsilon_start: float = 0.6,
-        epsilon_end: float = 0.0,
-        epsilon_decay_steps: int = 1000,
         device: str = "cpu",  # Device for computation
     ):
         self.num_agents = num_agents
@@ -95,20 +92,12 @@ class MAPPOAlgorithm:
         self.ppo_epochs = ppo_epochs
         self.batch_size = batch_size
         self.num_batches = num_batches
-        
-        # Epsilon greedy parameters
-        self.epsilon_start = epsilon_start
-        self.epsilon_end = epsilon_end
-        self.epsilon_decay_steps = epsilon_decay_steps
-        self.current_step = 0
-        self.training_steps = 0
-        
+
         # Create experience buffer
         self.buffer_manager = ExperienceBuffer(
-            max_buffer_size=10000,
-            max_causal_buffer_size=2000
+            max_buffer_size=10000
         )
-        
+
         # Create agents
         self.agents = {}
         for i in range(num_agents):
@@ -119,7 +108,6 @@ class MAPPOAlgorithm:
                 hidden_dim=hidden_dim,
                 lr=lr
             )
-
         # Central Value network
         self.value_net = ValueNetwork(
             obs_dim=obs_dim * num_agents,
@@ -129,6 +117,8 @@ class MAPPOAlgorithm:
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         # Move all networks to device
         self._move_networks_to_device()
+
+        self.training_steps = 0
     
     def _move_networks_to_device(self):
         """Move all networks to the specified device."""
@@ -159,42 +149,6 @@ class MAPPOAlgorithm:
         
         # Concatenate all observations
         return torch.cat(sorted_obs, dim=-1)
-    
-    def get_current_epsilon(self) -> float:
-        """
-        Get current epsilon value for epsilon-greedy exploration.
-        Epsilon decays linearly from epsilon_start to epsilon_end over epsilon_decay_steps.
-        """
-        progress = min(self.current_step / self.epsilon_decay_steps, 1.0)
-        current_epsilon = self.epsilon_start + progress * (self.epsilon_end - self.epsilon_start)
-        return current_epsilon
-    
-    def get_epsilon_greedy_action(self, agent_id: int, obs: torch.Tensor) -> Tuple[int, float]:
-        """
-        Get action using epsilon-greedy strategy for causal data collection.
-        
-        Args:
-            agent_id: Agent ID
-            obs: Observation tensor
-        
-        Returns:
-            action: Selected action (random with probability epsilon, policy action otherwise)
-            log_prob: Log probability of the action (from policy network)
-        """
-        epsilon = self.get_current_epsilon()
-        
-        # Get policy action first
-        policy_action, policy_log_prob = self.agents[agent_id].get_action(obs)
-        
-        # Epsilon greedy decision
-        if np.random.random() < epsilon:
-            # Random action
-            random_action = np.random.randint(0, self.action_dim)
-            # Keep the log prob from policy for consistency in learning
-            return random_action, policy_log_prob
-        else:
-            # Policy action
-            return policy_action, policy_log_prob
         
     def reset_agents(self):
         """Reset agents for new episode (no RNN state to reset)."""
@@ -215,17 +169,6 @@ class MAPPOAlgorithm:
         # Get actions from all agents
         for agent_id, obs in observations.items():
             action, log_prob = self.agents[agent_id].get_action(obs)
-            actions[agent_id] = (action, log_prob)
-        
-        return actions
-    
-    def get_epsilon_greedy_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
-        """Get actions from all agents using epsilon-greedy strategy for causal data collection."""
-        actions = {}
-        
-        # Get actions from all agents using epsilon-greedy strategy
-        for agent_id, obs in observations.items():
-            action, log_prob = self.get_epsilon_greedy_action(agent_id, obs)
             actions[agent_id] = (action, log_prob)
         
         return actions
@@ -449,10 +392,6 @@ class MAPPOAlgorithm:
     def clear_buffer(self):
         """Clear main experience buffer."""
         self.buffer_manager.clear_buffer()
-    
-    def clear_causal_buffer(self):
-        """Clear causal experience buffer."""
-        self.buffer_manager.clear_causal_buffer()
     
     def get_buffer_info(self) -> Dict[str, int]:
         """Get current buffer sizes and limits for monitoring."""

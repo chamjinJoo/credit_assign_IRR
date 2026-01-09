@@ -1,3 +1,4 @@
+from .x_pci import X_PCIAlgorithm
 from .pci_mappo import PCIMAPPOAlgorithm
 from .mappo import MAPPOAlgorithm
 from .ippo import IPPOAlgorithm
@@ -5,5 +6,6 @@ from .ippo import IPPOAlgorithm
 __all__ = [
     "PCIMAPPOAlgorithm",
     "MAPPOAlgorithm",
-    "IPPOAlgorithm"
+    "IPPOAlgorithm",
+    "X_PCIAlgorithm",
 ]

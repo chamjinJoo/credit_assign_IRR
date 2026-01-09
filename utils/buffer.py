@@ -11,17 +11,12 @@ class ExperienceBuffer:
     
     def __init__(
         self,
-        max_buffer_size: int = 10000,
-        max_causal_buffer_size: int = 2000
+        max_buffer_size: int = 10000
     ):
         self.max_buffer_size = max_buffer_size
-        self.max_causal_buffer_size = max_causal_buffer_size
         
         # Main buffer for policy learning
         self.buffer = {'transitions': []}
-        
-        # Separate buffer for causal inference data
-        self.causal_buffer = {'transitions': []}
     
     def store_transition(
         self,
@@ -70,39 +65,22 @@ class ExperienceBuffer:
         """Clear main experience buffer."""
         self.buffer['transitions'] = []
     
-    def clear_causal_buffer(self):
-        """Clear causal experience buffer."""
-        self.causal_buffer['transitions'] = []
-    
     def get_buffer_info(self) -> Dict[str, int]:
         """Get current buffer sizes and limits for monitoring."""
         return {
             'main_buffer_size': len(self.buffer['transitions']),
             'main_buffer_limit': self.max_buffer_size,
-            'causal_buffer_size': len(self.causal_buffer['transitions']),
-            'causal_buffer_limit': self.max_causal_buffer_size,
         }
     
     def get_main_buffer_transitions(self) -> List[Dict]:
         """Get all transitions from main buffer."""
         return self.buffer['transitions']
     
-    def get_causal_buffer_transitions(self) -> List[Dict]:
-        """Get all transitions from causal buffer."""
-        return self.causal_buffer['transitions']
-    
     def is_main_buffer_empty(self) -> bool:
         """Check if main buffer is empty."""
         return len(self.buffer['transitions']) == 0
     
-    def is_causal_buffer_empty(self) -> bool:
-        """Check if causal buffer is empty."""
-        return len(self.causal_buffer['transitions']) == 0
-    
     def get_main_buffer_size(self) -> int:
         """Get current size of main buffer."""
         return len(self.buffer['transitions'])
-    
-    def get_causal_buffer_size(self) -> int:
-        """Get current size of causal buffer."""
-        return len(self.causal_buffer['transitions'])
+

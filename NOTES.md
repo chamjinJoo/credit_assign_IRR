@@ -37,3 +37,11 @@
 
 ## 2026.01.02
 We checked that it works in Stag-Hunt environment without mauling punishment. 
+
+## 2026.01.08
+* We checked that q-bridge function have been trained with Entropy, not action probability $\pi^i(\cdot|o^i_t)$. 
+* Training q-bridge function takes a lot of time. In Stag-Hunt 4-agent, w/ -> 6.50s/iter w/o -> 2.94s/iter
+* q-bridge function can be elimiated without theoretical loss.
+
+## 2026.01.09
+* We checked that applying clipping on $\delta^i_t$ provides good performance. `Delta_final[torch.abs(Delta_final) < 0.2] = 0.0`
