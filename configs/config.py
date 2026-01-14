@@ -12,7 +12,10 @@ class NetworkConfig:
     lr_bridge: float = 3e-4
     lr_critic: float = 3e-4
     # RKHS Kernel parameters for analytical loss
+    # RKHS Kernel parameters for analytical loss
     rkhs_gamma: float = 1.0  # Gamma parameter for RBF kernel
+    # RNN parameters
+    recurrent_N: int = 1  # Number of recurrent layers
 
 
 @dataclass
@@ -83,6 +86,8 @@ class EnvironmentConfig:
     forage_reward: float = 3.0
     stag_reward: float = 5.0
     mauling_punishment: float = -1.0
+    grid_observation: bool = False
+    forage_quantity: Optional[int] = None
     
     # For MPE Simple Spread environment
     local_ratio: float = 0.5
@@ -186,6 +191,10 @@ def parse_args() -> argparse.Namespace:
                         help='Number of agents')
     parser.add_argument('--episode-length', type=int, default=None,
                         help='Episode length (for toy_causal)')
+    parser.add_argument('--grid-observation', type=str, default=None,
+                        help='Use grid observation (true/false)')
+    parser.add_argument('--forage-quantity', type=int, default=None,
+                        help='Number of forage items (StagHunt)')
     
     # Training
     parser.add_argument('--max-iterations', type=int, default=1000,
@@ -208,6 +217,8 @@ def parse_args() -> argparse.Namespace:
                         help='Use shared value network for all agents (true/false)')
     parser.add_argument('--lr', type=float, default=3e-4,
                         help='Learning rate')
+    parser.add_argument('--recurrent-N', type=int, default=1,
+                        help='Number of recurrent layers for RNN')
     
     # Logging
     parser.add_argument('--save-dir', type=str, default='./save_checkpoints',
@@ -261,6 +272,12 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.environment.num_agents = args.num_agents
     if hasattr(args, 'episode_length') and args.episode_length:
         config.environment.episode_length = args.episode_length
+    if hasattr(args, 'grid_observation') and args.grid_observation is not None:
+        # Convert string to boolean
+        is_grid = args.grid_observation.lower() in ('true', '1', 'yes', 'on')
+        config.environment.grid_observation = is_grid
+    if hasattr(args, 'forage_quantity') and args.forage_quantity is not None:
+        config.environment.forage_quantity = args.forage_quantity
     
     if hasattr(args, 'max_iterations') and args.max_iterations:
         config.training.max_iterations = args.max_iterations
@@ -293,7 +310,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     if hasattr(args, 'lr') and args.lr:
         config.network.lr = args.lr
         config.network.lr_bridge = args.lr
+        config.network.lr_bridge = args.lr
         config.network.lr_critic = args.lr
+    if hasattr(args, 'recurrent_N') and args.recurrent_N is not None:
+        config.network.recurrent_N = args.recurrent_N
     
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb

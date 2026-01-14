@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, X_PCIAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -53,7 +53,7 @@ class Trainer:
     def __init__(
         self,
         env: MultiAgentEnv,
-        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm],
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -392,6 +392,7 @@ class Trainer:
         episode_count = 0
         episode_rewards = defaultdict(list)
         episode_lengths = []
+        episode_successes = []
         
         while step_count < self.max_steps_per_iteration:
             # Reset environment and agents
@@ -402,6 +403,12 @@ class Trainer:
             
             # Initialize previous observations (for first step, use zero vector since no previous observation exists)
             prev_observations = {agent_id: torch.zeros_like(obs) for agent_id, obs in observations.items()}
+            # Initialize previous rewards (for first step, use 0.0)
+            prev_rewards = {agent_id: 0.0 for agent_id in observations.keys()}
+            # Initialize previous actions (for first step, use 0 for simplicity, or -1 if 0 is meaningful)
+            # Assuming 0 is a valid action, but since it's the first step, it shouldn't matter much as long as it's consistent dimension-wise.
+            # Ideally, we could use a special token or just 0.
+            prev_actions = {agent_id: 0 for agent_id in observations.keys()}
             
             episode_reward = defaultdict(float)
             episode_length = 0
@@ -422,7 +429,9 @@ class Trainer:
                 
                 # Store transition with proper causal structure (o_{t-1}, o_t, a_t, r_t, o_{t+1})
                 self.algorithm.store_transition(
-                    prev_observations=prev_observations,  # o_{t-1} (z_t)
+                    prev_observations=prev_observations,  # o_{t-1}
+                    prev_rewards=prev_rewards,            # r_{t-1} (z_t)
+                    prev_actions=prev_actions,            # a_{t-1} (z_t)
                     observations=observations,            # o_t (w_t)
                     actions=env_actions,                  # a_t
                     rewards=rewards,                      # r_t
@@ -437,6 +446,8 @@ class Trainer:
                 
                 # Update state: prev_observations = current observations, observations = next_observations
                 prev_observations = observations
+                prev_rewards = rewards
+                prev_actions = env_actions
                 observations = next_observations
                 episode_length += 1
                 step_count += 1
@@ -445,12 +456,30 @@ class Trainer:
                 # Check if episode is done
                 done = any(dones.values()) or episode_length >= 1000
             
+            # For COMA, finish the episode in the buffer only if episode actually completed
+            # If episode was cut short due to max_steps_per_iteration, keep it in current_episode
+            # for the next iteration to continue collecting
+            if isinstance(self.algorithm, COMAAlgorithm):
+                if done:  # Episode actually completed
+                    self.algorithm.finish_episode()
+                # else: Incomplete episode remains in current_episode for next iteration
+            
             # Store episode statistics
             for agent_id, total_reward in episode_reward.items():
                 episode_rewards[agent_id].append(total_reward)
             
             episode_lengths.append(episode_length)
             episode_count += 1
+            
+            # Check success condition for StagHunt
+            is_success = 0.0
+            if self.env.__class__.__name__ == "StagHuntEnv":
+                stag_alive = info.get('stag_alive', {})
+                hare_alive = info.get('hare_alive', {})
+                # Success if all objects (stags and hares) are hunted (not alive)
+                if not any(stag_alive.values()) and not any(hare_alive.values()):
+                    is_success = 1.0
+            episode_successes.append(is_success)
             
             # Track recent rewards for logging
             mean_episode_reward = np.mean(list(episode_reward.values()))
@@ -463,7 +492,8 @@ class Trainer:
             'episode_rewards': dict(episode_rewards),
             'episode_lengths': episode_lengths,
             'mean_episode_reward': np.mean([np.mean(rewards) for rewards in episode_rewards.values()]),
-            'mean_episode_length': np.mean(episode_lengths)
+            'mean_episode_length': np.mean(episode_lengths),
+            'mean_success_rate': np.mean(episode_successes) if episode_successes else 0.0
         }
         
         return rollout_data
@@ -556,6 +586,8 @@ class Trainer:
         self.logger.info(f"  Episodes: {rollout_data['episode_count']}")
         self.logger.info(f"  Mean Episode Reward: {rollout_data['mean_episode_reward']:.3f}")
         self.logger.info(f"  Mean Episode Length: {rollout_data['mean_episode_length']:.1f}")
+        if 'mean_success_rate' in rollout_data:
+            self.logger.info(f"  Mean Success Rate: {rollout_data['mean_success_rate']:.3f}")
         
         if update_info:
             self.logger.info("  Update Info:")
@@ -587,6 +619,7 @@ class Trainer:
                 'total_steps': self.total_steps,
                 'rollout/mean_episode_reward': rollout_data['mean_episode_reward'],
                 'rollout/mean_episode_length': rollout_data['mean_episode_length'],
+                'rollout/mean_success_rate': rollout_data.get('mean_success_rate', 0.0),
                 'rollout/episodes': rollout_data['episode_count']
             }
             
@@ -730,7 +763,7 @@ class Trainer:
             }
         
         # Save algorithm-specific states
-        if isinstance(self.algorithm, PCIMAPPOAlgorithm):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, PCIRNNAlgorithm)):
             # PCI-MAPPO specific states
             state['outcome_bridge_net'] = self.algorithm.outcome_bridge_net.state_dict()
             state['action_bridge_net'] = self.algorithm.action_bridge_net.state_dict()
@@ -782,6 +815,12 @@ class Trainer:
                     state['value_net'] = self.algorithm.value_net.state_dict()
                 if hasattr(self.algorithm, 'value_optimizer'):
                     state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
+        
+        elif isinstance(self.algorithm, COMAAlgorithm):
+            # COMA specific states
+            state['critic'] = self.algorithm.critic.state_dict()
+            state['target_critic'] = self.algorithm.target_critic.state_dict()
+            state['critic_optimizer'] = self.algorithm.critic_optimizer.state_dict()
         else:
             # MAPPO and IPPO: save shared value network
             if hasattr(self.algorithm, 'value_net'):

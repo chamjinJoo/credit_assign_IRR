@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 
+###########################################################################
+## From https://github.com/marlbenchmark/on-policy, edited for our usage.
+###########################################################################
 
 def init_layer(module, init_method, gain=1.0):
     """Initialize layer weights."""
@@ -23,7 +26,7 @@ def init_layer(module, init_method, gain=1.0):
 class MLPLayer(nn.Module):
     """
     Multi-layer perceptron with configurable activation and normalization.
-    Based on on-policy implementation but adapted for PCI-MAPPO usage.
+    Based on on-policy implementation but adapted for our usage.
     """
     
     def __init__(
@@ -82,7 +85,7 @@ class MLPLayer(nn.Module):
 class MLPBase(nn.Module):
     """
     MLP base network with feature normalization option.
-    Adapted from on-policy for PCI-MAPPO usage patterns.
+    Adapted from on-policy for our usage patterns.
     """
     
     def __init__(

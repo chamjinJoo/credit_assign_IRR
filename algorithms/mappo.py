@@ -8,7 +8,7 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
-from utils.buffer import ExperienceBuffer
+from utils.buffer import TransitionBuffer
 
 
 class MAPPOAgent:
@@ -94,7 +94,7 @@ class MAPPOAlgorithm:
         self.num_batches = num_batches
 
         # Create experience buffer
-        self.buffer_manager = ExperienceBuffer(
+        self.buffer_manager = TransitionBuffer(
             max_buffer_size=10000
         )
 
@@ -176,6 +176,8 @@ class MAPPOAlgorithm:
     def store_transition(
         self,
         prev_observations: Dict[int, torch.Tensor],  # o_{t-1}
+        prev_rewards: Dict[int, float],               # r_{t-1}
+        prev_actions: Dict[int, int],                 # a_{t-1}
         observations: Dict[int, torch.Tensor],       # o_t
         actions: Dict[int, int],                     # a_t
         rewards: Dict[int, float],                   # r_t
@@ -187,6 +189,8 @@ class MAPPOAlgorithm:
         # Store transition using buffer manager with (o_{t-1}, o_t, a_t, r_t, o_{t+1}) structure
         self.buffer_manager.store_transition(
             prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
             observations=observations,
             actions=actions,
             rewards=rewards,

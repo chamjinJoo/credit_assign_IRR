@@ -8,7 +8,7 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
-from utils.buffer import ExperienceBuffer
+from utils.buffer import TransitionBuffer
 
 
 class RBFKernel(nn.Module):
@@ -154,7 +154,7 @@ class PCIMAPPOAlgorithm:
         self.batch_size = batch_size
         self.num_batches = num_batches
         
-        self.buffer_manager = ExperienceBuffer(
+        self.buffer_manager = TransitionBuffer(
             max_buffer_size=max_buffer_size
         )
         
@@ -192,7 +192,10 @@ class PCIMAPPOAlgorithm:
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            z_dim=obs_dim * num_agents,
+            z_dim=obs_dim * num_agents, # Default Z
+            # z_dim=obs_dim * num_agents + num_agents, # [SWITCH] Z = [Joint Obs, Joint Reward]
+            # z_dim=obs_dim * num_agents + action_dim * num_agents, # [SWITCH] Z = [Joint Obs, Joint Action]
+            # z_dim=num_agents, # [SWITCH] previous reward vector as proxy
             action_dim=action_dim,
             num_agents=num_agents,
             hidden_dim=hidden_dim,
@@ -251,7 +254,10 @@ class PCIMAPPOAlgorithm:
         device = self.device
 
         # === 1. Data Preparation (Vectorized) ===
-        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device)
+        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
+        # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
+        # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(batch_size, -1).float()
+        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
         action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         reward_batch = torch.tensor([[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
@@ -265,8 +271,11 @@ class PCIMAPPOAlgorithm:
         mask_rewards = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
         Y_super = expanded_rewards[mask_rewards].view(batch_size * num_agents, -1)
 
-        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0)
-        
+        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
+        # Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
+        # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
+        # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
+
         with torch.no_grad():
             log_probs_list = []
             for i in range(num_agents):
@@ -461,6 +470,8 @@ class PCIMAPPOAlgorithm:
     def store_transition(
         self,
         prev_observations: Dict[int, torch.Tensor],
+        prev_rewards: Dict[int, float],
+        prev_actions: Dict[int, int],
         observations: Dict[int, torch.Tensor],
         actions: Dict[int, int],
         rewards: Dict[int, float],
@@ -470,11 +481,14 @@ class PCIMAPPOAlgorithm:
     ):
         self.buffer_manager.store_transition(
             prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
             observations=observations,
             actions=actions,
             rewards=rewards,
             next_observations=next_observations,
             dones=dones,
+            masks={i: 1.0 for i in range(self.num_agents)},
             hidden_states={i: None for i in range(self.num_agents)},
             info=info
         )
@@ -632,6 +646,8 @@ class PCIMAPPOAlgorithm:
                 #     baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
                 # else:
                 #     raise ValueError(f"Invalid baseline type: {baseline_type}")
+                # using causal domain information: prediction with factual action
+                # raw_effects = r_hat_factual - baseline
                 ########################################
 
                 # new baseline calculation: contain factual action
@@ -645,13 +661,9 @@ class PCIMAPPOAlgorithm:
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # using factual rewards instead of predicted rewards
-                r_factual = others_rewards_flat
-                
-                # using real rewards
-                raw_effects = r_factual - baseline
-                
-                # using causal domain information: prediction with factual action
+                # 1. using real rewards
+                raw_effects = others_rewards_flat - baseline
+                # 2. using outcome bridge network
                 # raw_effects = r_hat_factual - baseline
                 
                 # Reshape to [B, N, N-1]
@@ -672,60 +684,55 @@ class PCIMAPPOAlgorithm:
         agent_losses = defaultdict(float)
 
         full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(self.device)
+        B, N, D = full_obs_batch.shape
+        
         actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
         rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
-        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device)
+        
+        # joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device)
+        # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
+        # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(B, -1).float()
+        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
+        
+        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device) # Default Z
+        # z_t_batch = torch.cat([joint_o_prev, joint_r_prev], dim=1)
+        # z_t_batch = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1)
+        # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device) # [SWITCH] prev rewards
         dones_batch = torch.tensor([[t['dones'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
 
-        B, N, D = full_obs_batch.shape
         expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
         mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
         w_t_all = expanded_obs[mask].view(B, N, (N-1)*D)
 
         with torch.no_grad():
-            # [NEW] Compute Causal Effect Matrix C (N x N) off-diagonal matrix
             C_matrix = self.compute_causal_rewards(
                 w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted'
             )
-            merging_method = 'max'
-            # Outbound & Inbound 계산 (Merging Method 적용)
+            merging_method = 'sum'
             if merging_method == 'max':
-                # max는 (values, indices)를 반환하므로 [0] 인덱싱 필요
-                Delta_out = C_matrix.max(dim=2)[0] # [B, N] - 내가 남에게 준 최대 영향
-                # Delta_in = C_matrix.max(dim=1)[0]  # [B, N] - 남이 나에게 준 최대 영향
+                delta = C_matrix.max(dim=2)[0]
             elif merging_method == 'mean':
-                Delta_out = C_matrix.mean(dim=2)
-                # Delta_in = C_matrix.mean(dim=1)
+                delta = C_matrix.mean(dim=2)
             elif merging_method == 'sum':
-                Delta_out = C_matrix.sum(dim=2)
-                # Delta_in = C_matrix.sum(dim=1)
-            # 3. Synergistic Reward Calculation
-            # r = Out * (1 + alpha * tanh(In))
-            # If In < 0 (others harming me), tanh < 0 -> reward decreases
-            # If In > 0 (others helping me), tanh > 0 -> reward increases
-            # alpha = 1.0
-            # synergy_factor = 1.0 + alpha * torch.tanh(Delta_in)
-            #Delta_final = Delta_out * synergy_factor
+                delta = C_matrix.sum(dim=2)
 
-            # Alternative: no synergy - only use outbound effect
-
-            Delta_final = Delta_out
-            Delta_final[torch.abs(Delta_final) < 0.2] = 0.0 # remove abs_values < 0.2
+            clip_delta = 0.2 # best hyperparameter
+            delta[torch.abs(delta) < clip_delta] = 0.0 # remove abs_values < 0.2
 
             # Apply Adaptive Lambda per agent
             if self.causal_lambda_adaptive_per_agent:
                 causal_lambdas = torch.tensor([
                     self.get_current_causal_lambda(agent_id=i) for i in range(self.num_agents)
                 ], device=self.device).unsqueeze(0)
-                shaped_rewards_all = rewards_batch + causal_lambdas * Delta_final
+                shaped_rewards_all = rewards_batch + causal_lambdas * delta
             else:
-                shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * Delta_final
+                shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * delta
             
             # Logging
             for i in range(N):
                 for t, transition in enumerate(batch_data):
                     scenario = self._classify_delta_scenario(transition, i)
-                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += Delta_final[t, i].item()
+                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += delta[t, i].item()
                     agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
 
         agent_returns = {}

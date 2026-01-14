@@ -8,7 +8,7 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
-from utils.buffer import ExperienceBuffer
+from utils.buffer import TransitionBuffer
 
 class IPPOAgent:
     """
@@ -95,7 +95,7 @@ class IPPOAlgorithm:
         self.training_steps = 0
         
         # Create experience buffer
-        self.buffer_manager = ExperienceBuffer(
+        self.buffer_manager = TransitionBuffer(
             max_buffer_size=10000
         )
         # Create agents

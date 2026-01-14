@@ -44,4 +44,22 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 * q-bridge function can be elimiated without theoretical loss.
 
 ## 2026.01.09
-* We checked that applying clipping on $\delta^i_t$ provides good performance. `Delta_final[torch.abs(Delta_final) < 0.2] = 0.0`
+* We checked that applying clipping on $\delta^i_t$ provides good performance. The current configuration is `Delta_final[torch.abs(Delta_final) < 0.2] = 0.0`
+
+## 2026.01.12
+* Add `success rate` for WandB logging 
+* Test $Z_t = \mathbf{r}_{t-1}$ , the **convergence speed decreases**.
+* For clearity of `mean_epsiode_length` plot, set max-timestep = 1000
+* Test new observation in StagHunt: obs = location of each object = [Agents, Stags, Hares]. The locations of objects out of 5x5 vision is masked as -1. => **Does not work**
+* Test new grid_observation in StagHunt: masking relative positions if it is out of 5x5 around an agent. => 성능이 떨어지지만 나름 괜찮음. Baseline과의 차이 유지, `merging_method = sum`시 성능이 좋음. 또한 단순한 reward predictor를 사용하는 x-pci와도 약간의 성능 차이를 보임.
+* `clip_delta`값은 Stag-Hunt에서는 `0.2`가 best인듯 (0.1, 0.5는 성능 저하)
+* Stag-Hunt의 Obs에 0.01, 0.05, 0.08의 gaussian noise를 넣어봄. 0.05부터는 x-pci와 pci의 수렴 속도와 성능 차이가 조금 남.
+
+## 2026.01.13
+* Stag-Hunt에서 거짓된 $a^i_t \to \mathbf{r}^{-i}_t$ correlation을 난이도 metric으로 보고, hare 수를 늘려가면서 실험해보기.
+* 다양한 Z를 확인해봄. Z = (prev_joint_obs, prev_joint_actions) or (prev_joint_obs, prev_joint_rewards). 기존 Z = prev_joint_obs가 젤 나음. 
+* use `max-timestep=2000` and `iteration=1500`. more stable
+
+## 2026.01.14
+* New Baseline: **COMA** - keep testing
+* Using r_hat_factual for intrinsic reward leads to **poor performance**. 

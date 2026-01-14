@@ -1,15 +1,22 @@
 #!/bin/bash
+# env setting
 env="StagHunt"
+num_agents=4
+forage_quantity=4 # default: the same as num_agents
+grid_observation=true
+config="configs/stag_hunt.yaml"
+
+# model setting
 model="pci-mappo" # [pci-mappo, mappo, ippo]
-numagents=3
 causal_lambda=1.0
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
-max_iterations=3000
-max_steps_per_iteration=1024
+
+# training and logging 
+max_iterations=1500
+max_steps_per_iteration=2000
 log_interval=2
 device="cpu"
-config="configs/stag_hunt.yaml"
 seed=42
 
 # Conda 초기화 및 환경 활성화
@@ -19,8 +26,8 @@ conda activate pcimarl
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-python main.py --env ${env} --num-agents ${numagents} --config ${config} \
---model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
---max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
---causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
---log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb
+python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
+    --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
+    --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
+    --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
+    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb

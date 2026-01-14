@@ -8,7 +8,7 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import PolicyNetwork, RewardPredictor, ValueNetwork
-from utils.buffer import ExperienceBuffer
+from utils.buffer import TransitionBuffer
 
 
 
@@ -106,7 +106,7 @@ class X_PCIAlgorithm:
         self.batch_size = batch_size
         self.num_batches = num_batches
         
-        self.buffer_manager = ExperienceBuffer(
+        self.buffer_manager = TransitionBuffer(
             max_buffer_size=max_buffer_size
         )
         
@@ -251,6 +251,8 @@ class X_PCIAlgorithm:
     def store_transition(
         self,
         prev_observations: Dict[int, torch.Tensor],
+        prev_rewards: Dict[int, float],
+        prev_actions: Dict[int, int],
         observations: Dict[int, torch.Tensor],
         actions: Dict[int, int],
         rewards: Dict[int, float],
@@ -260,6 +262,8 @@ class X_PCIAlgorithm:
     ):
         self.buffer_manager.store_transition(
             prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
             observations=observations,
             actions=actions,
             rewards=rewards,
@@ -448,7 +452,7 @@ class X_PCIAlgorithm:
             C_matrix = self.compute_causal_rewards(
                 w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted'
             )
-            merging_method = 'max'
+            merging_method = 'sum'
             # Outbound & Inbound 계산 (Merging Method 적용)
             if merging_method == 'max':
                 # max는 (values, indices)를 반환하므로 [0] 인덱싱 필요
