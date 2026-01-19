@@ -111,6 +111,12 @@ class EnvironmentConfig:
     failed_cooperation_punishment: int = -5
     eps_per_game: int = 1
 
+    # For SMAC environment
+    map_name: str = "3m"
+    
+    # For SMACv2 environment
+    capability_config: Optional[Dict[str, Any]] = None   
+
     # For visualization
     use_visualization: bool = True
     visualize_freq: int = 1
@@ -195,6 +201,8 @@ def parse_args() -> argparse.Namespace:
                         help='Use grid observation (true/false)')
     parser.add_argument('--forage-quantity', type=int, default=None,
                         help='Number of forage items (StagHunt)')
+    parser.add_argument('--map-name', type=str, default='3m',
+                        help='Map name for SMAC environment')
     
     # Training
     parser.add_argument('--max-iterations', type=int, default=1000,
@@ -219,6 +227,8 @@ def parse_args() -> argparse.Namespace:
                         help='Learning rate')
     parser.add_argument('--recurrent-N', type=int, default=1,
                         help='Number of recurrent layers for RNN')
+    parser.add_argument('--global-reward', type=str, default=None,
+                        help='Use global reward (true/false)')
     
     # Logging
     parser.add_argument('--save-dir', type=str, default='./save_checkpoints',
@@ -278,7 +288,9 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.environment.grid_observation = is_grid
     if hasattr(args, 'forage_quantity') and args.forage_quantity is not None:
         config.environment.forage_quantity = args.forage_quantity
-    
+    if hasattr(args, 'map_name') and args.map_name:
+        config.environment.map_name = args.map_name
+        
     if hasattr(args, 'max_iterations') and args.max_iterations:
         config.training.max_iterations = args.max_iterations
     if hasattr(args, 'max_steps') and args.max_steps:
@@ -314,6 +326,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.network.lr_critic = args.lr
     if hasattr(args, 'recurrent_N') and args.recurrent_N is not None:
         config.network.recurrent_N = args.recurrent_N
+    if hasattr(args, 'global_reward') and args.global_reward is not None:
+        # Convert string to boolean
+        use_global = args.global_reward.lower() in ('true', '1', 'yes', 'on')
+        config.algorithm.global_reward = use_global
     
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb

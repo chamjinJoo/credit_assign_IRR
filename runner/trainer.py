@@ -415,8 +415,16 @@ class Trainer:
             done = False
             
             while not done and step_count < self.max_steps_per_iteration:
+                # Get available actions
+                available_actions = None
+                if hasattr(self.env, "get_avail_actions"):
+                    avail = self.env.get_avail_actions()
+                    # Convert to Dict[int, List[int]]
+                    # SMAC returns List[List[int]] where index is agent_id
+                    available_actions = {i: avail[i] for i in range(len(avail))}
+
                 # Get actions from agents
-                actions = self.algorithm.get_actions(observations)
+                actions = self.algorithm.get_actions(observations, available_actions)
                 
                 # Convert actions for environment
                 env_actions = {agent_id: action for agent_id, (action, _) in actions.items()}
@@ -437,7 +445,8 @@ class Trainer:
                     rewards=rewards,                      # r_t
                     next_observations=next_observations,  # o_{t+1}
                     dones=dones,
-                    info=info  # Environment info (e.g., stag_hunts, hare_hunts)
+                    info=info,  # Environment info (e.g., stag_hunts, hare_hunts)
+                    available_actions=available_actions # [ADDED]
                 )
                 
                 # Update episode statistics
@@ -479,6 +488,9 @@ class Trainer:
                 # Success if all objects (stags and hares) are hunted (not alive)
                 if not any(stag_alive.values()) and not any(hare_alive.values()):
                     is_success = 1.0
+            elif "SMAC" in str(self.env):
+                if info.get('battle_won', False):
+                    is_success = 1.0
             episode_successes.append(is_success)
             
             # Track recent rewards for logging
@@ -519,16 +531,62 @@ class Trainer:
             done = False
             
             while not done and episode_length < 1000:
+                # Get availability of actions
+                available_actions = None
+                if hasattr(self.env, "get_avail_actions"):
+                    avail = self.env.get_avail_actions()
+                    # Convert to Dict[int, List[int]]
+                    # SMAC returns List[List[int]] where index is agent_id
+                    available_actions = {i: avail[i] for i in range(len(avail))}
+
                 # Get actions (no exploration for evaluation)
                 with torch.no_grad():
                     actions = {}
                     for agent_id, obs in observations.items():
-                        action, _, = self.algorithm.agents[agent_id].get_action(obs)
+                        # Handle available actions for agent
+                        avail_actions_tensor = None
+                        if available_actions is not None and agent_id in available_actions:
+                            avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.algorithm.device)
+                            
+                        # Pass available_actions here. Make sure all algorithms support kwargs or update signature
+                        # Currently all algorithms' get_action support available_actions (or similar) or should be robust
+                        if hasattr(self.algorithm.agents[agent_id], 'get_action'):
+                             # Prepare args based on signature inspection or try/except
+                             # But simpler is to rely on the algorithms we updated which now accept available_actions
+                             # However, we need to consistent.
+                             # Let's check signature? No, just assume we updated them.
+                             # Wait, the algorithm.agents[agent_id].get_action signature varies. 
+                             # For pci_rnn/mappo_rnn it's: get_action(obs, masks=None, available_actions=None)
+                             # For pci_mappo/x_pci it's: get_action(obs, available_actions=None)
+                             
+                             # We can use kwargs if supported, or just pass if expected.
+                             # Let's try passing available_actions if the variable is not None.
+                             
+                             if avail_actions_tensor is not None:
+                                 # Checking if 'ip_rnn' or 'pci_rnn' based on class is tricky without import.
+                                 # We know we updated them.
+                                 action, _, = self.algorithm.agents[agent_id].get_action(obs, available_actions=avail_actions_tensor)
+                             else:
+                                 action, _, = self.algorithm.agents[agent_id].get_action(obs)
+                        else:
+                             # Fallback
+                             action, _, = self.algorithm.agents[agent_id].get_action(obs)
+
                         actions[agent_id] = action
                 
                 # Take step
                 next_observations, rewards, dones, info = self.env.step(actions)
                 next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
+                
+                # Check success (Evaluate)
+                if self.env.__class__.__name__ == "StagHuntEnv":
+                    stag_alive = info.get('stag_alive', {})
+                    hare_alive = info.get('hare_alive', {})
+                    if not any(stag_alive.values()) and not any(hare_alive.values()):
+                        episode_success = 1.0
+                elif self.env.__class__.__name__ == "SMACEnv":
+                     if info.get('battle_won', False):
+                         episode_success = 1.0
                 
                 # Update statistics
                 for agent_id, reward in rewards.items():
@@ -1041,11 +1099,28 @@ class Trainer:
                             # Regular rendering
                             self.env.render()
                     
+                    # Get availability of actions
+                    available_actions = None
+                    if hasattr(self.env, "get_avail_actions"):
+                        avail = self.env.get_avail_actions()
+                        # Convert to Dict[int, List[int]]
+                        # SMAC returns List[List[int]] where index is agent_id
+                        available_actions = {i: avail[i] for i in range(len(avail))}
+
                     # Get actions (deterministic for testing)
                     with torch.no_grad():
                         actions = {}
                         for agent_id, obs in observations.items():
-                            action, _ = self.algorithm.agents[agent_id].get_action(obs)
+                            # Handle available actions for agent
+                            avail_actions_tensor = None
+                            if available_actions is not None and agent_id in available_actions:
+                                avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.algorithm.device)
+
+                            if avail_actions_tensor is not None:
+                                 action, _, = self.algorithm.agents[agent_id].get_action(obs, available_actions=avail_actions_tensor)
+                            else:
+                                 action, _, = self.algorithm.agents[agent_id].get_action(obs)
+
                             actions[agent_id] = action
                     
                     # Take step
@@ -1479,7 +1554,6 @@ class Trainer:
                 self.logger.info(f"Frames saved as images: {frames_dir}")
             except Exception as e2:
                 self.logger.error(f"Failed to save frames as images: {e2}")
-    
     
     def _plot_policy_quality_metrics(self, policy_metrics, save_dir):
         """

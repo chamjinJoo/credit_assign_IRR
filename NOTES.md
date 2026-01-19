@@ -62,4 +62,27 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 ## 2026.01.14
 * New Baseline: **COMA** - keep testing
-* Using r_hat_factual for intrinsic reward leads to **poor performance**. 
+* [Remind]: Using r_hat_factual for intrinsic reward leads to **poor performance**. 
+* Develop **RNN-based models**  `pci_rnn`, `mappo_rnn`, and `ippo_rnn`.
+    - They used RNN hidden state $\eta_t$ for policy and value network, $a^i_t \sim \pi^i(\cdot|\eta_t), V_\theta(\eta_t)$
+    - **All models perform better** since **RNN is a well-known empirical solution to address partial observability**
+    - `mappo_rnn`의 성능이 너무 좋아져서 `pci_rnn`을 따라잡음.
+* Some proposals for development of `PCI_RNN`:
+    - add covariates $X=o^i_t$ on outcome bridge $h$ → $h(a,w,x)$
+    - test various $Z_t=\mathbf{o}_{t-1} \text{ or } \mathbf{r}_{t-1}$
+    ✔️use **real counterfactual baseline without factual action** (details on below 2026.01.15)
+
+## 2026.01.15
+* Test counterfactual baseline only with counterfactual actions — very good, outperforms x-pci
+    * Intuition of the problem in the original baseline: As policy training goes on, the baseline should be decreased. Therefore, **the shaped reward also decreases even though it represent the same cooperation level.** It leads the **confusion in downstream training** (value & policy).
+* What is the best combination among the four cases, $Z = \{\mathbf{r}_t, \mathbf{o}_{t-1}\}, X = \{o^i_t, None\}$?
+    * `delta_clipping` not that much matters — keep for reduce noise
+    * $Z = \mathbf{r}_{t-1}$ — keep for computational cost, not for performance.
+    * $X = o^i_t$ gives faster convergence, not guarantees better performance. — keep for theoretical matching?
+* Test Stag-Hunt **w/o relative positions** and expand vision 3x3 → **5x5**.
+    * PCIMARL-RNN outperforms baseline rMAPPO. When N=4, rMAPPO has never completed the task.
+
+## 26.01.19
+* Add SMAC and SMACv2 envs.
+    * add action masking logics to prevent unavailable actions (e.g., choose attack when there is no enemy in the attack range)
+    * Solve the NaN error in policy logits.

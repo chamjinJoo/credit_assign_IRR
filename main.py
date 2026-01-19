@@ -165,6 +165,7 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
+            global_reward=getattr(algorithm_config, 'global_reward', True),
         )
     elif algorithm_type == 'ippo':
         algorithm = IPPOAlgorithm(
@@ -300,7 +301,6 @@ def run_causal_evaluation(env, algorithm, args, logger):
     
     logger.info(f"Causal effect 평가 완료. 결과가 저장되었습니다: {results_dir}")
 
-
 def main():
     """Main training function."""
     # Parse arguments
@@ -356,6 +356,12 @@ def main():
             if env_id.endswith('-v3'):
                 env_id = env_id[:-3]
             config.wandb.run_name = env_id
+        # For SMAC, use smac_{map_name}
+        elif env_class_name in ['SMACEnv', 'SMACv2Env']:
+            # Try to get map_name from env config or env instance if accessible
+            # We can check config.environment.map_name which we added
+            map_name = getattr(config.environment, 'map_name', 'unknown')
+            config.wandb.run_name = f"smac_{map_name}"
         else:
             # For other environments, use environment class name
             env_name = env_class_name.lower()

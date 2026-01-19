@@ -41,7 +41,7 @@ class MAPPORNNAgent:
     def reset_rnn_state(self):
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
 
-    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, return_rnn_state=True) -> Tuple[int, float, Optional[torch.Tensor]]:
+    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None, return_rnn_state=True) -> Tuple[int, float, Optional[torch.Tensor]]:
         with torch.no_grad():
             obs_in = obs.unsqueeze(0) if obs.dim() == 1 else obs 
             
@@ -55,10 +55,15 @@ class MAPPORNNAgent:
             
             curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
             
+            # Handle available actions
+            if available_actions is not None:
+                available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
-                masks_in
+                masks_in,
+                available_actions
             )
             
             self.rnn_state_policy = next_rnn_state.squeeze(0)
@@ -93,7 +98,9 @@ class MAPPORNNAlgorithm:
         num_batches: int = 1,
         device: str = "cpu",
         rnn_chunk_length: int = 16,
+        global_reward: bool = True,
     ):
+        self.global_reward = global_reward
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -131,7 +138,8 @@ class MAPPORNNAlgorithm:
         self.value_net = RNNValueNetwork(
             obs_dim=obs_dim * num_agents,
             hidden_dim=hidden_dim,
-            recurrent_N=recurrent_N
+            recurrent_N=recurrent_N,
+            out_dim=1 if global_reward else num_agents
         )
         self.value_net.to(self.device)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
@@ -168,7 +176,7 @@ class MAPPORNNAlgorithm:
             self.rnn_state_value = next_rnn_state.squeeze(0)
         return value.item(), curr_rnn_state.squeeze(0).clone()
 
-    def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
+    def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         self.temp_hidden_states = {}
         self.temp_masks = {}
@@ -187,7 +195,12 @@ class MAPPORNNAlgorithm:
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
             mask_tensor = torch.tensor([mask], dtype=torch.float32, device=self.device)
             
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor)
+            # Prepare available actions tensor
+            avail_actions_tensor = None
+            if available_actions is not None and agent_id in available_actions:
+                avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
+
+            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             actions[agent_id] = (action, log_prob)
             # Store (policy_state, central_value_state) for each agent
@@ -243,22 +256,50 @@ class MAPPORNNAlgorithm:
         global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data]).to(self.device)
         global_masks_seq = torch.tensor([t['masks'][0] for t in batch_data], device=self.device).unsqueeze(1) # Use agent 0 mask
         
+        # Extract available actions
+        available_actions_batch = {}
+        if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
+            for agent_id in range(self.num_agents):
+                if agent_id in batch_data[0]['available_actions']:
+                     # t['available_actions'][agent_id] is List[int]
+                     avail_list = [t['available_actions'][agent_id] for t in batch_data]
+                     # Convert to tensor (Batch, ActionDim)
+                     available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
+        
         # Central Value Hidden States
         # Stored in hidden_states[0][1]
         v_states_all = torch.stack([t['hidden_states'][0][1] for t in batch_data]).to(self.device)
         
-        # Calculate Global Rewards
-        global_rewards = []
-        global_dones = []
-        for t in batch_data:
-            global_reward = sum(t['bold_r_t'].values()) / self.num_agents
-            global_rewards.append(global_reward)
-            global_dones.append(any(t['dones'].values()))
-        
-        all_global_rewards = torch.tensor(global_rewards, dtype=torch.float32, device=self.device)
-        all_global_dones = torch.tensor(global_dones, dtype=torch.float32, device=self.device)
+        # Calculate Rewards
+        if self.global_reward:
+            # Global reward (mean of all agents)
+            global_rewards = []
+            for t in batch_data:
+                global_reward = sum(t['bold_r_t'].values()) / self.num_agents
+                global_rewards.append(global_reward)
+            
+            all_rewards = torch.tensor(global_rewards, dtype=torch.float32, device=self.device) # [T]
+        else:
+            # Individual rewards
+            rewards_list = []
+            for t in batch_data:
+                # Assuming agent_order is consistent or we use dict lookup
+                # Need to stack rewards in order of agents [agent_0, agent_1, ...]
+                step_rewards = [t['bold_r_t'].get(i, 0.0) for i in range(self.num_agents)]
+                rewards_list.append(step_rewards)
+            all_rewards = torch.tensor(rewards_list, dtype=torch.float32, device=self.device).transpose(0, 1) # [N, T]? No wait. 
+            # If we want [T, N] to match returns later, lets check compute_gae. 
+            # compute_gae currently takes list.
+            
+            # Let's standardize: all_rewards will be used for GAE.
+            # For global: simple list or 1D tensor [T]
+            # For individual: list of lists or 2D tensor [T, N]
+
+        global_dones = [any(t['dones'].values()) for t in batch_data]
+        all_dones = torch.tensor(global_dones, dtype=torch.float32, device=self.device)
 
         # === Compute Global Values/GAE (Sequential) ===
+        # === Compute Values/GAE ===
         _, v_h0 = batch_data[0]['hidden_states'][0]
         v_h0 = v_h0.to(self.device).unsqueeze(0)
         
@@ -273,24 +314,62 @@ class MAPPORNNAlgorithm:
             extended_obs = torch.cat([rnn_obs, last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
             extended_masks = torch.cat([rnn_masks, torch.tensor([[last_mask]], device=self.device)], dim=0)
             
-            all_values, _ = self.value_net(extended_obs, v_h0, extended_masks)
-            global_values = all_values[:-1].reshape(-1)
-            next_global_val = all_values[-1].item() * last_mask
+            all_values, _ = self.value_net(extended_obs, v_h0, extended_masks) # [T+1, 1, OutDim]
+            
+            if self.global_reward:
+                # Output is [T+1, 1, 1] -> [T+1]
+                values = all_values[:-1].view(-1)
+                next_val = all_values[-1].view(-1) * last_mask
+                
+                advantages_global, returns_global = self.compute_gae(
+                    all_rewards.tolist(),
+                    values.tolist(),
+                    next_val.item(),
+                    all_dones.tolist()
+                )
+                all_returns = torch.tensor(returns_global, dtype=torch.float32, device=self.device)
+                all_advantages = torch.tensor(advantages_global, dtype=torch.float32, device=self.device)
+                
+            else:
+                # Output is [T+1, 1, N] -> [T+1, N]
+                values = all_values[:-1].view(-1, self.num_agents) 
+                next_val = all_values[-1].view(-1, self.num_agents) * last_mask
+                
+                # Compute GAE per agent
+                # all_rewards was defined above, but wait. If I used list of lists earlier, I need to match.
+                # Let's extract per-agent rewards from batch_data to be safe
+                all_returns_list = []
+                all_advantages_list = []
+                
+                for agent_i in range(self.num_agents):
+                    agent_rewards = [t['bold_r_t'].get(agent_i, 0.0) for t in batch_data]
+                    agent_vals = values[:, agent_i].tolist()
+                    agent_next = next_val[0, agent_i].item()
+                    
+                    adv, ret = self.compute_gae(
+                        agent_rewards,
+                        agent_vals,
+                        agent_next,
+                        all_dones.tolist()
+                    )
+                    all_returns_list.append(ret)
+                    all_advantages_list.append(adv)
+                
+                all_returns = torch.tensor(all_returns_list, dtype=torch.float32, device=self.device).transpose(0, 1) # [T, N]
+                all_advantages = torch.tensor(all_advantages_list, dtype=torch.float32, device=self.device).transpose(0, 1) # [T, N]
 
-        advantages_global, returns_global = self.compute_gae(
-            all_global_rewards.tolist(),
-            global_values.tolist(),
-            next_global_val,
-            all_global_dones.tolist()
-        )
-        global_returns = torch.tensor(returns_global, dtype=torch.float32, device=self.device)
-        global_advantages = torch.tensor(advantages_global, dtype=torch.float32, device=self.device)
-        
-        # Normalize Advantages
-        if global_advantages.numel() > 1:
-            global_adv_norm = (global_advantages - global_advantages.mean()) / (global_advantages.std() + 1e-8)
+         # Normalize Advantages
+        if self.global_reward:
+             if all_advantages.numel() > 1:
+                global_adv_norm = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+             else:
+                global_adv_norm = torch.zeros_like(all_advantages)
         else:
-            global_adv_norm = torch.zeros_like(global_advantages)
+             # Normalize per batch or per agent? Usually per batch.
+             if all_advantages.numel() > 1:
+                global_adv_norm = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8) # [T, N]
+             else:
+                global_adv_norm = torch.zeros_like(all_advantages)
 
         # === Prepare Chunked Data for Value Update ===
         T_total = global_obs_seq.size(0)
@@ -300,15 +379,20 @@ class MAPPORNNAlgorithm:
         if num_chunks > 0:
              global_obs_batch = self._chunk_sequence(global_obs_seq, chunk_len)
              global_masks_batch = self._chunk_sequence(global_masks_seq, chunk_len)
-             global_ret_batch = self._chunk_sequence(global_returns, chunk_len).reshape(-1)
-             global_adv_batch = self._chunk_sequence(global_adv_norm, chunk_len).reshape(-1)
+             if self.global_reward:
+                 global_ret_batch = self._chunk_sequence(all_returns, chunk_len).reshape(-1)
+                 global_adv_batch = self._chunk_sequence(global_adv_norm, chunk_len).reshape(-1)
+             else:
+                 # [T, N] -> [Chunks, L, N] -> [Chunks*L, N]
+                 global_ret_batch = self._chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
+                 global_adv_batch = self._chunk_sequence(global_adv_norm, chunk_len).reshape(-1, self.num_agents)
              
              chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
              v_h0_batch = v_states_all[chunk_indices] 
         else:
              global_obs_batch = global_obs_seq.unsqueeze(1)
              global_masks_batch = global_masks_seq
-             global_ret_batch = global_returns
+             global_ret_batch = all_returns
              global_adv_batch = global_adv_norm
              v_h0_batch = v_states_all[0].unsqueeze(0)
 
@@ -326,22 +410,36 @@ class MAPPORNNAlgorithm:
                  rnn_masks_batch = self._chunk_sequence(masks_batch, chunk_len)
                  my_actions_batch = self._chunk_sequence(my_actions, chunk_len).reshape(-1)
                  p_h0_batch = p_states_all[chunk_indices]
+                 
+                 avail_actions_batch_merged = None
+                 if agent_id in available_actions_batch:
+                     avail_actions_chunked = self._chunk_sequence(available_actions_batch[agent_id], chunk_len)
+                     avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1))
             else:
                  rnn_obs_batch = agent_obs.unsqueeze(1)
                  rnn_masks_batch = masks_batch
                  my_actions_batch = my_actions
                  p_h0_batch = p_states_all[0].unsqueeze(0)
+                 
+                 avail_actions_batch_merged = None
+                 if agent_id in available_actions_batch:
+                    avail_actions_batch_merged = available_actions_batch[agent_id]
 
             with torch.no_grad():
-                 old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch)
+                 old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
                  old_log_probs = old_log_probs.detach()
             
             for _ in range(self.ppo_epochs):
-                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch)
+                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
+                 if self.global_reward:
+                     adv_target = global_adv_batch
+                 else:
+                     adv_target = global_adv_batch[:, agent_id]
+
                  ratio = torch.exp(new_log_probs - old_log_probs)
                  
-                 surr1 = ratio * global_adv_batch 
-                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * global_adv_batch
+                 surr1 = ratio * adv_target 
+                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_target
                  policy_loss = -torch.min(surr1, surr2).mean()
                  entropy_loss = -entropy.mean()
                  
@@ -358,7 +456,11 @@ class MAPPORNNAlgorithm:
         # === Central Value Update ===
         for _ in range(self.ppo_epochs):
              new_vals, _ = self.value_net(global_obs_batch, v_h0_batch, global_masks_batch)
-             val_loss = F.mse_loss(new_vals.squeeze(1), global_ret_batch)
+             
+             if self.global_reward:
+                val_loss = F.mse_loss(new_vals.squeeze(1).squeeze(-1), global_ret_batch)
+             else:
+                val_loss = F.mse_loss(new_vals.squeeze(1), global_ret_batch)
              
              self.value_optimizer.zero_grad()
              (self.value_coef * val_loss).backward()

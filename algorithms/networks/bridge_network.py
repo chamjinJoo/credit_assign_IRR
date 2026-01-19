@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from typing import Tuple
+from typing import Tuple, Optional
 from .mlp import MLPBase
 
 class OutcomeBridgeNetwork(nn.Module):
@@ -15,7 +15,8 @@ class OutcomeBridgeNetwork(nn.Module):
         w_dim: int,
         outcome_dim: int,
         hidden_dim: int = 64,
-        action_embedding_dim: int = 8
+        action_embedding_dim: int = 8,
+        x_dim: int = 0 # [ADDED] Covariates X: o^i_t
     ):
         super(OutcomeBridgeNetwork, self).__init__()
         self.action_dim = action_dim
@@ -24,12 +25,13 @@ class OutcomeBridgeNetwork(nn.Module):
         self.outcome_dim = outcome_dim
         self.hidden_dim = hidden_dim
         self.action_embedding_dim = action_embedding_dim
+        self.x_dim = x_dim
         
         # Action embedding layer
         self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
         
         # Input is an agent's action embedding and confounder
-        input_dim = action_embedding_dim + w_dim
+        input_dim = action_embedding_dim + w_dim + x_dim
         
         # Bridge network with 3 hidden layers
         self.mlp = MLPBase(
@@ -48,21 +50,12 @@ class OutcomeBridgeNetwork(nn.Module):
             self.output_layer
         )
 
-        # Simple MLP with 3 hidden layers
-        # self.bridge_network = nn.Sequential(
-        #     nn.Linear(input_dim, 3*hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(3*hidden_dim, 2*hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(2*hidden_dim, hidden_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(hidden_dim, outcome_dim)
-        # )
         
     def forward(
         self, 
         actions: torch.Tensor, 
-        w: torch.Tensor
+        w: torch.Tensor,
+        x: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Forward pass of bridge network.
@@ -71,7 +64,10 @@ class OutcomeBridgeNetwork(nn.Module):
         action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
   
         # Concatenate all action embeddings and confounder
-        bridge_input = torch.cat([action_embeds, w], dim=-1)
+        if x is not None:
+             bridge_input = torch.cat([action_embeds, w, x], dim=-1)
+        else:
+             bridge_input = torch.cat([action_embeds, w], dim=-1)
         
         # Forward through network
         outcome = self.bridge_network(bridge_input)
@@ -82,6 +78,7 @@ class OutcomeBridgeNetwork(nn.Module):
         self,
         actions: torch.Tensor,
         w: torch.Tensor,
+        x: Optional[torch.Tensor] = None, # [ADDED]
         M: int = 10
     ) -> torch.Tensor:
         """
@@ -89,6 +86,7 @@ class OutcomeBridgeNetwork(nn.Module):
         Args:
             actions: Full action vector a = (a^1_t, a^2_t, ..., a^n_t) [batch_size, num_agents]
             w: Sampled confounders [batch_size, M, w_dim]
+            x: Sampled observations [batch_size, M, x_dim]   
             M: Number of samples
             
         Returns:
@@ -102,7 +100,11 @@ class OutcomeBridgeNetwork(nn.Module):
         action_embeds_expanded = action_embeds_flat.unsqueeze(1).expand(-1, M, -1) # [batch_size, M, num_agents * action_embedding_dim]
         
         # Prepare bridge input: batch_size * (a', w^(m))
-        bridge_input = torch.cat([action_embeds_expanded, w], dim=-1) # [batch_size, M, num_agents * action_embedding_dim + w_dim]
+        if x is not None:
+            bridge_input = torch.cat([action_embeds_expanded, w, x], dim=-1) 
+        else:
+            bridge_input = torch.cat([action_embeds_expanded, w], dim=-1) 
+            
         bridge_input_reshaped = bridge_input.view(batch_size * M, -1) # [batch_size * M, num_agents * action_embedding_dim + w_dim]
         
         # Forward through network: [batch_size * M, outcome_dim]

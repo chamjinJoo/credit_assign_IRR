@@ -30,6 +30,7 @@ class TransitionBuffer:
         dones: Dict[int, bool],
         masks: Dict[int, float],
         hidden_states: Dict[int, torch.Tensor],
+        available_actions: Optional[Dict[int, List[int]]] = None, # [ADDED]
         info: Dict = None
     ):
         """
@@ -47,6 +48,7 @@ class TransitionBuffer:
             dones: Dict mapping agent_id to done flag
             masks: Dict mapping agent_id to mask value (1.0 for valid, 0.0 for done/reset)
             hidden_states: Dict mapping agent_id to hidden state tensor
+            available_actions: Dict mapping agent_id to available actions (optional)
             info: Additional information from environment (e.g., cooperation info)
         """
         # Store complete system state with proper causal structure
@@ -61,6 +63,7 @@ class TransitionBuffer:
             'dones': dones,
             'masks': masks,
             'hidden_states': hidden_states,
+            'available_actions': available_actions, # [ADDED]
             'info': info if info is not None else {},  # Environment info (e.g., stag_hunts, hare_hunts)
         }
         

@@ -71,9 +71,12 @@ class PCIMAPPOAgent:
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         
-    def get_action(self, obs: torch.Tensor) -> Tuple[int, float]:
+    def get_action(self, obs: torch.Tensor, available_actions: Optional[torch.Tensor] = None) -> Tuple[int, float]:
         with torch.no_grad():
-            action, log_prob = self.policy_net.get_action_and_log_prob(obs.unsqueeze(0))
+            if available_actions is not None:
+                available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
+            
+            action, log_prob = self.policy_net.get_action_and_log_prob(obs.unsqueeze(0), available_actions)
         return action.item(), log_prob.item()
 
 
@@ -460,10 +463,15 @@ class PCIMAPPOAlgorithm:
     def reset_agents(self):
         pass
     
-    def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
+    def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         for agent_id, obs in observations.items():
-            action, log_prob = self.agents[agent_id].get_action(obs)
+            # Prepare available actions tensor
+            avail_actions_tensor = None
+            if available_actions is not None and agent_id in available_actions:
+                avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
+
+            action, log_prob = self.agents[agent_id].get_action(obs, available_actions=avail_actions_tensor)
             actions[agent_id] = (action, log_prob)
         return actions
     
@@ -477,7 +485,8 @@ class PCIMAPPOAlgorithm:
         rewards: Dict[int, float],
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
-        info: Dict = None
+        info: Dict = None,
+        available_actions: Optional[Dict[int, List[int]]] = None # [ADDED]
     ):
         self.buffer_manager.store_transition(
             prev_observations=prev_observations,
@@ -490,7 +499,8 @@ class PCIMAPPOAlgorithm:
             dones=dones,
             masks={i: 1.0 for i in range(self.num_agents)},
             hidden_states={i: None for i in range(self.num_agents)},
-            info=info
+            info=info,
+            available_actions=available_actions # [ADDED]
         )
     
     def compute_gae(
@@ -561,6 +571,7 @@ class PCIMAPPOAlgorithm:
         actions_batch: torch.Tensor,
         rewards_batch: torch.Tensor,
         baseline_type: str = 'weighted',
+        available_actions_batch: Optional[Dict[int, torch.Tensor]] = None # [ADDED]
     ) -> torch.Tensor:
         """
         Computes the pairwise Causal Effect Matrix C.
@@ -622,7 +633,11 @@ class PCIMAPPOAlgorithm:
                 
                 probs_list = []
                 for k in range(num_agents):
-                    logits = self.agents[k].policy_net(obs_b[:, k, :])
+                    avail_actions_b = None
+                    if available_actions_batch is not None and k in available_actions_batch:
+                        avail_actions_b = available_actions_batch[k][i:end]
+                    
+                    logits = self.agents[k].policy_net(obs_b[:, k, :], available_actions=avail_actions_b)
                     probs = torch.softmax(logits, dim=-1)
                     probs_list.append(probs)
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
@@ -698,7 +713,18 @@ class PCIMAPPOAlgorithm:
         # z_t_batch = torch.cat([joint_o_prev, joint_r_prev], dim=1)
         # z_t_batch = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1)
         # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device) # [SWITCH] prev rewards
+        # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device) # [SWITCH] prev rewards
         dones_batch = torch.tensor([[t['dones'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
+
+        # Extract available actions
+        available_actions_batch = {}
+        if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
+            for agent_id in range(self.num_agents):
+                if agent_id in batch_data[0]['available_actions']:
+                     # t['available_actions'][agent_id] is List[int]
+                     avail_list = [t['available_actions'][agent_id] for t in batch_data]
+                     # Convert to tensor (Batch, ActionDim)
+                     available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
 
         expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
         mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
@@ -706,7 +732,8 @@ class PCIMAPPOAlgorithm:
 
         with torch.no_grad():
             C_matrix = self.compute_causal_rewards(
-                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted'
+                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted',
+                available_actions_batch=available_actions_batch # [ADDED]
             )
             merging_method = 'sum'
             if merging_method == 'max':
@@ -768,11 +795,15 @@ class PCIMAPPOAlgorithm:
             adv = (agent_advantages[agent_id] - agent_advantages[agent_id].mean()) / (agent_advantages[agent_id].std() + 1e-8)
             
             with torch.no_grad():
-                logits = self.agents[agent_id].policy_net(agent_obs)
+                avail_actions_all = None
+                if agent_id in available_actions_batch:
+                    avail_actions_all = available_actions_batch[agent_id]
+
+                logits = self.agents[agent_id].policy_net(agent_obs, available_actions=avail_actions_all)
                 old_log_probs = F.log_softmax(logits, dim=-1).gather(1, my_actions.unsqueeze(1)).squeeze(1)
 
             for _ in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(agent_obs, my_actions)
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(agent_obs, my_actions, available_actions=avail_actions_all)
                 ratio = torch.exp(new_log_probs - old_log_probs.detach())
                 
                 surr1 = ratio * adv

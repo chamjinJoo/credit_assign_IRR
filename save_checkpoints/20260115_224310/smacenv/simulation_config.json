@@ -1,0 +1,23 @@
+{
+  "simulation_info": {
+    "timestamp": "2026-01-15T22:43:10.113007",
+    "environment": "SMACEnv",
+    "num_agents": 3,
+    "obs_dim": 30,
+    "action_dim": 9
+  },
+  "training_config": {
+    "max_iterations": 1500,
+    "max_steps_per_iteration": 2000,
+    "log_interval": 2,
+    "save_interval": 100,
+    "eval_interval": 50,
+    "eval_episodes": 32,
+    "device": "cpu"
+  },
+  "directories": {
+    "base_save_dir": "./save_checkpoints",
+    "simulation_dir": "./save_checkpoints/20260115_224310/smacenv/checkpoints",
+    "checkpoint_dir": "./save_checkpoints/20260115_224310/smacenv/checkpoints"
+  }
+}

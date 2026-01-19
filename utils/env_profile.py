@@ -20,7 +20,7 @@ _project_root = os.path.dirname(_script_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-from envs.multi_agent_env import StagHuntEnv, SimpleStagHuntEnv, ToyCausalEnv, DecTigerEnv
+from envs.multi_agent_env import StagHuntEnv, SMACEnv, SMACv2Env
 
 
 class MARLProfiler:

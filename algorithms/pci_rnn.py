@@ -80,7 +80,7 @@ class PCIRNNAgent:
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim)
         self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim)
 
-    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None) -> Tuple[int, float, Optional[torch.Tensor]]:
+    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None) -> Tuple[int, float, Optional[torch.Tensor]]:
         with torch.no_grad():
             # forward needs (batch, dim), obs is (dim)
             obs_in = obs.unsqueeze(0) if obs.dim() == 1 else obs
@@ -100,10 +100,15 @@ class PCIRNNAgent:
             # self.rnn_state_policy is (layers, dim) -> unsqueeze(0) -> (1, layers, dim)
             curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
             
+            # Handle available actions
+            if available_actions is not None:
+                available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
-                masks_in
+                masks_in,
+                available_actions
             )
             
             # Update internal state
@@ -243,11 +248,13 @@ class PCIRNNAlgorithm:
             w_dim=obs_dim * (num_agents-1),
             outcome_dim=num_agents-1,
             hidden_dim=hidden_dim,
-            action_embedding_dim=8
+            action_embedding_dim=8,
+            x_dim=obs_dim # [ADD] x = o^i_t
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            z_dim=obs_dim * num_agents, # Default Z
+            # z_dim=obs_dim * num_agents, # Default Z
+            z_dim=num_agents, # [SWITCH] Z=prev rewards
             # z_dim=obs_dim * num_agents + num_agents, # [SWITCH] Z = [Joint Obs, Joint Reward]
             # z_dim=obs_dim * num_agents + action_dim * num_agents, # [SWITCH] Z = [Joint Obs, Joint Action]
             # z_dim=num_agents, # [SWITCH] previous reward vector as proxy
@@ -313,10 +320,10 @@ class PCIRNNAlgorithm:
         device = self.device
 
         # === 1. Data Preparation (Vectorized) ===
-        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
+        # joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
+        joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
         # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(batch_size, -1).float()
-        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
         action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         reward_batch = torch.tensor([[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
@@ -342,8 +349,8 @@ class PCIRNNAlgorithm:
         mask_rewards = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
         Y_super = expanded_rewards[mask_rewards].view(batch_size * num_agents, -1)
 
-        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
-        # Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
+        # Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
+        Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
         # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
 
@@ -396,7 +403,8 @@ class PCIRNNAlgorithm:
             batch_agent_ids = idx % num_agents
 
             # --- Update Outcome Bridge h_φ ---
-            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb)
+            # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
+            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=o_mb) # [ADD] x=o_mb
             residuals_mb = y_mb - r_hat_mb
             
             if self.causal_lambda_adaptive_per_agent:
@@ -405,7 +413,8 @@ class PCIRNNAlgorithm:
                     agent_residual_errors[agent_id.item()].append(residual_error)
             
             action_embeds_mb = self.action_embedding_for_kernel(a_mb)
-            kernel_feat_z = torch.cat([z_mb, action_embeds_mb], dim=1)
+            # kernel_feat_z = torch.cat([z_mb, action_embeds_mb], dim=1)
+            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, o_mb], dim=1) # [ADD] x=o_mb
             K_z = self.critic_kernel_z(kernel_feat_z)
 
             reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
@@ -536,7 +545,7 @@ class PCIRNNAlgorithm:
             agent.reset_rnn_state()
         self.last_dones = {i: False for i in range(self.num_agents)}
     
-    def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
+    def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         self.temp_hidden_states = {} # Store current states for store_transition
         self.temp_masks = {} # Store masks used
@@ -546,8 +555,13 @@ class PCIRNNAlgorithm:
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
             mask_tensor = torch.tensor([mask], dtype=torch.float32, device=self.device)
             
+            # Prepare available actions tensor
+            avail_actions_tensor = None
+            if available_actions is not None and agent_id in available_actions:
+                avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
+
             # Policy
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor)
+            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             # Value (Update state)
             _, v_state = self.agents[agent_id].get_value(obs, mask_tensor)
@@ -568,7 +582,8 @@ class PCIRNNAlgorithm:
         rewards: Dict[int, float],
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
-        info: Dict = None
+        info: Dict = None,
+        available_actions: Optional[Dict[int, List[int]]] = None # [ADDED]
     ):
         # Update last_dones for next step's mask
         self.last_dones = dones.copy()
@@ -584,6 +599,7 @@ class PCIRNNAlgorithm:
             dones=dones,
             masks=self.temp_masks,
             hidden_states=self.temp_hidden_states, 
+            available_actions=available_actions, # [ADDED]
             info=info
         )
     
@@ -657,6 +673,7 @@ class PCIRNNAlgorithm:
         hidden_states_batch: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None,
         dones_batch: Optional[torch.Tensor] = None,
         baseline_type: str = 'weighted',
+        available_actions_batch: Optional[Dict[int, torch.Tensor]] = None # [ADDED]
     ) -> torch.Tensor:
         """
         Computes the pairwise Causal Effect Matrix C.
@@ -705,12 +722,20 @@ class PCIRNNAlgorithm:
                 
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
+
+                # [ADDED] Expand x for all actions
+                obs_flat = obs_b.view(-1, self.obs_dim)
+                x_expanded = obs_flat.repeat_interleave(action_dim, dim=0)
                 
-                reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
+                # reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
+                reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded) # [ADD] x=o_mb
+                
                 reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents - 1)
-                
                 r_hat_all = reg_estimates_cf # no q
-                
+
+                # collect r_hat by factual actions
+                r_hat_factual = r_hat_all[torch.arange(r_hat_all.size(0)), actions_flat]
+
                 # [최적화] 모든 agent의 hidden states와 masks를 미리 준비
                 probs_list = []
                 if hidden_states_batch is not None and dones_batch is not None:
@@ -729,45 +754,29 @@ class PCIRNNAlgorithm:
                         precomputed_masks[k] = masks_b
                 
                 for k in range(num_agents):
+                    avail_actions_b = None
+                    if available_actions_batch is not None and k in available_actions_batch:
+                        avail_actions_b = available_actions_batch[k][i:end]
+
                     if hidden_states_batch is not None and dones_batch is not None:
-                        # [최적화] 미리 준비된 states와 masks 사용
                         p_state_b = precomputed_states[k]
                         masks_b = precomputed_masks[k]
-                        logits, _ = self.agents[k].policy_net(obs_b[:, k, :], p_state_b, masks_b)
+                        
+                        logits, _ = self.agents[k].policy_net(obs_b[:, k, :], p_state_b, masks_b, available_actions=avail_actions_b)
                     else:
                         # Fallback (zeros) if not provided - e.g. for non-recurrent compatibility or testing
                         bs = obs_b.size(0)
                         # RNNLayer expects (Batch, recurrent_N, hidden_dim) for batch processing
                         dummy_state = torch.zeros(bs, self.recurrent_N, self.hidden_dim, device=self.device)
-                        dummy_mask = torch.ones(bs, 1, device=self.device)
-                        logits, _ = self.agents[k].policy_net(obs_b[:, k, :], dummy_state, dummy_mask)
+                        dummy_mask = torch.ones(bs, 1, device=self.device)                            
+                        logits, _ = self.agents[k].policy_net(obs_b[:, k, :], dummy_state, dummy_mask, available_actions=avail_actions_b)
                         
                     probs = torch.softmax(logits, dim=-1)
                     probs_list.append(probs)
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
 
-                #-----Original baseline calculation-----#
-                # factual_indices = actions_flat
-                # r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
-                # mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
-                # mask.scatter_(1, factual_indices.unsqueeze(1), False)
-                
-                # if baseline_type == 'weighted':
-                #     probs_cf = action_probs_flat.clone()
-                #     probs_cf.scatter_(1, factual_indices.unsqueeze(1), 0.0)
-                #     sum_probs = probs_cf.sum(dim=1, keepdim=True)
-                #     baseline = (probs_cf.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
-                # elif baseline_type == 'average':
-                #     r_hat_masked = r_hat_all.clone()
-                #     mask_expanded = mask.unsqueeze(-1).expand_as(r_hat_all)
-                #     r_hat_masked[~mask_expanded] = 0.0
-                #     count = mask.sum(dim=1, keepdim=True).float()
-                #     baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
-                # else:
-                #     raise ValueError(f"Invalid baseline type: {baseline_type}")
-                ########################################
-
-                # new baseline calculation: contain factual action
+                # baseline 1: contain factual action
+                """
                 if baseline_type == 'weighted':
                     # 모든 action의 확률을 사용 (factual action 포함)
                     sum_probs = action_probs_flat.sum(dim=1, keepdim=True)
@@ -777,16 +786,32 @@ class PCIRNNAlgorithm:
                     baseline = r_hat_all.mean(dim=1)
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
+                """
+
+                # baseline 2: exclude factual action
+                factual_mask = torch.zeros_like(action_probs_flat).scatter_(1, actions_flat.unsqueeze(1), 1.0)
+                non_factual_mask = 1.0 - factual_mask
+                
+                if baseline_type == 'weighted':
+                    # Factual action을 제외한 나머지 action들에 대해 조건부 확률(conditional probability)로 가중 평균 계산
+                    probs_counterfactual = action_probs_flat * non_factual_mask
+                    renormalized_probs = probs_counterfactual / (probs_counterfactual.sum(dim=1, keepdim=True) + 1e-10)
+                    baseline = (renormalized_probs.unsqueeze(2) * r_hat_all).sum(dim=1)
+                elif baseline_type == 'averaged':
+                    # Factual action을 제외한 나머지 action들의 단순 평균 계산
+                    baseline = (r_hat_all * non_factual_mask.unsqueeze(2)).sum(dim=1) / (action_dim - 1)
+                else:
+                    raise ValueError(f"Invalid baseline type: {baseline_type}")
 
                 # using factual rewards instead of predicted rewards
                 r_factual = others_rewards_flat
-                
+
                 # using real rewards
                 raw_effects = r_factual - baseline
                 
-                # using causal domain information: prediction with factual action
+                # using outcome bridge 
                 # raw_effects = r_hat_factual - baseline
-                
+
                 # Reshape to [B, N, N-1]
                 effects_reshaped = raw_effects.view(curr_bs, num_agents, num_agents - 1)
                 
@@ -800,6 +825,56 @@ class PCIRNNAlgorithm:
                 C_matrix[i:end] = C_chunk
             
         return C_matrix
+
+    def causal_intrinsic_reward(
+        self, 
+        agent_id: int, 
+        w_t: torch.Tensor, 
+        z_t: torch.Tensor, 
+        o_t: torch.Tensor, 
+        current_actions: Dict[int, int], 
+        current_rewards: Dict[int, float]
+    ) -> Tuple[float, float]:
+        """
+        Wrapper for compute_causal_rewards to be used by evaluation scripts.
+        Returns:
+            delta: The calculated intrinsic reward (causal effect sum).
+            dummy: A placeholder return value.
+        """
+        with torch.no_grad():
+            # Actions to tensor
+            actions_list = [current_actions[i] for i in range(self.num_agents)]
+            actions_batch = torch.tensor([actions_list], dtype=torch.long, device=self.device) # (1, N)
+            
+            # Rewards to tensor
+            rewards_list = [current_rewards[i] for i in range(self.num_agents)]
+            rewards_batch = torch.tensor([rewards_list], dtype=torch.float32, device=self.device) # (1, N)
+            
+            # Reconstruct full observations batch (1, N, D)
+            # Assuming w_t is concatenation of N observations of obs_dim
+            full_obs_batch = w_t.view(1, self.num_agents, -1)
+            B, N, D = full_obs_batch.shape
+
+            # Prepare w_t_batch (1, N, (N-1)*D) - Confounders (other agents' observations)
+            expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
+            mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
+            w_t_batch = expanded_obs[mask].view(B, N, (N-1)*D)
+
+            z_t_batch = z_t.unsqueeze(0) # (1, z_dim) - This might need similar processing if used, but currently z_t is just passed through or unused if Z=prev_obs.
+            # Actually compute_causal_rewards uses z_t_batch. Line 598: z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(...)
+            # If z_t is prev joint obs, then (1, N*D). 
+            # z_t_repeated becomes (1, N, N*D) -> (N, N*D).
+            # This seems correct for z_t if it represents the global context.
+            
+            C_matrix = self.compute_causal_rewards(
+                w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted'
+            )
+            
+            # Calculate delta for the specific agent (sum of effects this agent has on others)
+            # C_matrix[0, agent_id, :] contains effects of agent_id on others
+            delta = C_matrix[0, agent_id].sum().item()
+            
+            return delta, 0.0
 
     def _chunk_sequence(self, tensor: torch.Tensor, chunk_len: int) -> torch.Tensor:
         """
@@ -855,16 +930,27 @@ class PCIRNNAlgorithm:
                         v_states = torch.stack([t['hidden_states'][agent_id][1] for t in batch_data]).to(self.device)
                         hidden_states_batch[agent_id] = (p_states, v_states)
 
+        # Extract available actions
+        available_actions_batch = {}
+        if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
+            for agent_id in range(self.num_agents):
+                if agent_id in batch_data[0]['available_actions']:
+                     # t['available_actions'][agent_id] is List[int]
+                     avail_list = [t['available_actions'][agent_id] for t in batch_data]
+                     # Convert to tensor (Batch, ActionDim)
+                     available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
+
         with torch.no_grad():
             C_matrix = self.compute_causal_rewards(
                 w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
                 hidden_states_batch=hidden_states_batch,
                 dones_batch=dones_batch,
-                baseline_type='weighted'
+                baseline_type='weighted',
+                available_actions_batch=available_actions_batch # [ADDED]
             )
             delta = C_matrix.sum(dim=2) # sum merging
 
-            clip_delta = 0.2
+            clip_delta = 0.02 # NOTE: 0.2 for StagHunt, 0.02 for SMAC
             delta[torch.abs(delta) < clip_delta] = 0.0
 
             # Apply Adaptive Lambda per agent
@@ -988,6 +1074,10 @@ class PCIRNNAlgorithm:
             p_states_all = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device) # (T, recurrent_N, hidden_dim)
             v_states_all = torch.stack([t['hidden_states'][agent_id][1] for t in batch_data]).to(self.device)
             
+            avail_actions_all = None
+            if agent_id in available_actions_batch:
+                avail_actions_all = available_actions_batch[agent_id] # (T, ActionDim)
+
             T_total = agent_obs.size(0)
             chunk_len = self.rnn_chunk_length
             num_chunks = T_total // chunk_len
@@ -998,6 +1088,10 @@ class PCIRNNAlgorithm:
                 my_actions_chunked = self._chunk_sequence(my_actions, chunk_len) 
                 rnn_masks_main = masks_batch[agent_id] # (T, 1)
                 rnn_masks_chunked = self._chunk_sequence(rnn_masks_main, chunk_len) # (L, B, 1)
+                
+                avail_actions_chunked = None
+                if avail_actions_all is not None:
+                    avail_actions_chunked = self._chunk_sequence(avail_actions_all, chunk_len) # (L, B, ActionDim)
                 
                 # Hidden States
                 # We need hidden states at indices: 0, chunk_len, 2*chunk_len, ...
@@ -1019,6 +1113,10 @@ class PCIRNNAlgorithm:
                 my_actions_batch = my_actions_chunked.reshape(-1) # Flatten (L*B)
                 adv_batch = adv_chunked.reshape(-1)
                 ret_batch = ret_chunked.reshape(-1)
+                
+                avail_actions_batch_merged = None
+                if avail_actions_chunked is not None:
+                     avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1)) # Flatten (L*B, ActionDim)
 
             else:
                 # Fallback to single batch
@@ -1031,13 +1129,14 @@ class PCIRNNAlgorithm:
                 my_actions_batch = my_actions
                 adv_batch = adv
                 ret_batch = agent_returns[agent_id]
+                avail_actions_batch_merged = avail_actions_all
             
             with torch.no_grad():
-                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch)
+                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
                 old_log_probs = old_log_probs.detach()
                 
             for epoch in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch)
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
                 
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 

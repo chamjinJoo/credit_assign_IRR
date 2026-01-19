@@ -41,13 +41,15 @@ class PolicyNetwork(nn.Module):
         
     def forward(
         self, 
-        obs: torch.Tensor
+        obs: torch.Tensor,
+        available_actions: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Forward pass using only observation.
         
         Args:
             obs: Observations [batch_size, obs_dim]
+            available_actions: Available actions mask [batch_size, action_dim]
             
         Returns:
             action_logits: Action logits [batch_size, action_dim]
@@ -56,15 +58,19 @@ class PolicyNetwork(nn.Module):
         obs_encoded = self.policy_network(obs)
         
         # Apply policy head
-        action_logits = self.policy_head(obs_encoded)
+        action_logits = self.policy_head(obs_encoded) # [batch_size, action_dim]
+
+        if available_actions is not None:
+            action_logits[available_actions == 0] = -1e10
 
         return action_logits
     
     def get_action_and_log_prob(
         self, 
-        obs: torch.Tensor
+        obs: torch.Tensor,
+        available_actions: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        action_logits = self.forward(obs)
+        action_logits = self.forward(obs, available_actions)
         # Use logits directly for numerical stability
         dist = Categorical(logits=action_logits)
         
@@ -76,9 +82,10 @@ class PolicyNetwork(nn.Module):
     def evaluate_actions(
         self, 
         obs: torch.Tensor, 
-        actions: torch.Tensor
+        actions: torch.Tensor,
+        available_actions: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        action_logits = self.forward(obs)
+        action_logits = self.forward(obs, available_actions)
         
         # Use logits directly for numerical stability
         dist = Categorical(logits=action_logits)

@@ -46,7 +46,7 @@ class IPPORNNAgent:
     def reset_rnn_state(self):
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
 
-    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, return_rnn_state=True) -> Tuple[int, float, Optional[torch.Tensor]]:
+    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None, return_rnn_state=True) -> Tuple[int, float, Optional[torch.Tensor]]:
         """
         Get action from policy with RNN state handling.
         """
@@ -64,10 +64,15 @@ class IPPORNNAgent:
             # RNNLayer expects (Batch, Layers, Dim) -> (1, Layers, Dim)
             curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
             
+            # Handle available actions
+            if available_actions is not None:
+                available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
-                masks_in
+                masks_in,
+                available_actions
             )
             
             # Update internal state (Layers, Dim)
@@ -104,7 +109,9 @@ class IPPORNNAlgorithm:
         num_batches: int = 1, 
         device: str = "cpu",
         rnn_chunk_length: int = 16,
+        global_reward: bool = False,
     ):
+        self.global_reward = global_reward
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -184,7 +191,7 @@ class IPPORNNAlgorithm:
             self.rnn_states_value[agent_id] = next_rnn_state.squeeze(0)
         return value.item(), curr_rnn_state.squeeze(0).clone()
 
-    def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
+    def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         self.temp_hidden_states = {}
         self.temp_masks = {}
@@ -193,8 +200,13 @@ class IPPORNNAlgorithm:
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
             mask_tensor = torch.tensor([mask], dtype=torch.float32, device=self.device)
             
+            # Prepare available actions tensor
+            avail_actions_tensor = None
+            if available_actions is not None and agent_id in available_actions:
+                avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
+
             # Policy
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor)
+            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             # Value
             _, v_state = self._get_value(agent_id, obs, mask_tensor)
@@ -215,7 +227,8 @@ class IPPORNNAlgorithm:
         rewards: Dict[int, float],
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
-        info: Dict = None
+        info: Dict = None,
+        available_actions: Optional[Dict[int, List[int]]] = None # [ADDED]
     ):
         self.last_dones = dones.copy()
         
@@ -230,7 +243,8 @@ class IPPORNNAlgorithm:
             dones=dones,
             masks=self.temp_masks,
             hidden_states=self.temp_hidden_states,
-            info=info
+            info=info,
+            available_actions=available_actions # [ADDED]
         )
 
     def compute_gae(self, rewards, values, next_value, dones):
@@ -274,13 +288,32 @@ class IPPORNNAlgorithm:
         full_obs_batch = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data]).to(self.device) # Not used?
         actions_batch = torch.stack([self._concatenate_actions(t['bold_a_t']) for t in batch_data]).to(self.device)
         
+        # Extract available actions
+        available_actions_batch = {}
+        if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
+            for agent_id in range(self.num_agents):
+                if agent_id in batch_data[0]['available_actions']:
+                     # t['available_actions'][agent_id] is List[int]
+                     avail_list = [t['available_actions'][agent_id] for t in batch_data]
+                     # Convert to tensor (Batch, ActionDim)
+                     available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
+        
         # Prepare data per agent
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
             
             # Extract Batch Data
+            # Extract Batch Data
             agent_obs = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
-            agent_rewards = torch.tensor([t['bold_r_t'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+            
+            if self.global_reward:
+                 # Global reward (mean of all agents)
+                 rewards_list = [sum(t['bold_r_t'].values()) / self.num_agents for t in batch_data]
+                 agent_rewards = torch.tensor(rewards_list, dtype=torch.float32, device=self.device)
+            else:
+                 # Individual reward
+                 agent_rewards = torch.tensor([t['bold_r_t'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+                 
             agent_dones = torch.tensor([t['dones'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             masks_batch = torch.tensor([t['masks'][agent_id] for t in batch_data], device=self.device).unsqueeze(1)
             
@@ -352,6 +385,11 @@ class IPPORNNAlgorithm:
                 p_h0_batch = p_states_all[chunk_indices] # (Chunks, L, D) expecting (B, L, D) -> Correct
                 v_h0_batch = v_states_all[chunk_indices]
                 
+                avail_actions_batch_merged = None
+                if agent_id in available_actions_batch:
+                     avail_actions_chunked = self._chunk_sequence(available_actions_batch[agent_id], chunk_len)
+                     avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1))
+
             else:
                  rnn_obs_batch = agent_obs.unsqueeze(1)
                  rnn_masks_batch = masks_batch
@@ -360,13 +398,17 @@ class IPPORNNAlgorithm:
                  adv_batch = adv
                  p_h0_batch = p_states_all[0].unsqueeze(0)
                  v_h0_batch = v_states_all[0].unsqueeze(0)
+                 
+                 avail_actions_batch_merged = None
+                 if agent_id in available_actions_batch:
+                    avail_actions_batch_merged = available_actions_batch[agent_id]
 
             with torch.no_grad():
-                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch)
+                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
                 old_log_probs = old_log_probs.detach()
             
             for _ in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch)
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
                 
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 surr1 = ratio * adv_batch

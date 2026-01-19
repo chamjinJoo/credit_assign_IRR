@@ -95,6 +95,21 @@ def create_environment(env_config) -> MultiAgentEnv:
             seed=config_dict.get('seed', None)
         )
     
+    elif env_name == 'SMAC' or env_name == 'StarCraft2':
+        from .multi_agent_env import SMACEnv
+        return SMACEnv(
+            map_name=config_dict.get('map_name', '3m'),
+            seed=config_dict.get('seed', None)
+        )
+
+    elif env_name == 'SMACv2':
+        from .multi_agent_env import SMACv2Env
+        return SMACv2Env(
+            map_name=config_dict.get('map_name', 'protoss_5_vs_5'),
+            seed=config_dict.get('seed', None),
+            capability_config=config_dict.get('capability_config', None)
+        )
+    
     else:
         raise ValueError(f"Unknown environment: {env_name}")
 
@@ -112,7 +127,10 @@ def get_available_environments() -> Dict[str, str]:
         'SimpleStagHuntEnv': 'Simple Stag Hunt 게임 이론 환경 (2 에이전트)',
         'MPESimpleSpread': 'MPE Simple Spread 환경 (N 에이전트)',
         'MPE': 'MPE Simple Spread 환경 (N 에이전트)',
-        'mpe_simple_spread': 'MPE Simple Spread 환경 (N 에이전트)'
+        'mpe_simple_spread': 'MPE Simple Spread 환경 (N 에이전트)',
+        'SMAC': 'StarCraftII 환경 (N 에이전트)',
+        'StarCraft2': 'StarCraftII 환경 (N 에이전트)',
+        'SMACv2': 'StarCraftII 환경 (N 에이전트)'
     }
 
 

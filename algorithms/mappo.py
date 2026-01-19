@@ -75,7 +75,9 @@ class MAPPOAlgorithm:
         batch_size: int = 64,
         num_batches: int = 4,  # Number of batches K for training
         device: str = "cpu",  # Device for computation
+        global_reward: bool = True,
     ):
+        self.global_reward = global_reward
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -112,6 +114,7 @@ class MAPPOAlgorithm:
         self.value_net = ValueNetwork(
             obs_dim=obs_dim * num_agents,
             hidden_dim=hidden_dim,
+            out_dim=1 if global_reward else num_agents
         )
         # Optimizer for the shared value network
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
@@ -251,45 +254,112 @@ class MAPPOAlgorithm:
             if agent_id in batch_data[0]['bold_o_t']:
                 agent_obs_tensors[agent_id] = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
 
-        # === 1. Compute Global Rewards (sum of all agents' rewards) ===
-        global_rewards = []
-        global_dones = []
-        
-        for t in batch_data:
-            # Sum all agent rewards for global reward
-            global_reward = sum(t['bold_r_t'].values()) / (self.num_agents)
-            global_rewards.append(global_reward)
+        # === 1. Compute Rewards & Returns ===
+        if self.global_reward:
+            # === Global Rewards (sum of all agents) ===
+            global_rewards = []
+            global_dones = []
+            for t in batch_data:
+                global_reward = sum(t['bold_r_t'].values()) / (self.num_agents)
+                global_rewards.append(global_reward)
+                global_done = any(t['dones'].values())
+                global_dones.append(global_done)
             
-            # Global done: episode ends if any agent is done
-            global_done = any(t['dones'].values())
-            global_dones.append(global_done)
-        
-        all_global_rewards = torch.tensor(global_rewards, dtype=torch.float32, device=self.device)
-        all_global_dones = torch.tensor(global_dones, dtype=torch.float32, device=self.device)
-        
-        # === 2. Compute Global Returns/Advantages using Centralized Critic ===
-        # Get current global values from centralized critic
-        with torch.no_grad():
-            global_values = self.value_net(global_obs_tensor).squeeze()
-        
-        # Estimate next state value for bootstrapping
-        with torch.no_grad():
-            last = batch_data[-1]
-            is_terminal = all_global_dones[-1].item()
-            if not is_terminal:
-                next_global_obs = self._concatenate_observations(last.get('next_observations', last['bold_o_t']))
-                next_global_values = self.value_net(next_global_obs.unsqueeze(0)).item()
-            else:
-                next_global_values = 0.0
+            all_rewards = torch.tensor(global_rewards, dtype=torch.float32, device=self.device)
+            all_dones_tensor = torch.tensor(global_dones, dtype=torch.float32, device=self.device)
 
-        advantages_global, returns_global = self.compute_gae(
-            all_global_rewards.tolist(), 
-            global_values.tolist(), 
-            next_global_values, 
-            all_global_dones.tolist()
-        )
-        global_returns = torch.tensor(returns_global, dtype=torch.float32, device=self.device)
-        global_advantages = torch.tensor(advantages_global, dtype=torch.float32, device=self.device)
+            # Centralized Critic for Global Value
+            with torch.no_grad():
+                # [Batch, 1] -> [Batch]
+                global_values = self.value_net(global_obs_tensor).squeeze()
+            
+            # Next Value
+            with torch.no_grad():
+                last = batch_data[-1]
+                is_terminal = all_dones_tensor[-1].item()
+                if not is_terminal:
+                    next_global_obs = self._concatenate_observations(last.get('next_observations', last['bold_o_t']))
+                    next_val_item = self.value_net(next_global_obs.unsqueeze(0)).item()
+                else:
+                    next_val_item = 0.0
+
+            advantages_global, returns_global = self.compute_gae(
+                all_rewards.tolist(), 
+                global_values.tolist(), 
+                next_val_item, 
+                all_dones_tensor.tolist()
+            )
+            all_returns = torch.tensor(returns_global, dtype=torch.float32, device=self.device)
+            all_advantages = torch.tensor(advantages_global, dtype=torch.float32, device=self.device)
+
+        else:
+            # === Individual Rewards ===
+            rewards_list = []
+            dones_list = []
+            
+            # Reconstruct batch-wise individual rewards
+            for t in batch_data:
+                step_rewards = [t['bold_r_t'].get(i, 0.0) for i in range(self.num_agents)]
+                rewards_list.append(step_rewards)
+                
+                # For individual value estimation, what is 'done'? 
+                # Usually episode done is shared, but if agents die individually... 
+                # Let's assume shared episode done for now for simplicity or use individual 'dones' if available.
+                step_dones = [t['dones'].get(i, False) for i in range(self.num_agents)]
+                dones_list.append(step_dones)
+
+            all_rewards = torch.tensor(rewards_list, dtype=torch.float32, device=self.device) # [B, N]
+            all_dones_tensor = torch.tensor(dones_list, dtype=torch.float32, device=self.device) # [B, N]
+
+            # Centralized Critic for Individual Values
+            # output: [Batch, N]
+            with torch.no_grad():
+                all_values = self.value_net(global_obs_tensor) 
+
+            # Next Values
+            with torch.no_grad():
+                last = batch_data[-1]
+                # Check terminal per agent?
+                # all_values is [B, N], next_val should be [1, N] or list
+                next_vals_list = []
+                next_global_obs = self._concatenate_observations(last.get('next_observations', last['bold_o_t']))
+                next_pred = self.value_net(next_global_obs.unsqueeze(0)).squeeze(0) # [N]
+                
+                for i in range(self.num_agents):
+                    if all_dones_tensor[-1, i].item():
+                        next_vals_list.append(0.0)
+                    else:
+                        next_vals_list.append(next_pred[i].item())
+            
+            # Compute GAE per agent
+            returns_list = []
+            advantages_list = []
+            
+            # all_rewards: [B, N], all_values: [B, N]
+            for i in range(self.num_agents):
+                adv, ret = self.compute_gae(
+                    all_rewards[:, i].tolist(),
+                    all_values[:, i].tolist(),
+                    next_vals_list[i],
+                    all_dones_tensor[:, i].tolist()
+                )
+                returns_list.append(ret)
+                advantages_list.append(adv)
+            
+            # Stack -> [N, B] -> Transpose -> [B, N]
+            all_returns = torch.tensor(returns_list, dtype=torch.float32, device=self.device).transpose(0, 1)
+            all_advantages = torch.tensor(advantages_list, dtype=torch.float32, device=self.device).transpose(0, 1)
+
+        # Normalize Advantages
+        if self.global_reward:
+             advantages_tensor = all_advantages
+             if advantages_tensor.numel() > 1:
+                advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
+        else:
+             # Normalize per batch or per agent?
+             advantages_tensor = all_advantages # [B, N]
+             if advantages_tensor.numel() > 1:
+                advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
 
         # === Agent-Specific Policy Updates ===
         for agent_id in range(self.num_agents):
@@ -303,18 +373,20 @@ class MAPPOAlgorithm:
                 logits = self.agents[agent_id].policy_net(agent_obs)
                 old_log_probs_tensor = F.log_softmax(logits, dim=-1).gather(1, agent_actions.unsqueeze(1)).squeeze(1)
 
-            # 3. Advantage for the POLICY update (using agent-specific SHAPED rewards)
-            advantages_tensor = global_advantages
-            advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
+            # 3. Advantage for the POLICY update
+            if self.global_reward:
+                target_advantage = advantages_tensor
+            else:
+                target_advantage = advantages_tensor[:, agent_id]
 
             # === PPO Policy Update Loop (for this agent) ===
             for _ in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(agent_obs, agent_actions)
                 ratio = torch.exp(new_log_probs - old_log_probs_tensor.detach())
 
-                # Policy loss uses the agent-specific advantage from SHAPED rewards
-                surr1 = ratio * advantages_tensor
-                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * advantages_tensor
+                # Policy loss
+                surr1 = ratio * target_advantage
+                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * target_advantage
                 policy_loss = -torch.min(surr1, surr2).mean()
                 
                 entropy_loss = -entropy.mean()
@@ -330,24 +402,22 @@ class MAPPOAlgorithm:
                 agent_losses[f'agent_{agent_id}_policy_loss'] += policy_loss.item()
                 agent_losses[f'agent_{agent_id}_entropy_loss'] += entropy_loss.item()
         
-        # === Centralized Value Function Update (using global returns) ===
+        # === Centralized Value Function Update ===
         for _ in range(self.ppo_epochs):
-            # Train the centralized value network on global returns
-            new_global_values = self.value_net(global_obs_tensor).squeeze()
-            value_loss = F.mse_loss(new_global_values, global_returns)
+            # output: [Batch, 1] (global) or [Batch, N] (individual)
+            new_values = self.value_net(global_obs_tensor)
+            
+            if self.global_reward:
+                 new_values = new_values.squeeze() # [Batch]
+                 # all_returns is [Batch]
+            
+            # MSE Loss
+            value_loss = F.mse_loss(new_values, all_returns)
             
             self.value_optimizer.zero_grad()
             (self.value_coef * value_loss).backward()
             torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), self.max_grad_norm)
             self.value_optimizer.step()
-
-            # Average the value loss across all agents, TODO: not sure it is necessary in MAPPO.
-            # avg_value_loss = value_loss / self.num_agents
-            # self.value_optimizer.zero_grad()
-            # (self.value_coef * avg_value_loss).backward()
-            # torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), self.max_grad_norm)
-            # self.value_optimizer.step()
-            # agent_losses['value_loss'] += avg_value_loss.item()
 
             agent_losses['value_loss'] += value_loss.item()
 

@@ -74,7 +74,9 @@ class IPPOAlgorithm:
         batch_size: int = 64,
         num_batches: int = 4,  # Number of batches K for training
         device: str = "cpu",  # Device for computation
+        global_reward: bool = False,
     ):
+        self.global_reward = global_reward
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -268,6 +270,19 @@ class IPPOAlgorithm:
             
             all_agent_rewards[agent_id] = agent_rewards
             all_agent_dones[agent_id] = agent_dones
+            
+        # Calculate global rewards if enabled
+        if self.global_reward:
+             global_rewards = []
+             for t in batch_data:
+                 global_r = sum(t['bold_r_t'].values()) / self.num_agents
+                 global_rewards.append(global_r)
+             
+             global_rewards_tensor = torch.tensor(global_rewards, dtype=torch.float32, device=self.device)
+             
+             # Override individual rewards with global reward
+             for agent_id in all_agent_rewards:
+                 all_agent_rewards[agent_id] = global_rewards_tensor
 
         # === 2. Compute Individual Agent Returns/Advantages using SHAPED rewards ===
         agent_returns = {}

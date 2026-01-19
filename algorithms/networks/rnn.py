@@ -94,23 +94,25 @@ class RNNPolicyNetwork(nn.Module):
         self.rnn = RNNLayer(hidden_dim, hidden_dim, recurrent_N, use_orthogonal=True)
         self.output_layer = nn.Linear(hidden_dim, action_dim)
 
-    def forward(self, obs, rnn_states, masks):
+    def forward(self, obs, rnn_states, masks, available_actions=None):
         x = self.feature_extractor(obs)
         if x.dim() == 3:
             x = x.reshape(-1, x.size(-1))
         x, rnn_states = self.rnn(x, rnn_states, masks)
         logits = self.output_layer(x)
+        if available_actions is not None:
+            logits[available_actions == 0] = -1e10
         return logits, rnn_states
 
-    def get_action_and_log_prob(self, obs, rnn_states, masks):
-        logits, rnn_states = self.forward(obs, rnn_states, masks)
+    def get_action_and_log_prob(self, obs, rnn_states, masks, available_actions=None):
+        logits, rnn_states = self.forward(obs, rnn_states, masks, available_actions)
         dist = torch.distributions.Categorical(logits=logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
         return action, log_prob, rnn_states
 
-    def evaluate_actions(self, obs, rnn_states, action, masks):
-        logits, _ = self.forward(obs, rnn_states, masks)
+    def evaluate_actions(self, obs, rnn_states, action, masks, available_actions=None):
+        logits, _ = self.forward(obs, rnn_states, masks, available_actions)
         dist = torch.distributions.Categorical(logits=logits)
         log_prob = dist.log_prob(action)
         entropy = dist.entropy()
