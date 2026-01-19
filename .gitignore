@@ -1,5 +1,6 @@
 # checkpoints
-checkpoints/
+save_checkpoints/
+save_animations/
 
 # logs
 logs/
