@@ -16,7 +16,7 @@ algorithm:
   clip_epsilon: 0.2
   entropy_coef: 0.01
   value_coef: 0.5
-  max_grad_norm: 0.5
+  max_grad_norm: 10
   ppo_epochs: 4
   batch_size: 1
   causal_lambda: 1.0

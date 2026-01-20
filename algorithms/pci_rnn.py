@@ -950,7 +950,7 @@ class PCIRNNAlgorithm:
             )
             delta = C_matrix.sum(dim=2) # sum merging
 
-            clip_delta = 0.02 # NOTE: 0.2 for StagHunt, 0.02 for SMAC
+            clip_delta = 0.2 # NOTE: 0.2 for StagHunt, 0.02 for SMAC
             delta[torch.abs(delta) < clip_delta] = 0.0
 
             # Apply Adaptive Lambda per agent

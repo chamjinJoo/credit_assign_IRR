@@ -120,7 +120,7 @@ class RNNPolicyNetwork(nn.Module):
 
 
 class RNNValueNetwork(nn.Module):
-    def __init__(self, obs_dim, hidden_dim=64, recurrent_N=1):
+    def __init__(self, obs_dim, hidden_dim=64, recurrent_N=1, out_dim=1):
         super(RNNValueNetwork, self).__init__()
         self._hidden_dim = hidden_dim
         self._recurrent_N = recurrent_N
@@ -130,7 +130,7 @@ class RNNValueNetwork(nn.Module):
             nn.LayerNorm(hidden_dim)
         )
         self.rnn = RNNLayer(hidden_dim, hidden_dim, recurrent_N, use_orthogonal=True)
-        self.output_layer = nn.Linear(hidden_dim, 1)
+        self.output_layer = nn.Linear(hidden_dim, out_dim)
 
     def forward(self, obs, rnn_states, masks):
         x = self.feature_extractor(obs)

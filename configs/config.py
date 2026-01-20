@@ -223,8 +223,8 @@ def parse_args() -> argparse.Namespace:
                         help='Enable adaptive causal lambda per agent (true/false)')
     parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
                         help='Use shared value network for all agents (true/false)')
-    parser.add_argument('--lr', type=float, default=3e-4,
-                        help='Learning rate')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='Learning Rate')
     parser.add_argument('--recurrent-N', type=int, default=1,
                         help='Number of recurrent layers for RNN')
     parser.add_argument('--global-reward', type=str, default=None,

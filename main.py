@@ -252,7 +252,6 @@ def create_algorithm(env, config):
     
     return algorithm
 
-
 def run_causal_evaluation(env, algorithm, args, logger):
     """
     Causal effect 평가를 실행합니다.
@@ -397,6 +396,7 @@ def main():
         wandb_run_name = algorithm_type
     
     trainer = Trainer(
+        config=config,
         env=env,
         algorithm=algorithm,
         max_iterations=config.training.max_iterations,

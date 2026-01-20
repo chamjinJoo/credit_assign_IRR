@@ -20,6 +20,10 @@ seed=42
 eval "$(conda shell.bash hook)"
 conda activate pcimarl
 
+# CuBLAS workspace config for deterministic behavior
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
 python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
     --config ${config} --model ${model} --max-steps ${max_steps_per_iteration} \
-    --max-iterations ${max_iterations} --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb 
+    --max-iterations ${max_iterations} --log-interval ${log_interval} --device ${device} --seed ${seed} \
+    --use-wandb --wandb-project pci-marl-staghunt

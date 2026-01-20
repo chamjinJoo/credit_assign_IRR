@@ -30,4 +30,4 @@ python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forag
     --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
     --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb
+    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-staghunt

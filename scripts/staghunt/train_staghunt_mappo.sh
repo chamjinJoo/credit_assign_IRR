@@ -22,5 +22,5 @@ conda activate pcimarl
 
 python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
     --config ${config} --model ${model} --max-steps ${max_steps_per_iteration} \
-    --max-iterations ${max_iterations} --log-interval ${log_interval} \
-    --use-wandb --device ${device} --seed ${seed} 
+    --max-iterations ${max_iterations} --log-interval ${log_interval} --device ${device} --seed ${seed} \
+    --use-wandb --wandb-project pci-marl-staghunt

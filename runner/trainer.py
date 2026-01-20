@@ -52,6 +52,7 @@ class Trainer:
     
     def __init__(
         self,
+        config: Dict,
         env: MultiAgentEnv,
         algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm],
         max_iterations: int = 1000,
@@ -66,6 +67,7 @@ class Trainer:
         wandb_run_name: Optional[str] = None,
         device: str = "cpu"
     ):
+        self.config = config
         self.env = env
         self.algorithm = algorithm
         self.max_iterations = max_iterations
@@ -128,14 +130,7 @@ class Trainer:
             wandb.init(
                 project=wandb_project,
                 name=wandb_run_name,
-                config={
-                    "algorithm_type": algorithm_type,
-                    "num_agents": env.num_agents,
-                    "obs_dim": env.get_obs_dim(),
-                    "action_dim": env.get_action_dim(),
-                    "max_iterations": max_iterations,
-                    "max_steps_per_iteration": max_steps_per_iteration,
-                }
+                config=config
             )
             
             # Define metrics for better visualization

@@ -27,6 +27,5 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
     --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
-    --recurrent-N ${recurrent_N} \
-    --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb
+    --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
+    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-staghunt
