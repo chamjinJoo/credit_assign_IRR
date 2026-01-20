@@ -21,7 +21,7 @@ class MAPPORNNAgent:
         action_dim: int,
         hidden_dim: int = 64,
         recurrent_N: int = 1,
-        lr: float = 3e-4,
+        lr_actor: float = 3e-4,
         device: str = "cpu"
     ):
         self.agent_id = agent_id
@@ -33,7 +33,7 @@ class MAPPORNNAgent:
         
         self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
         self.policy_net.to(device)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         
         self.rnn_state_policy = None
         self.reset_rnn_state()
@@ -130,7 +130,7 @@ class MAPPORNNAlgorithm:
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                lr=lr,
+                lr_actor=lr_actor,
                 device=self.device
             )
             

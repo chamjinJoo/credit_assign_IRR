@@ -33,7 +33,7 @@ algorithm:
 # 네트워크 설정
 network:
   hidden_dim: 64
-  lr: 3e-4
+  lr_actor: 3e-4
   lr_bridge: 1e-4
   lr_critic: 1e-4
   # RKHS Kernel parameters for analytical loss

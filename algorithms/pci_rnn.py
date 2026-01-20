@@ -58,7 +58,7 @@ class RBFKernel(nn.Module):
 
 
 class PCIRNNAgent:
-    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, recurrent_N: int = 1, lr: float = 3e-4, lr_critic: float = 3e-4):
+    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, recurrent_N: int = 1, lr_actor: float = 3e-4, lr_critic: float = 3e-4):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -68,7 +68,7 @@ class PCIRNNAgent:
         self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
         self.value_net = RNNValueNetwork(obs_dim, hidden_dim, recurrent_N)
         
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         
         # Internal hidden state maintenance
@@ -140,7 +140,7 @@ class PCIRNNAlgorithm:
         w_dim: int, 
         hidden_dim: int = 64,
         recurrent_N: int = 1, # [ADDED] RNN layers
-        lr: float = 3e-4,
+        lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
         causal_lambda: float = 1.0,
@@ -225,7 +225,7 @@ class PCIRNNAlgorithm:
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                lr=lr,
+                lr_actor=lr_actor,
                 lr_critic=lr_critic
             )
         

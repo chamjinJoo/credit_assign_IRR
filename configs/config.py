@@ -8,7 +8,7 @@ from dataclasses import dataclass, asdict, field
 class NetworkConfig:
     """Neural network configuration."""
     hidden_dim: int = 64
-    lr: float = 3e-4
+    lr_actor: float = 3e-4
     lr_bridge: float = 3e-4
     lr_critic: float = 3e-4
     # RKHS Kernel parameters for analytical loss
@@ -223,8 +223,12 @@ def parse_args() -> argparse.Namespace:
                         help='Enable adaptive causal lambda per agent (true/false)')
     parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
                         help='Use shared value network for all agents (true/false)')
-    parser.add_argument('--lr', type=float, default=None,
-                        help='Learning Rate')
+    parser.add_argument('--lr-actor', type=float, default=None,
+                        help='Learning rate for actor/policy')
+    parser.add_argument('--lr-bridge', type=float, default=None,
+                        help='Learning rate for bridge networks')
+    parser.add_argument('--lr-critic', type=float, default=None,
+                        help='Learning rate for critic')
     parser.add_argument('--recurrent-N', type=int, default=1,
                         help='Number of recurrent layers for RNN')
     parser.add_argument('--global-reward', type=str, default=None,
@@ -319,11 +323,12 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         # Convert string to boolean
         use_adaptive = args.causal_lambda_adaptive_per_agent.lower() in ('true', '1', 'yes', 'on')
         config.algorithm.causal_lambda_adaptive_per_agent = use_adaptive
-    if hasattr(args, 'lr') and args.lr:
-        config.network.lr = args.lr
-        config.network.lr_bridge = args.lr
-        config.network.lr_bridge = args.lr
-        config.network.lr_critic = args.lr
+    if hasattr(args, 'lr_actor') and args.lr_actor:
+        config.network.lr_actor = args.lr_actor
+    if hasattr(args, 'lr_bridge') and args.lr_bridge:
+        config.network.lr_bridge = args.lr_bridge
+    if hasattr(args, 'lr_critic') and args.lr_critic:
+        config.network.lr_critic = args.lr_critic
     if hasattr(args, 'recurrent_N') and args.recurrent_N is not None:
         config.network.recurrent_N = args.recurrent_N
     if hasattr(args, 'global_reward') and args.global_reward is not None:

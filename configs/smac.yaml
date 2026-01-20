@@ -3,7 +3,7 @@
 # Neural Network Configuration
 network:
   hidden_dim: 64
-  lr: 5.0e-4
+  lr_actor: 5.0e-4
   lr_bridge: 5.0e-4
   lr_critic: 5.0e-4
   # RKHS Kernel parameters for analytical loss

@@ -14,13 +14,13 @@ from utils.buffer import TransitionBuffer
 
 
 class X_PCIAgent:
-    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, lr: float = 3e-4, lr_critic: float = 3e-4):
+    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, lr_actor: float = 3e-4, lr_critic: float = 3e-4):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.policy_net = PolicyNetwork(obs_dim, action_dim, hidden_dim)
         self.value_net = ValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         
     def get_action(self, obs: torch.Tensor, available_actions: Optional[torch.Tensor] = None) -> Tuple[int, float]:
@@ -40,7 +40,7 @@ class X_PCIAlgorithm:
         action_dim: int,
         w_dim: int, 
         hidden_dim: int = 64,
-        lr: float = 3e-4,
+        lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
         causal_lambda: float = 1.0,
@@ -120,7 +120,7 @@ class X_PCIAlgorithm:
                 obs_dim=obs_dim,
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
-                lr=lr,
+                lr_actor=lr_actor,
                 lr_critic=lr_critic
             )
         

@@ -24,7 +24,7 @@ class MAPPOAgent:
         obs_dim: int,
         action_dim: int,
         hidden_dim: int = 64,
-        lr: float = 3e-4
+        lr_actor: float = 3e-4
     ):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
@@ -34,7 +34,7 @@ class MAPPOAgent:
         self.policy_net = PolicyNetwork(obs_dim, action_dim, hidden_dim)
         
         # Optimizer for the policy network
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         
     def get_action(self, obs: torch.Tensor) -> Tuple[int, float]:
         """
@@ -63,7 +63,7 @@ class MAPPOAlgorithm:
         obs_dim: int,
         action_dim: int,
         hidden_dim: int = 64,
-        lr: float = 3e-4,
+        lr_actor: float = 3e-4,
         lr_critic: float = 3e-4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -108,7 +108,7 @@ class MAPPOAlgorithm:
                 obs_dim=obs_dim,
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
-                lr=lr
+                lr_actor=lr_actor
             )
         # Central Value network
         self.value_net = ValueNetwork(

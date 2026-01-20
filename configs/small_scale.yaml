@@ -3,10 +3,9 @@
 # Neural Network Configuration
 network:
   hidden_dim: 32
-  lr_policy: 5.0e-4
-  lr_value: 5.0e-4
-  lr_bridge: 5.0e-4
+  lr_actor: 5.0e-4
   lr_critic: 5.0e-4
+  lr_bridge: 5.0e-4
 
 # Algorithm Configuration
 algorithm:

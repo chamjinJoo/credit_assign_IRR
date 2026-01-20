@@ -3,7 +3,7 @@
 # Neural Network Configuration
 network:
   hidden_dim: 64
-  lr: 3.0e-4
+  lr_actor: 3.0e-4
   lr_bridge: 3.0e-4
   lr_critic: 3.0e-4
 
