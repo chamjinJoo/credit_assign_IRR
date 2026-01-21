@@ -1195,7 +1195,6 @@ class SMACEnv(MultiAgentEnv):
         action_list = [actions[i] for i in range(self.num_agents)]
         
         reward, terminated, info = self._env.step(action_list)
-        
         obs_list = self._env.get_obs()
         observations = {i: np.array(obs, dtype=np.float32) for i, obs in enumerate(obs_list)}
         

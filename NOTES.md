@@ -88,6 +88,13 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
     * Solve the NaN error in policy logits.
 
 ## 26.01.20
-* Parallel Env 구현 중...
+* Parallel Env 구현 중... 
+    * it works but needs more tests. 
+    * Seems Okay. Verfied in Stag-Hunt and SMAC.
+    * trainig time is reduced by half.
 * compute_causal_intrinsic_reward에서 available action 고려토록 하기
 * StagHunt task에서 `coop-bonus`를 조금이라도 주면서 테스트 해보기? (`coop-bonus=0`은 너무 `pci-marl`을 위한 세팅인 느낌이 들 수도 있으니)
+
+## 26.01.21
+* `pci-marl`의 clip_delta도 argparse로 조정할 수 있게 수정
+* SMAC에서의 reward값이 0.01 scale까지 나오는 것을 확인 -> `clip_delta=0.005`로 세팅해봄.

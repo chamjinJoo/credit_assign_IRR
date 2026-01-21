@@ -225,6 +225,7 @@ class PCIRNNAlgorithm:
         lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
+        clip_delta: float = 0.2, # for delta clipping
         causal_lambda: float = 1.0,
         causal_lambda_schedule: bool = False,
         causal_lambda_adaptive_per_agent: bool = False,
@@ -266,6 +267,9 @@ class PCIRNNAlgorithm:
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         self.causal_mini_batch_size = causal_mini_batch_size 
         self.use_value_parameter_sharing = use_value_parameter_sharing
+
+        # for causal intrinsic reward
+        self.clip_delta = clip_delta
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
         self.causal_lambda_adaptive_per_agent = causal_lambda_adaptive_per_agent
@@ -277,6 +281,8 @@ class PCIRNNAlgorithm:
         self.causal_lambda_final = causal_lambda_final
         self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
         self.causal_lambda_startingpoint = causal_lambda_startingpoint
+
+        # training steps
         self.training_steps = 0
         
         # Agent별 adaptive lambda를 위한 error tracking
@@ -1319,6 +1325,10 @@ class PCIRNNAlgorithm:
                 else:
                     agent_losses[k] /= self.ppo_epochs
             elif 'sum' in k:
+                # [FIX] Delta logging: Keep sum/count for global aggregation
+                if 'delta' in k:
+                    continue
+
                 count_key = k.replace('sum', 'count')
                 if agent_losses[count_key] > 0:
                     agent_losses[k.replace('sum', 'mean')] = agent_losses[k] / agent_losses[count_key]
@@ -1389,9 +1399,8 @@ class PCIRNNAlgorithm:
                         available_actions_batch=available_actions_batch
                     )
                     delta = C_matrix.sum(dim=2)
-                    
-                    clip_delta = 0.2 # 0.2 for StagHunt, 0.02? for SMAC
-                    delta[torch.abs(delta) < clip_delta] = 0.0
+
+                    delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
                     # Apply lambda
                     if self.causal_lambda_adaptive_per_agent:
@@ -1556,7 +1565,32 @@ class PCIRNNAlgorithm:
         
         num = len([b for b in batches if b])
         if num == 0: return {}
-        return {k: v / num for k, v in total_losses.items()}
+        final_losses = {}
+        for k, v in total_losses.items():
+            if 'delta_agent' in k and '_sum' in k:
+                # [FIX] Recompute global mean for delta
+                base_key = k.replace('_sum', '')
+                count_key = base_key + '_count'
+                mean_key = base_key + '_mean'
+                
+                total_count = total_losses.get(count_key, 0)
+                if total_count > 0:
+                    final_losses[mean_key] = v / total_count
+                    final_losses[count_key] = total_count
+                else:
+                    final_losses[mean_key] = 0.0
+                    final_losses[count_key] = 0.0
+            elif 'delta_agent' in k and '_count' in k:
+                # Already handled above
+                continue
+            else:
+                 # Other losses: average across batches
+                 if num > 0:
+                    final_losses[k] = v / num
+                 else:
+                    final_losses[k] = v
+        
+        return final_losses
 
 
     def clear_buffer(self):

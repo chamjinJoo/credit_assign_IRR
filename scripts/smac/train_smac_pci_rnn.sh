@@ -9,6 +9,7 @@ config="configs/smac.yaml" # using basic config as template
 # model setting
 model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=1.0
+clip_delta=0.005
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
 recurrent_N=1
@@ -30,6 +31,6 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 python main.py --env ${env} --map-name ${map_name} --config ${config} --model ${model} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
+    --clip-delta ${clip_delta} --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
     --recurrent-N ${recurrent_N} --n-rollout-threads ${n_rollout_threads} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smac

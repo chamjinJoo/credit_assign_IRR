@@ -104,6 +104,7 @@ class PCIMAPPOAlgorithm:
         lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
+        clip_delta: float = 0.2,
         causal_lambda: float = 1.0,
         causal_lambda_schedule: bool = False,
         causal_lambda_adaptive_per_agent: bool = False,
@@ -142,6 +143,7 @@ class PCIMAPPOAlgorithm:
         self.causal_mini_batch_size = causal_mini_batch_size # Critical for speed
         self.use_value_parameter_sharing = use_value_parameter_sharing
         
+        self.clip_delta = clip_delta
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
         self.causal_lambda_adaptive_per_agent = causal_lambda_adaptive_per_agent
@@ -973,9 +975,7 @@ class PCIMAPPOAlgorithm:
                         available_actions_batch=available_actions_batch
                     )
                     delta = C_matrix.sum(dim=2)
-                    
-                    clip_delta = 0.2
-                    delta[torch.abs(delta) < clip_delta] = 0.0
+                    delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
                     # Apply lambda
                     if self.causal_lambda_adaptive_per_agent:

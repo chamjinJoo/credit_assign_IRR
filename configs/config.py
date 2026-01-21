@@ -27,6 +27,8 @@ class AlgorithmConfig:
     max_grad_norm: float = 0.5
     ppo_epochs: int = 4
     batch_size: int = 64
+
+    clip_delta: float = 0.2
     causal_lambda: float = 0.1
     causal_lambda_schedule: bool = False
     causal_lambda_adaptive_per_agent: bool = False
@@ -217,6 +219,8 @@ def parse_args() -> argparse.Namespace:
     # Algorithm
     parser.add_argument('--algorithm-type', '--model', type=str, default=None,
                         help='Algorithm type: pci_mappo, mappo, or ippo')
+    parser.add_argument('--clip-delta', type=float, default=None,
+                        help='Clip threshold for delta (causal intrinsic reward)')
     parser.add_argument('--causal-lambda', type=float, default=None,
                         help='Causal reward shaping coefficient')
     parser.add_argument('--causal-lambda-schedule', action='store_true', default=False,
@@ -317,7 +321,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         # Convert hyphen to underscore for convenience (e.g., pci-mappo -> pci_mappo)
         algorithm_type = algorithm_type.replace('-', '_')
         config.algorithm.type = algorithm_type
-    
+    if hasattr(args, 'clip_delta') and args.clip_delta is not None:
+        config.algorithm.clip_delta = args.clip_delta
     if hasattr(args, 'causal_lambda') and args.causal_lambda is not None:
         config.algorithm.causal_lambda = args.causal_lambda
     if hasattr(args, 'use_value_parameter_sharing') and args.use_value_parameter_sharing is not None:

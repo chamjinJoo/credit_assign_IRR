@@ -40,6 +40,7 @@ def create_algorithm(env, config):
             lr_bridge=network_config.lr_bridge,
             lr_critic=network_config.lr_critic,
             causal_lambda=algorithm_config.causal_lambda,
+            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2), # [ADDED]
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
             causal_lambda_adaptive_per_agent=getattr(algorithm_config, 'causal_lambda_adaptive_per_agent', False),
             causal_lambda_adaptive_alpha=getattr(algorithm_config, 'causal_lambda_adaptive_alpha', 0.9),
@@ -85,6 +86,7 @@ def create_algorithm(env, config):
             lr_bridge=network_config.lr_bridge,
             lr_critic=network_config.lr_critic,
             causal_lambda=algorithm_config.causal_lambda,
+            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2), # [ADDED]
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
             causal_lambda_adaptive_per_agent=getattr(algorithm_config, 'causal_lambda_adaptive_per_agent', False),
             causal_lambda_adaptive_alpha=getattr(algorithm_config, 'causal_lambda_adaptive_alpha', 0.9),

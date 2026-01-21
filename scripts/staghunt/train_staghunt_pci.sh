@@ -1,14 +1,15 @@
 #!/bin/bash
 # env setting
 env="StagHunt"
-num_agents=4
-forage_quantity=4 # default: the same as num_agents
+num_agents=3
+forage_quantity=3 # default: the same as num_agents
 grid_observation=true
 config="configs/stag_hunt.yaml"
 
 # model setting
 model="pci-mappo" # [pci-mappo, mappo, ippo]
 causal_lambda=1.0
+clip_delta=0.2
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
 
@@ -29,5 +30,5 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
     --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
+    --clip-delta ${clip_delta} --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-staghunt

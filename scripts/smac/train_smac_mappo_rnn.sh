@@ -1,7 +1,7 @@
 #!/bin/bash
 # env setting
 env="SMAC"
-map_name="2s3z"
+map_name="3s_vs_5z"
 # easy: 3m, 2s3z, 10m_vs_11m (for scalability)
 # hard: corridor, 5m_vs_6m, 3s_vs_5z
 config="configs/smac.yaml" # using basic config as template
