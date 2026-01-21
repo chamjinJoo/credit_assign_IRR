@@ -11,10 +11,7 @@ class NetworkConfig:
     lr_actor: float = 3e-4
     lr_bridge: float = 3e-4
     lr_critic: float = 3e-4
-    # RKHS Kernel parameters for analytical loss
-    # RKHS Kernel parameters for analytical loss
     rkhs_gamma: float = 1.0  # Gamma parameter for RBF kernel
-    # RNN parameters
     recurrent_N: int = 1  # Number of recurrent layers
 
 
@@ -58,9 +55,11 @@ class TrainingConfig:
     eval_episodes: int = 10
     save_dir: str = "./save_checkpoints"
     device: str = "cpu"
+    n_rollout_threads: int = 1  # [ADDED] Number of parallel environments for rollout collection
     # Reproducibility settings
     seed: int = 42
     deterministic: bool = True
+
 
 
 @dataclass
@@ -211,6 +210,9 @@ def parse_args() -> argparse.Namespace:
                         help='Maximum steps per iteration')
     parser.add_argument('--device', type=str, default='cpu',
                         help='Training device (cpu/cuda)')
+    parser.add_argument('--n-rollout-threads', type=int, default=1,
+                        help='Number of parallel environments for rollout collection')  # [ADDED]
+
     
     # Algorithm
     parser.add_argument('--algorithm-type', '--model', type=str, default=None,
@@ -305,6 +307,9 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.training.save_dir = args.save_dir
     if hasattr(args, 'log_interval') and args.log_interval:
         config.training.log_interval = args.log_interval
+    if hasattr(args, 'n_rollout_threads') and args.n_rollout_threads:  # [ADDED]
+        config.training.n_rollout_threads = args.n_rollout_threads
+
     
     # Support both 'model' and 'algorithm_type' for backward compatibility
     algorithm_type = getattr(args, 'algorithm_type', None) or getattr(args, 'model', None)

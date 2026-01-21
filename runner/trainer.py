@@ -65,10 +65,29 @@ class Trainer:
         use_wandb: bool = False,
         wandb_project: str = "pci-mappo",
         wandb_run_name: Optional[str] = None,
-        device: str = "cpu"
+        device: str = "cpu",
+        n_rollout_threads: int = 1,  # [ADDED] Number of parallel environments
+        env_fn: Optional[callable] = None  # [ADDED] Function to create environment (for parallel)
     ):
         self.config = config
-        self.env = env
+        self.n_rollout_threads = n_rollout_threads
+        
+        # Setup environment (single or parallel)
+        if n_rollout_threads > 1:
+            # Use parallel environment wrapper for training
+            if env_fn is None:
+                raise ValueError("env_fn must be provided when n_rollout_threads > 1")
+            from envs.parallel_env import ParallelEnvWrapper
+            self.env = ParallelEnvWrapper(env_fn, n_rollout_threads)
+            self.is_parallel = True
+            # Keep a single environment for evaluation
+            self.eval_env = env
+        else:
+            # Use single environment
+            self.env = env
+            self.eval_env = env
+            self.is_parallel = False
+        
         self.algorithm = algorithm
         self.max_iterations = max_iterations
         self.max_steps_per_iteration = max_steps_per_iteration
@@ -134,11 +153,11 @@ class Trainer:
             )
             
             # Define metrics for better visualization
-            wandb.define_metric("iteration")
-            wandb.define_metric("causal_effect/*", step_metric="iteration")
-            wandb.define_metric("rollout/*", step_metric="iteration")
-            wandb.define_metric("update/*", step_metric="iteration")
-            wandb.define_metric("eval/*", step_metric="iteration")
+            wandb.define_metric("total_steps")
+            wandb.define_metric("causal_effect/*", step_metric="total_steps")
+            wandb.define_metric("rollout/*", step_metric="total_steps")
+            wandb.define_metric("update/*", step_metric="total_steps")
+            wandb.define_metric("eval/*", step_metric="total_steps")
             
             # Add summary information for causal effect metrics
             wandb.summary.update({
@@ -177,7 +196,7 @@ class Trainer:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
         # Get environment name
-        env_name = self.env.__class__.__name__.lower()
+        env_name = self.eval_env.__class__.__name__.lower()
         
         # Create directory structure: base_dir/timestamp/env_name/checkpoints
         sim_dir = os.path.join(
@@ -213,7 +232,7 @@ class Trainer:
         metadata = {
             "simulation_info": {
                 "timestamp": datetime.now().isoformat(),
-                "environment": self.env.__class__.__name__,
+                "environment": self.eval_env.__class__.__name__,
                 "num_agents": self.env.num_agents,
                 "obs_dim": self.env.get_obs_dim(),
                 "action_dim": self.env.get_action_dim()
@@ -246,7 +265,7 @@ class Trainer:
             f.write(f"PCI-MAPPO Training Simulation\n")
             f.write(f"=" * 40 + "\n\n")
             f.write(f"Timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-            f.write(f"Environment: {self.env.__class__.__name__}\n")
+            f.write(f"Environment: {self.eval_env.__class__.__name__}\n")
             f.write(f"Agents: {self.env.num_agents}\n")
             f.write(f"Max Iterations: {self.max_iterations}\n")
             f.write(f"Steps per Iteration: {self.max_steps_per_iteration}\n")
@@ -306,7 +325,7 @@ class Trainer:
         self.logger.info("=" * 60)
         self.logger.info(f"{algorithm_type} Training Configuration")
         self.logger.info("=" * 60)
-        self.logger.info(f"Environment: {self.env.__class__.__name__}")
+        self.logger.info(f"Environment: {self.eval_env.__class__.__name__}")
         self.logger.info(f"Number of agents: {self.env.num_agents}")
         self.logger.info(f"Observation dimension: {self.env.get_obs_dim()}")
         self.logger.info(f"Action dimension: {self.env.get_action_dim()}")
@@ -329,6 +348,7 @@ class Trainer:
                 
                 # Data Collection Phase
                 rollout_data = self.collect_rollouts()
+                self.total_steps += rollout_data['step_count']
                 
                 # Training Phase
                 update_info = self.algorithm.update()
@@ -379,6 +399,18 @@ class Trainer:
     def collect_rollouts(self) -> Dict[str, Any]:
         """
         Collect rollouts for one iteration.
+        
+        Returns:
+            Dictionary containing rollout statistics
+        """
+        if self.is_parallel:
+            return self._collect_rollouts_parallel()
+        else:
+            return self._collect_rollouts_single()
+    
+    def _collect_rollouts_single(self) -> Dict[str, Any]:
+        """
+        Collect rollouts from a single environment (original implementation).
         
         Returns:
             Dictionary containing rollout statistics
@@ -505,6 +537,163 @@ class Trainer:
         
         return rollout_data
     
+    def _collect_rollouts_parallel(self) -> Dict[str, Any]:
+        """
+        Collect rollouts from parallel environments.
+        
+        Returns:
+            Dictionary containing rollout statistics
+        """
+        import torch
+        from envs import dict_to_tensor
+        
+        step_count = 0
+        episode_count = 0
+        episode_rewards = defaultdict(list)
+        episode_lengths = []
+        episode_successes = []
+        
+        # Reset all environments
+        observations_batch = self.env.reset()
+        self.algorithm.reset_agents_batch(self.n_rollout_threads)
+        
+        # Convert to tensors
+        observations_batch = [
+            dict_to_tensor(obs, device=self.algorithm.device)
+            for obs in observations_batch
+        ]
+        
+        # Initialize previous 1) obs, 2) rewards, 3) actions for each environment
+        prev_observations_batch = [
+            {agent_id: torch.zeros_like(obs) for agent_id, obs in obs_dict.items()}
+            for obs_dict in observations_batch
+        ]
+        prev_rewards_batch = [
+            {agent_id: 0.0 for agent_id in obs_dict.keys()}
+            for obs_dict in observations_batch
+        ]
+        prev_actions_batch = [
+            {agent_id: 0 for agent_id in obs_dict.keys()}
+            for obs_dict in observations_batch
+        ]
+        
+        # Track episode state for each environment
+        env_episode_rewards = [{agent_id: 0.0 for agent_id in range(self.env.num_agents)} for _ in range(self.n_rollout_threads)]
+        env_episode_lengths = [0] * self.n_rollout_threads
+        env_dones = [False] * self.n_rollout_threads
+        
+        while step_count < self.max_steps_per_iteration:
+            # Get available actions
+            available_actions_batch = self.env.get_avail_actions_batch()
+            
+            # Get actions for all environments
+            actions_batch = self.algorithm.get_actions_batch(
+                observations_batch,
+                available_actions_batch
+            )
+            
+            # Convert actions for environment (remove log_probs)
+            # actions_batch is List[Dict[agent_id, (action, log_prob)]]
+            env_actions_batch = []
+            for env_idx in range(self.n_rollout_threads):
+                env_actions = {}
+                for agent_id in range(self.env.num_agents):
+                    # actions_batch[env_idx] is Dict[agent_id, (action, log_prob)]
+                    action_tuple = actions_batch[env_idx][agent_id]
+                    if isinstance(action_tuple, tuple):
+                        action, log_prob = action_tuple
+                    else: # Fallback if not a tuple
+                        action = action_tuple
+                    env_actions[agent_id] = int(action)  # Ensure it's an int
+                env_actions_batch.append(env_actions)
+            
+            # Step all environments
+            next_observations_batch, rewards_batch, dones_batch, infos_batch = self.env.step(env_actions_batch)
+            
+            # Convert to tensors
+            next_observations_batch = [
+                dict_to_tensor(obs, device=self.algorithm.device)
+                for obs in next_observations_batch
+            ]
+            
+            # Store transitions for each environment
+            for env_idx in range(self.n_rollout_threads):
+                if not env_dones[env_idx]:
+                    # Store transition
+                    self.algorithm.store_transition_from_env(
+                        env_idx=env_idx,
+                        prev_observations=prev_observations_batch[env_idx],
+                        prev_rewards=prev_rewards_batch[env_idx],
+                        prev_actions=prev_actions_batch[env_idx],
+                        observations=observations_batch[env_idx],
+                        actions=actions_batch[env_idx],
+                        rewards=rewards_batch[env_idx],
+                        next_observations=next_observations_batch[env_idx],
+                        dones=dones_batch[env_idx],
+                        info=infos_batch[env_idx],
+                        available_actions=available_actions_batch[env_idx] if available_actions_batch[env_idx] is not None else None
+                    )
+                    
+                    # Update episode statistics
+                    for agent_id, reward in rewards_batch[env_idx].items():
+                        env_episode_rewards[env_idx][agent_id] += reward
+                    
+                    env_episode_lengths[env_idx] += 1
+                    step_count += 1 # actually, increment=n_rollout_threads
+                    
+                    # Check if episode is done
+                    if any(dones_batch[env_idx].values()):
+                        env_dones[env_idx] = True
+                        
+                        # Store episode statistics
+                        for agent_id, total_reward in env_episode_rewards[env_idx].items():
+                            episode_rewards[agent_id].append(total_reward)
+                        
+                        episode_lengths.append(env_episode_lengths[env_idx])
+                        episode_count += 1
+                        
+                        # Check success
+                        is_success = 0.0
+                        info_ = infos_batch[env_idx]
+                        if 'stag_alive' in info_:
+                            stag_alive = info_.get('stag_alive', {})
+                            hare_alive = info_.get('hare_alive', {})
+                            if not any(stag_alive.values()) and not any(hare_alive.values()):
+                                is_success = 1.0
+                        elif 'battle_won' in info_:
+                            if info_.get('battle_won', False):
+                                is_success = 1.0
+                        episode_successes.append(is_success)
+                        
+                        # Track recent rewards
+                        mean_episode_reward = np.mean(list(env_episode_rewards[env_idx].values()))
+                        self.recent_rewards.append(mean_episode_reward)
+                        
+                        # Reset episode tracking for this environment
+                        env_episode_rewards[env_idx] = {agent_id: 0.0 for agent_id in range(self.env.num_agents)}
+                        env_episode_lengths[env_idx] = 0
+                        env_dones[env_idx] = False
+            
+            # Update states
+            prev_observations_batch = observations_batch
+            prev_rewards_batch = rewards_batch
+            prev_actions_batch = env_actions_batch
+            observations_batch = next_observations_batch
+        
+        # Compile rollout data
+        rollout_data = {
+            'step_count': step_count,
+            'episode_count': episode_count,
+            'episode_rewards': dict(episode_rewards),
+            'episode_lengths': episode_lengths,
+            'mean_episode_reward': np.mean([np.mean(rewards) for rewards in episode_rewards.values()]) if episode_rewards else 0.0,
+            'mean_episode_length': np.mean(episode_lengths) if episode_lengths else 0.0,
+            'mean_success_rate': np.mean(episode_successes) if episode_successes else 0.0
+        }
+        
+        return rollout_data
+
+    
     def evaluate_policy(self) -> Dict[str, float]:
         """
         Evaluate current policy for multiple episodes.
@@ -516,8 +705,8 @@ class Trainer:
         eval_lengths = []
         
         for episode in range(self.eval_episodes):
-            # Reset environment and agents
-            observations = self.env.reset()
+            # Reset environment and agents (use eval_env for evaluation)
+            observations = self.eval_env.reset()
             self.algorithm.reset_agents()
             observations = dict_to_tensor(observations, device=self.algorithm.device)
             
@@ -528,11 +717,12 @@ class Trainer:
             while not done and episode_length < 1000:
                 # Get availability of actions
                 available_actions = None
-                if hasattr(self.env, "get_avail_actions"):
-                    avail = self.env.get_avail_actions()
+                if hasattr(self.eval_env, "get_avail_actions"):
+                    avail = self.eval_env.get_avail_actions()
                     # Convert to Dict[int, List[int]]
                     # SMAC returns List[List[int]] where index is agent_id
-                    available_actions = {i: avail[i] for i in range(len(avail))}
+                    if avail is not None:
+                        available_actions = {i: avail[i] for i in range(len(avail))}
 
                 # Get actions (no exploration for evaluation)
                 with torch.no_grad():
@@ -570,16 +760,16 @@ class Trainer:
                         actions[agent_id] = action
                 
                 # Take step
-                next_observations, rewards, dones, info = self.env.step(actions)
+                next_observations, rewards, dones, info = self.eval_env.step(actions)
                 next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
                 
                 # Check success (Evaluate)
-                if self.env.__class__.__name__ == "StagHuntEnv":
+                if self.eval_env.__class__.__name__ == "StagHuntEnv":
                     stag_alive = info.get('stag_alive', {})
                     hare_alive = info.get('hare_alive', {})
                     if not any(stag_alive.values()) and not any(hare_alive.values()):
                         episode_success = 1.0
-                elif self.env.__class__.__name__ == "SMACEnv":
+                elif self.eval_env.__class__.__name__ == "SMACEnv":
                      if info.get('battle_won', False):
                          episode_success = 1.0
                 

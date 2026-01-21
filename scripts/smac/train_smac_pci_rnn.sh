@@ -16,6 +16,7 @@ recurrent_N=1
 # training and logging 
 max_iterations=1500
 max_steps_per_iteration=2000
+n_rollout_threads=8
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 seed=42
@@ -30,4 +31,5 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 python main.py --env ${env} --map-name ${map_name} --config ${config} --model ${model} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
     --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
+    --recurrent-N ${recurrent_N} --n-rollout-threads ${n_rollout_threads} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smac

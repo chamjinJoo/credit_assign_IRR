@@ -80,6 +80,7 @@ def create_algorithm(env, config):
             w_dim=env.get_obs_dim(), 
             hidden_dim=network_config.hidden_dim,
             recurrent_N=getattr(network_config, 'recurrent_N', 1),
+            rnn_chunk_length=getattr(algorithm_config, 'rnn_chunk_length', 16),
             lr_actor=network_config.lr_actor,
             lr_bridge=network_config.lr_bridge,
             lr_critic=network_config.lr_critic,
@@ -343,7 +344,10 @@ def main():
     logger.info(f"Number of agents: {env.num_agents}")
     logger.info(f"Observation dimension: {env.get_obs_dim()}")
     logger.info(f"Action dimension: {env.get_action_dim()}")
-    
+
+    if hasattr(env, 'print_env_setting'):
+        logger.info(env.print_env_setting())
+        
     # Auto-generate wandb run_name based on environment if not explicitly set
     algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
     if not config.wandb.run_name:
@@ -395,6 +399,22 @@ def main():
         # run_name이 없으면 알고리즘 타입만 사용
         wandb_run_name = algorithm_type
     
+    # Create env_fn for parallel environments
+    n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
+    env_fn = None
+    if n_rollout_threads > 1:
+        # Create a function that creates a new environment instance
+        def env_fn(rank=0):
+            env_config_copy = config.environment
+            # Add rank to seed for diversity
+            seed = actual_seed + rank * 1000
+            
+            if hasattr(env_config_copy, '__dict__'):
+                env_config_copy.seed = seed
+            else:
+                env_config_copy['seed'] = seed
+            return create_environment(env_config_copy)
+    
     trainer = Trainer(
         config=config,
         env=env,
@@ -409,7 +429,9 @@ def main():
         use_wandb=config.wandb.use_wandb,
         wandb_project=config.wandb.project,
         wandb_run_name=wandb_run_name,
-        device=device
+        device=device,
+        n_rollout_threads=n_rollout_threads,  # [ADDED]
+        env_fn=env_fn  # [ADDED]
     )
     # Check for evaluation or test mode
     if hasattr(args, 'eval') and args.eval:
@@ -486,6 +508,8 @@ def main():
         logger.info("Training completed successfully!")
         
         # Run causal effect evaluation after training completion
+        # 일단 주석처리 - 나중에 필요하면 활성화
+        '''
         if causal_eval_enabled:
             logger.info("Running causal effect evaluation after training...")
             # Use the latest checkpoint for evaluation
@@ -505,7 +529,7 @@ def main():
                 run_causal_evaluation(env, algorithm, mock_args, logger)
             else:
                 logger.warning("No checkpoint found for causal effect evaluation")
-        
+        '''
     except KeyboardInterrupt:
         logger.info("Training interrupted by user")
         trainer.save_checkpoint()

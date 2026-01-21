@@ -52,6 +52,16 @@ class MAPPOAgent:
         
         return action.item(), log_prob.item()
 
+    def get_action_batch(self, obs_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get actions for a batch of environments.
+        """
+        with torch.no_grad():
+            # Simply forward pass for feed-forward policy
+            action, log_prob = self.policy_net.get_action_and_log_prob(obs_batch)
+        
+        return action, log_prob
+
 
 class MAPPOAlgorithm:
     """
@@ -157,6 +167,78 @@ class MAPPOAlgorithm:
         """Reset agents for new episode (no RNN state to reset)."""
         pass
     
+    def reset_agents_batch(self, n_envs: int):
+        """Reset agents for multiple environments (batch mode). No RNN state to reset."""
+        self.last_dones_batch = [{i: False for i in range(self.num_agents)} for _ in range(n_envs)]
+
+    def get_actions_batch(
+        self,
+        observations_batch: List[Dict[int, torch.Tensor]],
+        available_actions_batch: Optional[List[Dict[int, List[int]]]] = None
+    ) -> List[Dict[int, Tuple[int, float]]]:
+        """
+        Get actions for a batch of environments (ParallelEnv execution).
+        """
+        n_envs = len(observations_batch)
+        actions_batch = [{} for _ in range(n_envs)]
+        
+        # 1. Policy Step (Per Agent)
+        for agent_id in range(self.num_agents):
+            # Collect observations for this agent
+            agent_obs_list = []
+            for i in range(n_envs):
+                obs = observations_batch[i][agent_id]
+                agent_obs_list.append(obs)
+            
+            agent_obs_tensor = torch.stack(agent_obs_list).to(self.device)
+            
+            # Get actions batch
+            actions, log_probs = self.agents[agent_id].get_action_batch(agent_obs_tensor)
+            
+            # Distribute results
+            for i in range(n_envs):
+                act = actions[i].item()
+                lp = log_probs[i].item()
+                actions_batch[i][agent_id] = (act, lp)
+                
+        return actions_batch
+
+    def store_transition_from_env(
+        self,
+        env_idx: int,
+        prev_observations: Dict[int, torch.Tensor],
+        prev_rewards: Dict[int, float],
+        prev_actions: Dict[int, int],
+        observations: Dict[int, torch.Tensor],
+        actions: Dict[int, int],
+        rewards: Dict[int, float],
+        next_observations: Dict[int, torch.Tensor],
+        dones: Dict[int, bool],
+        info: Dict = None,
+        available_actions: Optional[Dict[int, List[int]]] = None
+    ):
+        """Store transition from a specific parallel environment."""
+        if info is None: info = {}
+        info['env_id'] = env_idx
+        
+        # Update done status
+        if hasattr(self, 'last_dones_batch'):
+            for agent_id in range(self.num_agents):
+                self.last_dones_batch[env_idx][agent_id] = dones[agent_id]
+        
+        self.buffer_manager.store_transition(
+            prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            dones=dones,
+            hidden_states={i: None for i in range(self.num_agents)},
+            info=info
+        )
+
     def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
         """
         Get actions from all agents.
@@ -254,101 +336,15 @@ class MAPPOAlgorithm:
             if agent_id in batch_data[0]['bold_o_t']:
                 agent_obs_tensors[agent_id] = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
 
-        # === 1. Compute Rewards & Returns ===
+        # === 1. Extract Pre-computed Advantages and Returns ===
         if self.global_reward:
-            # === Global Rewards (sum of all agents) ===
-            global_rewards = []
-            global_dones = []
-            for t in batch_data:
-                global_reward = sum(t['bold_r_t'].values()) / (self.num_agents)
-                global_rewards.append(global_reward)
-                global_done = any(t['dones'].values())
-                global_dones.append(global_done)
-            
-            all_rewards = torch.tensor(global_rewards, dtype=torch.float32, device=self.device)
-            all_dones_tensor = torch.tensor(global_dones, dtype=torch.float32, device=self.device)
-
-            # Centralized Critic for Global Value
-            with torch.no_grad():
-                # [Batch, 1] -> [Batch]
-                global_values = self.value_net(global_obs_tensor).squeeze()
-            
-            # Next Value
-            with torch.no_grad():
-                last = batch_data[-1]
-                is_terminal = all_dones_tensor[-1].item()
-                if not is_terminal:
-                    next_global_obs = self._concatenate_observations(last.get('next_observations', last['bold_o_t']))
-                    next_val_item = self.value_net(next_global_obs.unsqueeze(0)).item()
-                else:
-                    next_val_item = 0.0
-
-            advantages_global, returns_global = self.compute_gae(
-                all_rewards.tolist(), 
-                global_values.tolist(), 
-                next_val_item, 
-                all_dones_tensor.tolist()
-            )
-            all_returns = torch.tensor(returns_global, dtype=torch.float32, device=self.device)
-            all_advantages = torch.tensor(advantages_global, dtype=torch.float32, device=self.device)
-
+            all_returns = torch.tensor([t['returns'] for t in batch_data], dtype=torch.float32, device=self.device)
+            all_advantages = torch.tensor([t['advantages'] for t in batch_data], dtype=torch.float32, device=self.device)
         else:
-            # === Individual Rewards ===
-            rewards_list = []
-            dones_list = []
-            
-            # Reconstruct batch-wise individual rewards
-            for t in batch_data:
-                step_rewards = [t['bold_r_t'].get(i, 0.0) for i in range(self.num_agents)]
-                rewards_list.append(step_rewards)
-                
-                # For individual value estimation, what is 'done'? 
-                # Usually episode done is shared, but if agents die individually... 
-                # Let's assume shared episode done for now for simplicity or use individual 'dones' if available.
-                step_dones = [t['dones'].get(i, False) for i in range(self.num_agents)]
-                dones_list.append(step_dones)
-
-            all_rewards = torch.tensor(rewards_list, dtype=torch.float32, device=self.device) # [B, N]
-            all_dones_tensor = torch.tensor(dones_list, dtype=torch.float32, device=self.device) # [B, N]
-
-            # Centralized Critic for Individual Values
-            # output: [Batch, N]
-            with torch.no_grad():
-                all_values = self.value_net(global_obs_tensor) 
-
-            # Next Values
-            with torch.no_grad():
-                last = batch_data[-1]
-                # Check terminal per agent?
-                # all_values is [B, N], next_val should be [1, N] or list
-                next_vals_list = []
-                next_global_obs = self._concatenate_observations(last.get('next_observations', last['bold_o_t']))
-                next_pred = self.value_net(next_global_obs.unsqueeze(0)).squeeze(0) # [N]
-                
-                for i in range(self.num_agents):
-                    if all_dones_tensor[-1, i].item():
-                        next_vals_list.append(0.0)
-                    else:
-                        next_vals_list.append(next_pred[i].item())
-            
-            # Compute GAE per agent
-            returns_list = []
-            advantages_list = []
-            
-            # all_rewards: [B, N], all_values: [B, N]
-            for i in range(self.num_agents):
-                adv, ret = self.compute_gae(
-                    all_rewards[:, i].tolist(),
-                    all_values[:, i].tolist(),
-                    next_vals_list[i],
-                    all_dones_tensor[:, i].tolist()
-                )
-                returns_list.append(ret)
-                advantages_list.append(adv)
-            
-            # Stack -> [N, B] -> Transpose -> [B, N]
-            all_returns = torch.tensor(returns_list, dtype=torch.float32, device=self.device).transpose(0, 1)
-            all_advantages = torch.tensor(advantages_list, dtype=torch.float32, device=self.device).transpose(0, 1)
+            returns_list = [[t['returns'][i] for i in range(self.num_agents)] for t in batch_data]
+            advantages_list = [[t['advantages'][i] for i in range(self.num_agents)] for t in batch_data]
+            all_returns = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
+            all_advantages = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
 
         # Normalize Advantages
         if self.global_reward:
@@ -356,10 +352,10 @@ class MAPPOAlgorithm:
              if advantages_tensor.numel() > 1:
                 advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
         else:
-             # Normalize per batch or per agent?
-             advantages_tensor = all_advantages # [B, N]
+             advantages_tensor = all_advantages
              if advantages_tensor.numel() > 1:
                 advantages_tensor = (advantages_tensor - advantages_tensor.mean()) / (advantages_tensor.std() + 1e-8)
+
 
         # === Agent-Specific Policy Updates ===
         for agent_id in range(self.num_agents):
@@ -436,9 +432,97 @@ class MAPPOAlgorithm:
 
         transitions = self.buffer_manager.get_main_buffer_transitions()
         
-        # Partition into K mini-batches
-        batch_size = max(1, len(transitions) // self.num_batches)
-        batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
+        # [FIX] Compute GAE on full trajectories before batching
+        try:
+            # 1. Group by env_id
+            env_trajectories = defaultdict(list)
+            for t in transitions:
+                env_id = t['info'].get('env_id', 0)
+                env_trajectories[env_id].append(t)
+            
+            # 2. Compute GAE for each trajectory
+            for env_id, traj in env_trajectories.items():
+                if len(traj) == 0:
+                    continue
+                
+                # Prepare data
+                global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in traj]).to(self.device)
+                
+                if self.global_reward:
+                    rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
+                                              dtype=torch.float32, device=self.device)
+                    dones_seq = torch.tensor([any(t['dones'].values()) for t in traj], dtype=torch.float32, device=self.device)
+                    
+                    # Compute values
+                    with torch.no_grad():
+                        values = self.value_net(global_obs_seq).squeeze()
+                        last_next_obs = self._concatenate_observations(traj[-1].get('next_observations', traj[-1]['bold_o_t']))
+                        is_terminal = dones_seq[-1].item()
+                        next_val = 0.0 if is_terminal else self.value_net(last_next_obs.unsqueeze(0)).item()
+                    
+                    # Compute GAE
+                    advantages, returns = self.compute_gae(
+                        rewards_seq.tolist(),
+                        values.tolist(),
+                        next_val,
+                        dones_seq.tolist()
+                    )
+                    
+                    # Store in transitions
+                    for t_idx, t in enumerate(traj):
+                        t['advantages'] = advantages[t_idx]
+                        t['returns'] = returns[t_idx]
+                        
+                else:
+                    # Individual rewards
+                    rewards_list = [[t['bold_r_t'].get(i, 0.0) for i in range(self.num_agents)] for t in traj]
+                    rewards_seq = torch.tensor(rewards_list, dtype=torch.float32, device=self.device)
+                    dones_list = [[t['dones'].get(i, False) for i in range(self.num_agents)] for t in traj]
+                    dones_seq = torch.tensor(dones_list, dtype=torch.float32, device=self.device)
+                    
+                    # Compute values
+                    with torch.no_grad():
+                        all_values = self.value_net(global_obs_seq)
+                        last_next_obs = self._concatenate_observations(traj[-1].get('next_observations', traj[-1]['bold_o_t']))
+                        next_pred = self.value_net(last_next_obs.unsqueeze(0)).squeeze(0)
+                        
+                        # Compute GAE per agent
+                        for agent_i in range(self.num_agents):
+                            agent_vals = all_values[:, agent_i].tolist()
+                            agent_rewards = rewards_seq[:, agent_i].tolist()
+                            agent_dones = dones_seq[:, agent_i].tolist()
+                            next_val = 0.0 if dones_seq[-1, agent_i].item() else next_pred[agent_i].item()
+                            
+                            adv, ret = self.compute_gae(
+                                agent_rewards,
+                                agent_vals,
+                                next_val,
+                                agent_dones
+                            )
+                            
+                            # Store in transitions
+                            for t_idx, t in enumerate(traj):
+                                if 'advantages' not in t:
+                                    t['advantages'] = {}
+                                    t['returns'] = {}
+                                t['advantages'][agent_i] = adv[t_idx]
+                                t['returns'][agent_i] = ret[t_idx]
+            
+            # 3. Create batches from sorted transitions
+            sorted_transitions = []
+            for env_id in sorted(env_trajectories.keys()):
+                sorted_transitions.extend(env_trajectories[env_id])
+                
+            batch_size = max(1, len(sorted_transitions) // self.num_batches)
+            batches = [sorted_transitions[i:i + batch_size] for i in range(0, len(sorted_transitions), batch_size)]
+            
+        except Exception as e:
+            print(f"[ERROR MAPPO] Failed to restructure rollout data: {e}")
+            import traceback
+            traceback.print_exc()
+            # Fallback
+            batch_size = max(1, len(transitions) // self.num_batches)
+            batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
         
         total_losses = defaultdict(float)
         

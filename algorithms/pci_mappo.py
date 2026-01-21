@@ -79,6 +79,19 @@ class PCIMAPPOAgent:
             action, log_prob = self.policy_net.get_action_and_log_prob(obs.unsqueeze(0), available_actions)
         return action.item(), log_prob.item()
 
+    def get_action_batch(self, obs_batch: torch.Tensor, available_actions_batch: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get actions for a batch of environments.
+        """
+        with torch.no_grad():
+             if available_actions_batch is not None:
+                # Ensure correct dimensions if necessary (should be B x ActionDim)
+                pass 
+             
+             action, log_prob = self.policy_net.get_action_and_log_prob(obs_batch, available_actions_batch)
+        
+        return action, log_prob
+
 
 class PCIMAPPOAlgorithm:
     def __init__(
@@ -462,7 +475,95 @@ class PCIMAPPOAlgorithm:
     
     def reset_agents(self):
         pass
-    
+        
+    def reset_agents_batch(self, n_envs: int):
+        """Reset agents for multiple environments (batch mode)."""
+        self.last_dones_batch = [{i: False for i in range(self.num_agents)} for _ in range(n_envs)]
+
+    def get_actions_batch(
+        self,
+        observations_batch: List[Dict[int, torch.Tensor]],
+        available_actions_batch: Optional[List[Dict[int, List[int]]]] = None
+    ) -> List[Dict[int, Tuple[int, float]]]:
+        """
+        Get actions for a batch of environments (ParallelEnv execution).
+        """
+        n_envs = len(observations_batch)
+        actions_batch = [{} for _ in range(n_envs)]
+        
+        has_avail = (available_actions_batch is not None)
+        
+        for agent_id in range(self.num_agents):
+            agent_obs_list = []
+            agent_avail_list = []
+            
+            for i in range(n_envs):
+                obs = observations_batch[i][agent_id]
+                agent_obs_list.append(obs)
+                
+                if has_avail and available_actions_batch[i] is not None and agent_id in available_actions_batch[i]:
+                    agent_avail_list.append(available_actions_batch[i][agent_id])
+                else:
+                    agent_avail_list.append(None)
+            
+            agent_obs_tensor = torch.stack(agent_obs_list).to(self.device)
+            
+            agent_avail_tensor = None
+            if any(x is not None for x in agent_avail_list):
+                 # Convert list of lists to tensor? Or pad?
+                 # Assuming fixed action dim, simply tensorizing works if all are present.
+                 # If mixed None/List, we might have issues. SMAC usually provided consistently.
+                 try:
+                    agent_avail_tensor = torch.tensor(agent_avail_list, dtype=torch.float32, device=self.device)
+                 except:
+                    # Fallback if inconsistent
+                    pass
+
+            actions, log_probs = self.agents[agent_id].get_action_batch(agent_obs_tensor, available_actions_batch=agent_avail_tensor)
+            
+            for i in range(n_envs):
+                act = actions[i].item()
+                lp = log_probs[i].item()
+                actions_batch[i][agent_id] = (act, lp)
+        
+        return actions_batch
+
+    def store_transition_from_env(
+        self,
+        env_idx: int,
+        prev_observations: Dict[int, torch.Tensor],
+        prev_rewards: Dict[int, float],
+        prev_actions: Dict[int, int],
+        observations: Dict[int, torch.Tensor],
+        actions: Dict[int, int],
+        rewards: Dict[int, float],
+        next_observations: Dict[int, torch.Tensor],
+        dones: Dict[int, bool],
+        info: Dict = None,
+        available_actions: Optional[Dict[int, List[int]]] = None
+    ):
+        """Store transition from a specific parallel environment."""
+        if info is None: info = {}
+        info['env_id'] = env_idx
+        
+        if hasattr(self, 'last_dones_batch'):
+            for agent_id in range(self.num_agents):
+                self.last_dones_batch[env_idx][agent_id] = dones[agent_id]
+        
+        self.buffer_manager.store_transition(
+            prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            dones=dones,
+            hidden_states={i: None for i in range(self.num_agents)},
+            info=info,
+            available_actions=available_actions
+        )
+
     def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         for agent_id, obs in observations.items():
@@ -721,71 +822,29 @@ class PCIMAPPOAlgorithm:
         if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
             for agent_id in range(self.num_agents):
                 if agent_id in batch_data[0]['available_actions']:
-                     # t['available_actions'][agent_id] is List[int]
                      avail_list = [t['available_actions'][agent_id] for t in batch_data]
-                     # Convert to tensor (Batch, ActionDim)
                      available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
 
-        expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
-        mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
-        w_t_all = expanded_obs[mask].view(B, N, (N-1)*D)
-
-        with torch.no_grad():
-            C_matrix = self.compute_causal_rewards(
-                w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted',
-                available_actions_batch=available_actions_batch # [ADDED]
-            )
-            merging_method = 'sum'
-            if merging_method == 'max':
-                delta = C_matrix.max(dim=2)[0]
-            elif merging_method == 'mean':
-                delta = C_matrix.mean(dim=2)
-            elif merging_method == 'sum':
-                delta = C_matrix.sum(dim=2)
-
-            clip_delta = 0.2 # best hyperparameter
-            delta[torch.abs(delta) < clip_delta] = 0.0 # remove abs_values < 0.2
-
-            # Apply Adaptive Lambda per agent
-            if self.causal_lambda_adaptive_per_agent:
-                causal_lambdas = torch.tensor([
-                    self.get_current_causal_lambda(agent_id=i) for i in range(self.num_agents)
-                ], device=self.device).unsqueeze(0)
-                shaped_rewards_all = rewards_batch + causal_lambdas * delta
-            else:
-                shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * delta
-            
-            # Logging
-            for i in range(N):
-                for t, transition in enumerate(batch_data):
-                    scenario = self._classify_delta_scenario(transition, i)
-                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += delta[t, i].item()
-                    agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
-
+        # Extract pre-computed advantages and returns
         agent_returns = {}
         agent_advantages = {}
         
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
             
-            agent_obs = full_obs_batch[:, agent_id, :]
-            agent_shaped_rewards = shaped_rewards_all[:, agent_id]
-            agent_dones = dones_batch[:, agent_id]
+            returns_list = [t['returns'][agent_id] for t in batch_data]
+            advantages_list = [t['advantages'][agent_id] for t in batch_data]
             
-            with torch.no_grad():
-                agent_values = self.agents[agent_id].value_net(agent_obs).squeeze()
-                last_next_obs = batch_data[-1]['next_observations'][agent_id].to(self.device)
-                next_val = self.agents[agent_id].value_net(last_next_obs.unsqueeze(0)).item() * (1 - agent_dones[-1].item())
+            agent_returns[agent_id] = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
+            agent_advantages[agent_id] = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
 
-            advantages, returns = self.compute_gae(
-                agent_shaped_rewards.tolist(),
-                agent_values.tolist(),
-                next_val,
-                agent_dones.tolist()
-            )
-            
-            agent_returns[agent_id] = torch.tensor(returns, dtype=torch.float32, device=self.device)
-            agent_advantages[agent_id] = torch.tensor(advantages, dtype=torch.float32, device=self.device)
+        # Log delta (causal intrinsic rewards) by scenario
+        for i in range(self.num_agents):
+            for t, transition in enumerate(batch_data):
+                if 'delta' in transition and i in transition['delta']:
+                    scenario = self._classify_delta_scenario(transition, i)
+                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += transition['delta'][i]
+                    agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
 
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
@@ -834,48 +893,196 @@ class PCIMAPPOAlgorithm:
                 self.agents[agent_id].value_optimizer.step()
                 agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
 
+        # Average losses for logging
         for k in list(agent_losses.keys()):
-            if 'delta' not in k:
-                if k == 'value_loss':
-                    total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
-                    agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
-                else:
+            if 'value_loss' in k:
+                # Value loss is already averaged per agent per epoch, but we want total average
+                # The original code had a specific way to average value_loss, let's adapt the new logic
+                # If the new logic is to average all 'loss' keys by ppo_epochs, then value_loss should also be averaged.
+                # The original code was:
+                # total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
+                # agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
+                # Let's assume the new instruction implies averaging each agent's value_loss by ppo_epochs,
+                # and then the outer loop will average across batches.
+                if agent_losses[k] != 0:
                     agent_losses[k] /= self.ppo_epochs
-            elif 'sum' in k:
-                count_key = k.replace('sum', 'count')
-                if agent_losses[count_key] > 0:
-                    agent_losses[k.replace('sum', 'mean')] = agent_losses[k] / agent_losses[count_key]
-                del agent_losses[k]
+            elif 'loss' in k:
+                # Assuming other losses are summed, we average them
+                # But careful: some might be count-based logging
+                if agent_losses[k] != 0:
+                     agent_losses[k] /= self.ppo_epochs
+            elif 'delta' not in k: # Keep delta counts/sums as is for now, they are handled differently
+                del agent_losses[k] # Remove other non-loss, non-delta keys
         
         return dict(agent_losses)
 
     def update(self, **kwargs):
-        if self.buffer_manager.is_main_buffer_empty(): return {}
+        """
+        Main update function that orchestrates the training process for one iteration.
+        """
+        if self.buffer_manager.is_main_buffer_empty():
+            return {}
+
         transitions = self.buffer_manager.get_main_buffer_transitions()
         
-        # With Chunking, we can process larger batches, but standard PPO usually batches.
-        batch_size = max(1, len(transitions) // self.num_batches)
-        batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
+        # [FIX] Compute GAE on full trajectories before batching
+        try:
+            from collections import defaultdict
+            # 1. Group by env_id
+            env_trajectories = defaultdict(list)
+            for t in transitions:
+                env_id = t['info'].get('env_id', 0)
+                env_trajectories[env_id].append(t)
+            
+            # 2. Compute causal rewards for each trajectory
+            for env_id, traj in env_trajectories.items():
+                if len(traj) == 0 or self.get_current_causal_lambda() == 0.0:
+                    continue
+                
+                # Prepare data for causal reward computation
+                B = len(traj)
+                N = self.num_agents
+                D = self.obs_dim
+                
+                full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in traj]).to(self.device)
+                actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(N)] for t in traj], dtype=torch.long, device=self.device)
+                rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
+                dones_batch = torch.tensor([[t['dones'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
+                
+                # Prepare z_t (proxy variable)
+                # z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device)
+                z_t_batch = torch.stack([t['bold_r_t_minus_1'] for t in traj]).to(self.device) # prev rewards
+                # Prepare w_t (other agents' observations)
+                expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
+                mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
+                w_t_all = expanded_obs[mask].view(B, N, (N-1)*D)
+                
+                # Extract available actions
+                available_actions_batch = {}
+                if 'available_actions' in traj[0] and traj[0]['available_actions'] is not None:
+                    for agent_id in range(N):
+                        if agent_id in traj[0]['available_actions']:
+                            avail_list = [t['available_actions'][agent_id] for t in traj]
+                            available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
+                
+                # Compute causal rewards
+                with torch.no_grad():
+                    C_matrix = self.compute_causal_rewards(
+                        w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
+                        baseline_type='weighted',
+                        available_actions_batch=available_actions_batch
+                    )
+                    delta = C_matrix.sum(dim=2)
+                    
+                    clip_delta = 0.2
+                    delta[torch.abs(delta) < clip_delta] = 0.0
+                    
+                    # Apply lambda
+                    if self.causal_lambda_adaptive_per_agent:
+                        causal_lambdas = torch.tensor([
+                            self.get_current_causal_lambda(agent_id=i) for i in range(N)
+                        ], device=self.device).unsqueeze(0)
+                        shaped_rewards_all = rewards_batch + causal_lambdas * delta
+                    else:
+                        shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * delta
+                    
+                    # Store shaped rewards and delta in transitions
+                    for t_idx, t in enumerate(traj):
+                        t['shaped_rewards'] = {agent_id: shaped_rewards_all[t_idx, agent_id].item() 
+                                              for agent_id in range(N)}
+                        # Store delta for logging
+                        if 'delta' not in t:
+                            t['delta'] = {}
+                        for agent_id in range(N):
+                            t['delta'][agent_id] = delta[t_idx, agent_id].item()
+
+            
+            # 3. Compute GAE for each trajectory using shaped rewards
+            for env_id, traj in env_trajectories.items():
+                if len(traj) == 0:
+                    continue
+                
+                # For each agent, compute GAE
+                for agent_id in range(self.num_agents):
+                    if agent_id not in traj[0]['bold_o_t']:
+                        continue
+                    
+                    # Extract agent data
+                    agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
+                    
+                    # Use shaped rewards if available, otherwise use original rewards
+                    if 'shaped_rewards' in traj[0]:
+                        agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj],
+                                                        dtype=torch.float32, device=self.device)
+                    else:
+                        agent_rewards_seq = torch.tensor([t['bold_r_t'][agent_id] for t in traj],
+                                                        dtype=torch.float32, device=self.device)
+                    
+                    agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                    
+                    # Compute values
+                    with torch.no_grad():
+                        agent_values = self.agents[agent_id].value_net(agent_obs_seq).squeeze()
+                        last_next_obs = traj[-1]['next_observations'][agent_id]
+                        is_terminal = agent_dones_seq[-1].item()
+                        next_val = 0.0 if is_terminal else self.agents[agent_id].value_net(last_next_obs.unsqueeze(0)).item()
+                    
+                    # Compute GAE
+                    advantages, returns = self.compute_gae(
+                        agent_rewards_seq.tolist(),
+                        agent_values.tolist(),
+                        next_val,
+                        agent_dones_seq.tolist()
+                    )
+                    
+                    # Store in transitions
+                    for t_idx, t in enumerate(traj):
+                        if 'advantages' not in t:
+                            t['advantages'] = {}
+                            t['returns'] = {}
+                        t['advantages'][agent_id] = advantages[t_idx]
+                        t['returns'][agent_id] = returns[t_idx]
+            
+            # 3. Create batches from sorted transitions
+            sorted_transitions = []
+            for env_id in sorted(env_trajectories.keys()):
+                sorted_transitions.extend(env_trajectories[env_id])
+                
+            batch_size = max(1, len(sorted_transitions) // self.num_batches)
+            batches = [sorted_transitions[i:i + batch_size] for i in range(0, len(sorted_transitions), batch_size)]
+            
+        except Exception as e:
+            print(f"[ERROR PCI_MAPPO] Failed to restructure rollout data: {e}")
+            import traceback
+            traceback.print_exc()
+            batch_size = max(1, len(transitions) // self.num_batches)
+            batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
+        
         total_losses = defaultdict(float)
         
+        # Loop through each mini-batch to perform updates
         for batch_data in batches:
             if not batch_data: continue
             
+            # Causal Update
             if self.get_current_causal_lambda() > 0.0:
                 causal_losses = self.update_causal_networks(batch_data, mc_samples_k_w2=16)
             else:
                 causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
             
-            agent_and_value_losses = self.update_agents(batch_data)
-
             for loss_name, loss_value in causal_losses.items():
                 total_losses[loss_name] += loss_value
+                
+            # Agent Update
+            agent_and_value_losses = self.update_agents(batch_data)
+
             for loss_name, loss_value in agent_and_value_losses.items():
                 total_losses[loss_name] += loss_value
 
         self.buffer_manager.clear_buffer()
         self.training_steps += 1
         
+        # Average losses over the number of mini-batches for accurate logging
         num_valid_batches = len([b for b in batches if b])
         if num_valid_batches == 0: return {}
 

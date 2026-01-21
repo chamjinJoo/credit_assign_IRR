@@ -155,7 +155,8 @@ class StagHuntEnv(MultiAgentEnv):
                     self.required_agents[stag_id] = [stag_id, 0]
                 else:
                     self.required_agents[stag_id] = [stag_id, stag_id + 1]
-
+    
+    def print_env_setting(self):
         print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
         print(f"stag allocated agents: {self.required_agents}")
         

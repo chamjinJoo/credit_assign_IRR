@@ -86,3 +86,8 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 * Add SMAC and SMACv2 envs.
     * add action masking logics to prevent unavailable actions (e.g., choose attack when there is no enemy in the attack range)
     * Solve the NaN error in policy logits.
+
+## 26.01.20
+* Parallel Env 구현 중...
+* compute_causal_intrinsic_reward에서 available action 고려토록 하기
+* StagHunt task에서 `coop-bonus`를 조금이라도 주면서 테스트 해보기? (`coop-bonus=0`은 너무 `pci-marl`을 위한 세팅인 느낌이 들 수도 있으니)

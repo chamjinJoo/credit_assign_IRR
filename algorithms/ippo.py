@@ -50,6 +50,14 @@ class IPPOAgent:
         
         return action.item(), log_prob.item()
 
+    def get_action_batch(self, obs_batch: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Get actions for a batch of environments.
+        """
+        with torch.no_grad():
+            action, log_prob = self.policy_net.get_action_and_log_prob(obs_batch)
+        return action, log_prob
+
 
 class IPPOAlgorithm:
     """
@@ -152,6 +160,73 @@ class IPPOAlgorithm:
     def reset_agents(self):
         """Reset agents for new episode (no RNN state to reset)."""
         pass
+    
+    def reset_agents_batch(self, n_envs: int):
+        """Reset agents for multiple environments (batch mode)."""
+        self.last_dones_batch = [{i: False for i in range(self.num_agents)} for _ in range(n_envs)]
+
+    def get_actions_batch(
+        self,
+        observations_batch: List[Dict[int, torch.Tensor]],
+        available_actions_batch: Optional[List[Dict[int, List[int]]]] = None
+    ) -> List[Dict[int, Tuple[int, float]]]:
+        """
+        Get actions for a batch of environments.
+        """
+        n_envs = len(observations_batch)
+        actions_batch = [{} for _ in range(n_envs)]
+        
+        for agent_id in range(self.num_agents):
+            agent_obs_list = []
+            for i in range(n_envs):
+                obs = observations_batch[i][agent_id]
+                agent_obs_list.append(obs)
+            
+            agent_obs_tensor = torch.stack(agent_obs_list).to(self.device)
+            
+            actions, log_probs = self.agents[agent_id].get_action_batch(agent_obs_tensor)
+            
+            for i in range(n_envs):
+                act = actions[i].item()
+                lp = log_probs[i].item()
+                actions_batch[i][agent_id] = (act, lp)
+        
+        return actions_batch
+
+    def store_transition_from_env(
+        self,
+        env_idx: int,
+        prev_observations: Dict[int, torch.Tensor],
+        prev_rewards: Dict[int, float],
+        prev_actions: Dict[int, int],
+        observations: Dict[int, torch.Tensor],
+        actions: Dict[int, int],
+        rewards: Dict[int, float],
+        next_observations: Dict[int, torch.Tensor],
+        dones: Dict[int, bool],
+        info: Dict = None,
+        available_actions: Optional[Dict[int, List[int]]] = None
+    ):
+        """Store transition from a specific parallel environment."""
+        if info is None: info = {}
+        info['env_id'] = env_idx
+        
+        if hasattr(self, 'last_dones_batch'):
+            for agent_id in range(self.num_agents):
+                self.last_dones_batch[env_idx][agent_id] = dones[agent_id]
+        
+        self.buffer_manager.store_transition(
+            prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            dones=dones,
+            hidden_states={i: None for i in range(self.num_agents)},
+            info=info
+        )
     
     def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
         """
@@ -284,38 +359,19 @@ class IPPOAlgorithm:
              for agent_id in all_agent_rewards:
                  all_agent_rewards[agent_id] = global_rewards_tensor
 
-        # === 2. Compute Individual Agent Returns/Advantages using SHAPED rewards ===
+        # === 2. Extract Pre-computed Advantages and Returns ===
         agent_returns = {}
         agent_advantages = {}
-        agent_values = {}
-        next_agent_values = {}
         
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']:
                 continue
-                
-            # Get current values for this agent
-            with torch.no_grad():
-                agent_values[agent_id] = self.value_net(agent_obs_tensors[agent_id]).squeeze()
             
-            # Estimate next state value for bootstrapping the SHAPED-return calculation
-            with torch.no_grad():
-                last = batch_data[-1]
-                is_terminal = all_agent_dones[agent_id][-1].item()
-                if not is_terminal:
-                    next_obs_agent = last['next_observations'][agent_id]
-                    next_agent_values[agent_id] = self.value_net(next_obs_agent.unsqueeze(0)).item()
-                else:
-                    next_agent_values[agent_id] = 0.0
-
-            advantages_shaped, returns_agent_shaped = self.compute_gae(
-                all_agent_rewards[agent_id].tolist(), 
-                agent_values[agent_id].tolist(), 
-                next_agent_values[agent_id], 
-                all_agent_dones[agent_id].tolist()
-            )
-            agent_returns[agent_id] = torch.tensor(returns_agent_shaped, dtype=torch.float32, device=self.device)
-            agent_advantages[agent_id] = torch.tensor(advantages_shaped, dtype=torch.float32, device=self.device)
+            returns_list = [t['returns'][agent_id] for t in batch_data]
+            advantages_list = [t['advantages'][agent_id] for t in batch_data]
+            
+            agent_returns[agent_id] = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
+            agent_advantages[agent_id] = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
 
         # === Agent-Specific Policy Updates ===
         for agent_id in range(self.num_agents):
@@ -398,9 +454,73 @@ class IPPOAlgorithm:
 
         transitions = self.buffer_manager.get_main_buffer_transitions()
         
-        # Partition into K mini-batches
-        batch_size = max(1, len(transitions) // self.num_batches)
-        batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
+        # [FIX] Compute GAE on full trajectories before batching
+        try:
+            # 1. Group by env_id
+            env_trajectories = defaultdict(list)
+            for t in transitions:
+                env_id = t['info'].get('env_id', 0)
+                env_trajectories[env_id].append(t)
+            
+            # 2. Compute GAE for each trajectory
+            for env_id, traj in env_trajectories.items():
+                if len(traj) == 0:
+                    continue
+                
+                # For each agent, compute GAE
+                for agent_id in range(self.num_agents):
+                    if agent_id not in traj[0]['bold_o_t']:
+                        continue
+                    
+                    # Extract agent data
+                    agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
+                    
+                    if self.global_reward:
+                        agent_rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
+                                                        dtype=torch.float32, device=self.device)
+                    else:
+                        agent_rewards_seq = torch.tensor([t['bold_r_t'][agent_id] for t in traj],
+                                                        dtype=torch.float32, device=self.device)
+                    
+                    agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                    
+                    # Compute values
+                    with torch.no_grad():
+                        agent_values = self.value_net(agent_obs_seq).squeeze()
+                        last_next_obs = traj[-1]['next_observations'][agent_id]
+                        is_terminal = agent_dones_seq[-1].item()
+                        next_val = 0.0 if is_terminal else self.value_net(last_next_obs.unsqueeze(0)).item()
+                    
+                    # Compute GAE
+                    advantages, returns = self.compute_gae(
+                        agent_rewards_seq.tolist(),
+                        agent_values.tolist(),
+                        next_val,
+                        agent_dones_seq.tolist()
+                    )
+                    
+                    # Store in transitions
+                    for t_idx, t in enumerate(traj):
+                        if 'advantages' not in t:
+                            t['advantages'] = {}
+                            t['returns'] = {}
+                        t['advantages'][agent_id] = advantages[t_idx]
+                        t['returns'][agent_id] = returns[t_idx]
+            
+            # 3. Create batches from sorted transitions
+            sorted_transitions = []
+            for env_id in sorted(env_trajectories.keys()):
+                sorted_transitions.extend(env_trajectories[env_id])
+                
+            batch_size = max(1, len(sorted_transitions) // self.num_batches)
+            batches = [sorted_transitions[i:i + batch_size] for i in range(0, len(sorted_transitions), batch_size)]
+            
+        except Exception as e:
+            print(f"[ERROR IPPO] Failed to restructure rollout data: {e}")
+            import traceback
+            traceback.print_exc()
+            batch_size = max(1, len(transitions) // self.num_batches)
+            batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
         
         total_losses = defaultdict(float)
         

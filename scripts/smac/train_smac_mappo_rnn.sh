@@ -15,6 +15,7 @@ global_reward=true
 # training and logging 
 max_iterations=1500
 max_steps_per_iteration=2000
+n_rollout_threads=8
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 seed=42
@@ -30,4 +31,4 @@ python main.py --env ${env} --map-name ${map_name} --config ${config} --model ${
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --recurrent-N ${recurrent_N} --global-reward ${global_reward} \
     --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smac \
+    --n-rollout-threads ${n_rollout_threads} --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smac \
