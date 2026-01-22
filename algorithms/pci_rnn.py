@@ -521,6 +521,8 @@ class PCIRNNAlgorithm:
             self.action_bridge_optimizer.zero_grad()
             self.kernel_action_embed_optimizer.zero_grad()
             total_loss.backward()
+            # torch.nn.utils.clip_grad_norm_(self.outcome_bridge_net.parameters(), self.max_grad_norm)
+            # torch.nn.utils.clip_grad_norm_(self.action_embedding_for_kernel.parameters(), self.max_grad_norm)
             self.outcome_bridge_optimizer.step()
             # self.action_bridge_optimizer.step()
             self.kernel_action_embed_optimizer.step()
@@ -1176,7 +1178,7 @@ class PCIRNNAlgorithm:
             agent_returns[agent_id] = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
             agent_advantages[agent_id] = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
 
-        # Log delta (causal intrinsic rewards) by scenario
+        # Log delta (causal intrinsic rewards) by scenario for StagHunt
         for i in range(self.num_agents):
             for t, transition in enumerate(batch_data):
                 if 'delta' in transition and i in transition['delta']:

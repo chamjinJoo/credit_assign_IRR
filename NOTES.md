@@ -88,13 +88,23 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
     * Solve the NaN error in policy logits.
 
 ## 26.01.20
-* Parallel Env 구현 중... 
-    * it works but needs more tests. 
-    * Seems Okay. Verfied in Stag-Hunt and SMAC.
-    * trainig time is reduced by half.
+* Parallel Env 구현 중 
 * compute_causal_intrinsic_reward에서 available action 고려토록 하기
 * StagHunt task에서 `coop-bonus`를 조금이라도 주면서 테스트 해보기? (`coop-bonus=0`은 너무 `pci-marl`을 위한 세팅인 느낌이 들 수도 있으니)
 
 ## 26.01.21
+* [NOTE] Parallel Env implementaion is done!
+    * Verfied in Stag-Hunt, SMAC, and SMACv2.
+    * trainig time is reduced by half.
 * `pci-marl`의 clip_delta도 argparse로 조정할 수 있게 수정
+    * `clip_delta` is for filtering noise, so set it to a tiny value like 1e-2 or 1e-3 scale.
 * SMAC에서의 reward값이 0.01 scale까지 나오는 것을 확인 -> `clip_delta=0.005`로 세팅해봄.
+* Found that bridge networks training does not use max_grad_norm clipping. Add it. -> But not effective.
+* **Hyperparameter**: `lr_bridge=1e-3` and `clip_delta=0.01` for SH. 
+
+## 26.01.22
+* SMACv2 Benchmarking
+    * Settings: keep the most configs in `configs/smacv2_configs_examples/[...].yaml`. 
+    * When using `[...]_epo.yaml` We can change the `prob_obs_enemy=[0.0, 0.5, 1.0]` for partial observability while keeping `action_mask=False`. This is because SMACv2 paper shows that `action_mask=True` makes `prob_obs_enemy` meaningless.
+* We observed that `mappo-rnn` degrades when `global_reward=False` where critic and policy trained with individual rewards.
+* `StagHunt` with `coop-bonus=1.0` -> `PCI-MARL` outperformes. Overall trends are similar to no `coop_bonus` case.

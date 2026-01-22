@@ -228,6 +228,7 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
+            global_reward=getattr(algorithm_config, 'global_reward', True),
         )
     elif algorithm_type == 'ippo_rnn':
         algorithm = IPPORNNAlgorithm(
@@ -362,11 +363,17 @@ def main():
                 env_id = env_id[:-3]
             config.wandb.run_name = env_id
         # For SMAC, use smac_{map_name}
-        elif env_class_name in ['SMACEnv', 'SMACv2Env']:
-            # Try to get map_name from env config or env instance if accessible
-            # We can check config.environment.map_name which we added
+        elif env_class_name in ['SMACEnv', 'SMACWrapper']:
             map_name = getattr(config.environment, 'map_name', 'unknown')
-            config.wandb.run_name = f"smac_{map_name}"
+            config.wandb.run_name = f"{map_name}"
+        # For SMACv2
+        elif env_class_name in ['SMACv2Env', 'SMACv2Wrapper']:
+            map_name = getattr(config.environment, 'map_name', 'unknown')
+            races = ['protoss', 'zerg', 'terran'] # find race from the map_name, [protoss, zerg, terran]
+            race = next((r for r in races if r in map_name), 'unknown')
+            n_units = config.environment.capability_config["n_units"]
+            n_enemies = config.environment.capability_config["n_enemies"] 
+            config.wandb.run_name = f"{race}_{n_units}_vs_{n_enemies}"
         else:
             # For other environments, use environment class name
             env_name = env_class_name.lower()

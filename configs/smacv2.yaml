@@ -4,8 +4,8 @@
 network:
   hidden_dim: 64
   lr_actor: 5.0e-4
-  lr_bridge: 5.0e-4
-  lr_critic: 5.0e-4
+  lr_bridge: 1.0e-3
+  lr_critic: 1.0e-3
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
 
@@ -13,7 +13,7 @@ network:
 algorithm:
   gamma: 0.99
   gae_lambda: 0.95
-  clip_epsilon: 0.2
+  clip_epsilon: 0.1 # clip_range 0.1 as the SMACv2 paper
   entropy_coef: 0.01
   value_coef: 0.5
   max_grad_norm: 0.5
@@ -53,32 +53,9 @@ training:
   
 # Environment Configuration
 environment:
+  import_config: "configs/smacv2_configs_examples/sc2_gen_zerg_epo.yaml"
   env_name: "SMACv2"
-  map_name: "10gen_protoss"
-  num_agents: 5
-
-  # capability config for SMAC2
-  capability_config:
-    team_gen:
-      n_units: 5
-      n_enemies: 5
-      dist_type: "weighted_teams"
-      unit_types:
-        - "stalker"
-        - "zealot"
-        - "colossus"
-      exception_unit_types: []
-      weights:
-        - 0.45
-        - 0.45
-        - 0.1
-      observe: true
-    start_positions:
-      dist_type: "surrounded_and_reflect"
-      p: 0.5 # enemy observations are stochastically masked for each agent. if p=0, only the agent who first observes an the enemy can see the enemy.
-      map_x: 32
-      map_y: 32
-
+  num_agents: 6
 
 # Weights & Biases Configuration
 wandb:

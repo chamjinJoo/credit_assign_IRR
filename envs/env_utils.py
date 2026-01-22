@@ -96,18 +96,20 @@ def create_environment(env_config) -> MultiAgentEnv:
         )
     
     elif env_name == 'SMAC' or env_name == 'StarCraft2':
-        from .multi_agent_env import SMACEnv
-        return SMACEnv(
+        from .multi_agent_env import SMACWrapper
+        return SMACWrapper(
             map_name=config_dict.get('map_name', '3m'),
-            seed=config_dict.get('seed', None)
+            seed=config_dict.get('seed', None),
+            **config_dict.get('env_args', {})
         )
 
     elif env_name == 'SMACv2':
-        from .multi_agent_env import SMACv2Env
-        return SMACv2Env(
-            map_name=config_dict.get('map_name', 'protoss_5_vs_5'),
+        from .multi_agent_env import SMACv2Wrapper
+        return SMACv2Wrapper(
+            map_name=config_dict.get('map_name'),
             seed=config_dict.get('seed', None),
-            capability_config=config_dict.get('capability_config', None)
+            capability_config=config_dict.get('capability_config', None),
+            **config_dict.get('env_args', {})
         )
     
     else:

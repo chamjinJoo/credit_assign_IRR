@@ -1,7 +1,7 @@
 #!/bin/bash
 # env setting 
 env="StagHunt"
-forage_quantity=3   
+forage_quantity=3  
 num_agents=3
 grid_observation=true
 config="configs/stag_hunt.yaml"

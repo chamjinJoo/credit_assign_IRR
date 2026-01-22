@@ -130,6 +130,7 @@ class MAPPORNNAlgorithm:
         global_reward: bool = True,
     ):
         self.global_reward = global_reward
+        print('global_reward: ',global_reward)
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -608,7 +609,12 @@ class MAPPORNNAlgorithm:
                 val_error = (new_vals.squeeze(1) - global_ret_batch) ** 2
              
              # Masked Value Loss
-             val_loss = (val_error * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+             if not self.global_reward:
+                 active_masks_batch_val = active_masks_batch.unsqueeze(1)
+             else:
+                 active_masks_batch_val = active_masks_batch
+
+             val_loss = (val_error * active_masks_batch_val).sum() / (active_masks_batch_val.sum() + 1e-8)
              
              self.value_optimizer.zero_grad()
              (self.value_coef * val_loss).backward()

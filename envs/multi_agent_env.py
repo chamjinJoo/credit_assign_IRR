@@ -1155,7 +1155,7 @@ class LBForagingWrapper(MultiAgentEnv):
         if hasattr(self.env, 'close'):
             self.env.close()
 
-class SMACEnv(MultiAgentEnv):
+class SMACWrapper(MultiAgentEnv):
     """
     Wrapper for StarCraft Multi-Agent Challenge (SMAC) environment.
     """
@@ -1225,17 +1225,22 @@ class SMACEnv(MultiAgentEnv):
     def close(self):
         self._env.close()
 
-class SMACv2Env(MultiAgentEnv):
+class SMACv2Wrapper(MultiAgentEnv):
     """
     Wrapper for StarCraft Multi-Agent Challenge (SMAC) environment.
+    To address the lack of stochasticity in SMAC.
+    Actually, some SMAC task can be completed using open-loop policy which is conditioned only on
+    the timestep and agent id, without observations (from SMACv2 paper). 
+        "One limitation of SMAC is the constant starting positions and types of units, 
+        allowing methods to memorise action sequences for solving individual scenarios."
     """
     def __init__(self, map_name: str = "10gen_protoss", seed: int = None, **kwargs):
         try:
-            from smacv2.env import StarCraft2Env # for SMACv2
+            from smacv2.env import StarCraftCapabilityEnvWrapper # for SMACv2
         except ImportError:
             raise ImportError("SMACv2 is not installed. Please install it using `pip install git+https://github.com/oxwhirl/smac.git`")
             
-        self._env = StarCraft2Env(map_name=map_name, seed=seed, **kwargs)
+        self._env = StarCraftCapabilityEnvWrapper(map_name=map_name, seed=seed, **kwargs)
         self._env_info = self._env.get_env_info()
         # env_info: {'state_shape', 'obs_shape', 'n_actions', 'n_agents', 'episode_limit', 
         #               'agent_features': ['health', 'energy/cooldown', 'rel_x', 'rel_y'], 

@@ -1,15 +1,15 @@
 #!/bin/bash
 # env setting
 env="StagHunt"
-num_agents=4
-forage_quantity=4 # default: the same as num_agents
+num_agents=3
+forage_quantity=3 # default: the same as num_agents
 grid_observation=true
 config="configs/stag_hunt.yaml"
 
 # model setting
 model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=1.0
-clip_delta=0.2
+clip_delta=0.01
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
 recurrent_N=1
@@ -20,7 +20,7 @@ max_steps_per_iteration=2000
 n_rollout_threads=8
 log_interval=2
 device="cpu"
-seed=42
+seed=1
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

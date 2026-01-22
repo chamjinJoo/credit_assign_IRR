@@ -124,6 +124,9 @@ class EnvironmentConfig:
     save_animations: bool = True
     animation_interval: int = 100
 
+    # Generic args for any environment
+    env_args: Dict[str, Any] = field(default_factory=dict)
+
 @dataclass
 class WandbConfig:
     """Weights & Biases configuration."""
@@ -158,8 +161,40 @@ class Config:
         
         # 'env' 또는 'environment' 키 지원
         env_config = config_dict.get('environment', config_dict.get('env', {}))
+        
+        # 외부 config 파일 import 지원
+        if env_config and 'import_config' in env_config:
+            import_path = env_config.pop('import_config')
+            try:
+                with open(import_path, 'r', encoding='utf-8') as f:
+                    imported_dict = yaml.safe_load(f)
+                    
+                # imported_dict가 environment 섹션을 포함하고 있으면 그 내부를, 아니면 dict 전체를 사용
+                imported_env_config = imported_dict.get('environment', imported_dict.get('env', imported_dict))
+                # 병합: 현재 설정(env_config)이 imported 설정보다 우선순위를 가집니다. imported_env_config를 기본으로 하고, env_config로 덮어씁니다.
+                merged_config = imported_env_config.copy()
+                merged_config.update(env_config)
+                env_config = merged_config
+
+            except Exception as e:
+                print(f"Warning: Failed to import config from {import_path}: {e}")
+                
         if env_config:
-            config.environment = EnvironmentConfig(**env_config)
+            # dataclass 필드인 것과 아닌 것을 분리
+            valid_keys = set(EnvironmentConfig.__dataclass_fields__.keys())
+            known_args = {k: v for k, v in env_config.items() if k in valid_keys}
+            unknown_args = {k: v for k, v in env_config.items() if k not in valid_keys}
+            
+            # known_args로 객체 생성
+            env_conf_obj = EnvironmentConfig(**known_args)
+            
+            # unknown_args는 env_args 필드에 추가 (기존 env_args가 있다면 병합)
+            if 'env_args' in known_args:
+                env_conf_obj.env_args.update(unknown_args)
+            else:
+                env_conf_obj.env_args = unknown_args
+            
+            config.environment = env_conf_obj
         
         if 'wandb' in config_dict:
             config.wandb = WandbConfig(**config_dict['wandb'])
@@ -202,7 +237,7 @@ def parse_args() -> argparse.Namespace:
                         help='Use grid observation (true/false)')
     parser.add_argument('--forage-quantity', type=int, default=None,
                         help='Number of forage items (StagHunt)')
-    parser.add_argument('--map-name', type=str, default='3m',
+    parser.add_argument('--map-name', type=str, default=None,
                         help='Map name for SMAC environment')
     
     # Training
@@ -300,6 +335,7 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.environment.forage_quantity = args.forage_quantity
     if hasattr(args, 'map_name') and args.map_name:
         config.environment.map_name = args.map_name
+        print(config.environment.map_name)
         
     if hasattr(args, 'max_iterations') and args.max_iterations:
         config.training.max_iterations = args.max_iterations
