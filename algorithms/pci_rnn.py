@@ -81,16 +81,18 @@ class PCIRNNAgent:
         self.rnn_states_policy_batch = None  # (n_envs, recurrent_N, hidden_dim)
         self.rnn_states_value_batch = None
 
-    def reset_rnn_state(self):
+    def reset_rnn_state(self, device=None):
         """Reset RNN state for single environment (backward compatibility)"""
-        self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim)
-        self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim)
+        if device is None: device = self.policy_net.output_layer.weight.device
+        self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
+        self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
     
-    def reset_rnn_states_batch(self, n_envs: int):
+    def reset_rnn_states_batch(self, n_envs: int, device=None):
         """Reset RNN states for multiple environments (batch mode)"""
+        if device is None: device = self.policy_net.output_layer.weight.device
         self.n_envs = n_envs
-        self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim)
-        self.rnn_states_value_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim)
+        self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
+        self.rnn_states_value_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
 
 
     def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None) -> Tuple[int, float, Optional[torch.Tensor]]:
@@ -321,8 +323,13 @@ class PCIRNNAlgorithm:
             # 하나의 shared value network 생성
             self.shared_value_net = RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N)
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
+            
             # for checkpointing and loading (호환성을 위해 딕셔너리 유지)
             self.value_nets = {agent_id: self.shared_value_net for agent_id in range(num_agents)}
+
+            # for agent_id, agent in self.agents.items():
+            #    agent.value_net = self.shared_value_net
+            
             self.value_optimizers = {agent_id: self.shared_value_optimizer for agent_id in range(num_agents)}
         else:
             # 각 agent별로 별도의 value network 사용
@@ -336,15 +343,17 @@ class PCIRNNAlgorithm:
             outcome_dim=num_agents-1,
             hidden_dim=hidden_dim,
             action_embedding_dim=8,
-            x_dim=obs_dim # [ADD] x = o^i_t
+            # x_dim=obs_dim # x = o^i_t
+            # x_dim=obs_dim + (num_agents-1) # x = (o^i_t, \mathbf{h}_{t-1})
+            x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # [SWITCH] x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            # z_dim=obs_dim * num_agents, # Default Z
+            # z_dim=obs_dim * num_agents, # prev joint observation
             z_dim=num_agents, # [SWITCH] Z=prev rewards
+            # z_dim=hidden_dim * recurrent_N, # [SWITCH] Z=own hidden state
             # z_dim=obs_dim * num_agents + num_agents, # [SWITCH] Z = [Joint Obs, Joint Reward]
             # z_dim=obs_dim * num_agents + action_dim * num_agents, # [SWITCH] Z = [Joint Obs, Joint Action]
-            # z_dim=num_agents, # [SWITCH] previous reward vector as proxy
             action_dim=action_dim,
             num_agents=num_agents,
             hidden_dim=hidden_dim,
@@ -436,11 +445,43 @@ class PCIRNNAlgorithm:
         mask_rewards = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
         Y_super = expanded_rewards[mask_rewards].view(batch_size * num_agents, -1)
 
+        # [SWITCH] Constructing X_super = {o^i_t, h^{-i}_{t-1}}
+        # 1. Gather all hidden states: (B, N, RecN*H)
+        h_list = []
+        for i in range(num_agents):
+            if i in hidden_states_batch:
+                h_list.append(hidden_states_batch[i].view(batch_size, -1))
+            else:
+                h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
+        H_all = torch.stack(h_list, dim=1) # (B, N, RecN*H)
+
+        # 2. Get others' hidden states for each agent i
+        expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1) # (B, N, N, RecN*H)
+        mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
+        H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1) # (B*N, (N-1)*RecN*H)
+
+        # 3. Concatenate with ego observation (obs_super is already B*N, ObsDim)
+        obs_super = obs_batch.view(-1, self.obs_dim)
+        X_super = torch.cat([obs_super, H_others_super], dim=1)
+
         # Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
         Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
         # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
-
+        
+        ''' [SWITCH] Z=own hidden state 
+        z_list = [] 
+        for i in range(num_agents):
+            if i in hidden_states_batch:
+                # hidden_states_batch[i] is (Batch, RecN, H)
+                z_list.append(hidden_states_batch[i].view(batch_size, -1))
+            else:
+                z_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
+                # default self.recurrent_N is 1, but for generality.
+        Stack (B, N, RecN*H) then flatten -> (B*N, RecN*H)
+        Z_super = torch.stack(z_list, dim=1).view(-1, self.recurrent_N * self.hidden_dim)
+        '''
+        
         with torch.no_grad():
             log_probs_list = []
             for i in range(num_agents):
@@ -486,12 +527,14 @@ class PCIRNNAlgorithm:
             y_mb = Y_super[idx]
             z_mb = Z_super[idx]
             pi_mb = policy_probs_super[idx]
-            o_mb = obs_super[idx]
+            x_mb = X_super[idx]
+            o_mb = obs_super[idx] 
             batch_agent_ids = idx % num_agents
 
             # --- Update Outcome Bridge h_φ ---
             # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
-            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=o_mb) # [ADD] x=o_mb
+            # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
+            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # [SWITCH] x=x_mb (o_mb + h_others)
             residuals_mb = y_mb - r_hat_mb
             
             if self.causal_lambda_adaptive_per_agent:
@@ -631,13 +674,13 @@ class PCIRNNAlgorithm:
     def reset_agents(self):
         """Reset agent hidden states."""
         for agent in self.agents.values():
-            agent.reset_rnn_state()
+            agent.reset_rnn_state(device=self.device)
         self.last_dones = {i: False for i in range(self.num_agents)}
     
     def reset_agents_batch(self, n_envs: int):
         """Reset agent hidden states for batch mode (parallel environments)."""
         for agent in self.agents.values():
-            agent.reset_rnn_states_batch(n_envs)
+            agent.reset_rnn_states_batch(n_envs, device=self.device)
         # Track done status for each agent in each environment
         self.last_dones_batch = {i: [False] * n_envs for i in range(self.num_agents)}
 
@@ -699,7 +742,7 @@ class PCIRNNAlgorithm:
             obs_stacked = torch.stack([
                 observations_batch[env_idx][agent_id]
                 for env_idx in range(n_envs)
-            ])  # (n_envs, obs_dim)
+            ]).to(self.device)  # (n_envs, obs_dim)
             
             # Create masks
             masks_stacked = torch.tensor([
@@ -956,12 +999,29 @@ class PCIRNNAlgorithm:
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
-                # [ADDED] Expand x for all actions
+                # Expand x for all actions
+                # X construction for inference _inf: inference
+                h_list_inf = []
+                for k in range(num_agents):
+                    if hidden_states_batch is not None and k in hidden_states_batch:
+                         # hidden_states_batch[k][0][i:end] is (curr_bs, RecN, H)
+                        h_list_inf.append(hidden_states_batch[k][0][i:end].view(curr_bs, -1))
+                    else:
+                        h_list_inf.append(torch.zeros(curr_bs, self.recurrent_N * self.hidden_dim, device=self.device))
+                H_all_inf = torch.stack(h_list_inf, dim=1) # (curr_bs, N, RecN*H)
+
+                # get others hiddens
+                expanded_H_inf = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                mask_H_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, self.recurrent_N * self.hidden_dim)
+                H_others_inf = expanded_H_inf[mask_H_inf].view(curr_bs * num_agents, -1)
+
                 obs_flat = obs_b.view(-1, self.obs_dim)
-                x_expanded = obs_flat.repeat_interleave(action_dim, dim=0)
+                x_flat = torch.cat([obs_flat, H_others_inf], dim=1)
+
+                x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
                 # reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
-                reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded) # [ADD] x=o_mb
+                reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded) # [SWITCH] x=x_expanded
                 
                 reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents - 1)
                 r_hat_all = reg_estimates_cf # no q
@@ -969,10 +1029,8 @@ class PCIRNNAlgorithm:
                 # collect r_hat by factual actions
                 r_hat_factual = r_hat_all[torch.arange(r_hat_all.size(0)), actions_flat]
 
-                # [최적화] 모든 agent의 hidden states와 masks를 미리 준비
                 probs_list = []
                 if hidden_states_batch is not None and dones_batch is not None:
-                    # 모든 agent의 hidden states와 masks를 미리 준비하여 불필요한 연산 최소화
                     precomputed_states = {}
                     precomputed_masks = {}
                     for k in range(num_agents):
@@ -1039,10 +1097,10 @@ class PCIRNNAlgorithm:
                 # using factual rewards instead of predicted rewards
                 r_factual = others_rewards_flat
 
-                # using real rewards
+                # Opt 1) using real rewards
                 raw_effects = r_factual - baseline
                 
-                # using outcome bridge 
+                # Opt 2) using outcome bridge -- worse performance, do not use
                 # raw_effects = r_hat_factual - baseline
 
                 # Reshape to [B, N, N-1]
@@ -1066,7 +1124,8 @@ class PCIRNNAlgorithm:
         z_t: torch.Tensor, 
         o_t: torch.Tensor, 
         current_actions: Dict[int, int], 
-        current_rewards: Dict[int, float]
+        current_rewards: Dict[int, float],
+        hidden_states: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None
     ) -> Tuple[float, float]:
         """
         Wrapper for compute_causal_rewards to be used by evaluation scripts.
@@ -1097,10 +1156,20 @@ class PCIRNNAlgorithm:
             # Actually compute_causal_rewards uses z_t_batch. Line 598: z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(...)
             # If z_t is prev joint obs, then (1, N*D). 
             # z_t_repeated becomes (1, N, N*D) -> (N, N*D).
-            # This seems correct for z_t if it represents the global context.
-            
+            # Wrapper for hidden_states
+            hidden_states_batch = None
+            if hidden_states is not None:
+                hidden_states_batch = {}
+                for k, v in hidden_states.items():
+                    # v is (h, c) or (h, v_h). h is (RecN, H). Need (1, RecN, H)
+                    h_unsqueezed = v[0].unsqueeze(0)
+                    c_unsqueezed = v[1].unsqueeze(0)
+                    hidden_states_batch[k] = (h_unsqueezed, c_unsqueezed)
+
             C_matrix = self.compute_causal_rewards(
-                w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, baseline_type='weighted'
+                w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, 
+                hidden_states_batch=hidden_states_batch,
+                baseline_type='weighted'
             )
             
             # Calculate delta for the specific agent (sum of effects this agent has on others)
@@ -1400,8 +1469,8 @@ class PCIRNNAlgorithm:
                         baseline_type='weighted',
                         available_actions_batch=available_actions_batch
                     )
+                    
                     delta = C_matrix.sum(dim=2)
-
                     delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
                     # Apply lambda

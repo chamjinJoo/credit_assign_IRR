@@ -250,6 +250,7 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
+            global_reward=getattr(algorithm_config, 'global_reward', True),
         )
     else:
         raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'pci_rnn', 'mappo', 'mappo_rnn', 'ippo', 'ippo_rnn', 'x_pci', or 'coma'")

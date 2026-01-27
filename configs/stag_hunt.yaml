@@ -57,7 +57,7 @@ environment:
   env_name: "StagHunt"
   num_agents: 3
   max_steps: 50
-  stag_move_prob: 0.7
+  stag_move_prob: 0.0
   coop_bonus: 0.0 # default: 0.0 
   forage_reward: 3.0
   stag_reward: 5.0

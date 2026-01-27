@@ -73,14 +73,14 @@ class StagHuntEnv(MultiAgentEnv):
     
     def __init__(
         self, 
-        num_agents: int = 2,
+        num_agents: int = 3,
         max_steps: int = 50,
         stag_follows: bool = False,
         run_away_after_maul: bool = False,
         forage_quantity: int = None,
         forage_reward: float = 3.0,
         stag_reward: float = 5.0,
-        mauling_punishment: float = -1.0,
+        mauling_punishment: float = 0.0,
         coop_bonus: float = 0.0,
         required_agents: Dict[int, List[int]] = None,
         seed: int = None,

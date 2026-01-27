@@ -141,6 +141,7 @@ class IPPORNNAlgorithm:
         global_reward: bool = False,
     ):
         self.global_reward = global_reward
+        print("global_reward:", self.global_reward)
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -239,16 +240,6 @@ class IPPORNNAlgorithm:
         with torch.no_grad():
             # Get current value states for this agent across batch
             curr_rnn_state = self.rnn_states_value_batch[agent_id].clone()
-            
-            # Forward pass
-            # value_net expects (batch, recurrent_N, hidden_dim) as hidden state input
-            # obs_batch: (batch, dim) -> RNNLayer adds seq dim internally? 
-            # Checked previously: RNNLayer usually handles (Batch, Dim) -> (Batch, 1, Dim)
-            
-            # Output: (batch, 1, 1) or (batch, 1, N)?
-            # In IPPORNN, value_net has out_dim=1 (default for RNNValueNetwork unless specified)
-            # Checked init: self.value_net = RNNValueNetwork(obs_dim, ...) -> default out_dim=1?
-            # networks/rnn.py: RNNValueNetwork defaults out_dim=1. Correct.
             
             values, next_rnn_state = self.value_net(
                 obs_batch,

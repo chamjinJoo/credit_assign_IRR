@@ -11,7 +11,7 @@ recurrent_N=1
 
 # training and logging 
 max_iterations=5000
-max_steps_per_iteration=2000
+max_steps_per_iteration=1600 # 8 episode for 10gen scenarios (episode limit is 200 steps)
 n_rollout_threads=8
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety

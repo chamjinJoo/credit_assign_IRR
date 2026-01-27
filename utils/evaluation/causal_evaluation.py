@@ -87,7 +87,9 @@ class CausalEffectEvaluator:
             next_observations, rewards, dones, info = self.env.step(action_dict)
             
             # Causal effect 추정
-            causal_effects = self._estimate_causal_effects(prev_observations, observations, action_dict, rewards, info)
+            # Retrieve hidden states from algorithm (populated by get_actions)
+            hidden_states = getattr(self.algorithm, 'temp_hidden_states', None)
+            causal_effects = self._estimate_causal_effects(prev_observations, observations, action_dict, rewards, info, hidden_states)
             
             transition = {
                 'bold_r_t': rewards,
@@ -131,7 +133,8 @@ class CausalEffectEvaluator:
         observations: Dict[int, np.ndarray],
         actions: Dict[int, int],
         rewards: Dict[int, float],
-        info: Dict[str, Any]
+        info: Dict[str, Any],
+        hidden_states: Optional[Dict[int, Tuple]] = None
     ) -> Dict[int, float]:
         """
         현재 상태에서 각 agent의 causal effect를 추정합니다.
@@ -175,9 +178,11 @@ class CausalEffectEvaluator:
                     agent_id=agent_id,
                     w_t=w_t,
                     z_t=z_t,
+                    z_t=z_t,
                     o_t=torch_observations[agent_id],
                     current_actions=actions,
-                    current_rewards=rewards
+                    current_rewards=rewards,
+                    hidden_states=hidden_states
                 )
                 # Huntable objects 정보를 활용한 추가 분석
                 causal_effects[agent_id] = delta_t

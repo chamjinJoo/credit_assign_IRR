@@ -107,4 +107,17 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
     * Settings: keep the most configs in `configs/smacv2_configs_examples/[...].yaml`. 
     * When using `[...]_epo.yaml` We can change the `prob_obs_enemy=[0.0, 0.5, 1.0]` for partial observability while keeping `action_mask=False`. This is because SMACv2 paper shows that `action_mask=True` makes `prob_obs_enemy` meaningless.
 * We observed that `mappo-rnn` degrades when `global_reward=False` where critic and policy trained with individual rewards.
-* `StagHunt` with `coop-bonus=1.0` -> `PCI-MARL` outperformes. Overall trends are similar to no `coop_bonus` case.
+* `StagHunt` with `coop-bonus` 
+    * `1.0` -> `PCI-MARL` outperformes. Overall trends are similar to no `coop_bonus` case.
+    * `3.0` -> `PCI-MARL` outperformes.
+    * `5.0` -> `PCI-MARL` outperformes.
+* `rIPPO` with `global_reward=True` shows higher performance than `global_reward=False`, but unstable over different seeds.
+
+# 26.01.23
+* SMACv2: `ppo_epochs=2` -> `ppo_epoch=10` following the SMACv2 paper. -> better but still not good.
+
+# 26.01.27
+* Proxy Z issue while using observational history $\eta$ for policy.
+    * consider $Z^i_t = \eta^i_{t-1}$. -> not satisfies conditional indep. condition
+    * keep $Z^i_t = \mathbf{r}_{t-1}$, change $X^i_t = \{o^i_t, \mathbf{a}^{-i}_t\}$. -> conditional indep. for W is not satisfied.
+    * keep $Z^i_t = \mathbf{r}_{t-1}$, **change $X^i_t = \{o^i_t, \mathbf{h}^{-i}_{t-1}\}$**. -> both conditional indep. are satisfied.

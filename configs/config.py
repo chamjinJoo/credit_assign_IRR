@@ -63,7 +63,6 @@ class TrainingConfig:
     deterministic: bool = True
 
 
-
 @dataclass
 class EnvironmentConfig:
     """Environment configuration."""
