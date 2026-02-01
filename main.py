@@ -13,7 +13,7 @@ import torch
 from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
 from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
 from envs import create_environment, get_available_environments
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
 from runner import Trainer
 
 
@@ -31,6 +31,7 @@ def create_algorithm(env, config):
     
     if algorithm_type == 'pci_mappo':
         algorithm = PCIMAPPOAlgorithm(
+            env = env,
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
             action_dim=env.get_action_dim(),
@@ -75,6 +76,7 @@ def create_algorithm(env, config):
         )
     elif algorithm_type == 'pci_rnn':
         algorithm = PCIRNNAlgorithm(
+            env=env,
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
             action_dim=env.get_action_dim(),
@@ -252,8 +254,46 @@ def create_algorithm(env, config):
             device=config.training.device,
             global_reward=getattr(algorithm_config, 'global_reward', True),
         )
+    elif algorithm_type == 'q_pci_rnn':
+        algorithm = Q_PCIRNNAlgorithm(
+            env=env,
+            num_agents=env.num_agents,
+            obs_dim=env.get_obs_dim(),
+            action_dim=env.get_action_dim(),
+            w_dim=env.get_obs_dim(), 
+            hidden_dim=network_config.hidden_dim,
+            recurrent_N=getattr(network_config, 'recurrent_N', 1),
+            rnn_chunk_length=getattr(algorithm_config, 'rnn_chunk_length', 50),
+            lr_actor=network_config.lr_actor,
+            lr_bridge=network_config.lr_bridge,
+            causal_lambda=algorithm_config.causal_lambda,
+            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2),
+            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
+            causal_lambda_adaptive_per_agent=getattr(algorithm_config, 'causal_lambda_adaptive_per_agent', False),
+            causal_lambda_adaptive_alpha=getattr(algorithm_config, 'causal_lambda_adaptive_alpha', 0.9),
+            causal_lambda_adaptive_min=getattr(algorithm_config, 'causal_lambda_adaptive_min', 0.1),
+            causal_lambda_adaptive_max=getattr(algorithm_config, 'causal_lambda_adaptive_max', 1.0),
+            causal_lambda_adaptive_error_threshold=getattr(algorithm_config, 'causal_lambda_adaptive_error_threshold', 0.5),
+            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
+            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.2),
+            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
+            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
+            gamma=algorithm_config.gamma,
+            gae_lambda=algorithm_config.gae_lambda,
+            clip_epsilon=algorithm_config.clip_epsilon,
+            entropy_coef=algorithm_config.entropy_coef,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            ppo_epochs=algorithm_config.ppo_epochs,
+            batch_size=algorithm_config.batch_size,
+            num_batches=algorithm_config.num_batches,
+            max_buffer_size=getattr(algorithm_config, 'max_buffer_size', 10000),
+            device=config.training.device,
+            rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
+            env_required_agents=env_required_agents,
+            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 50),
+        )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'pci_rnn', 'mappo', 'mappo_rnn', 'ippo', 'ippo_rnn', 'x_pci', or 'coma'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'pci_rnn', 'q_pci_rnn', 'mappo', 'mappo_rnn', 'ippo', 'ippo_rnn', 'x_pci', or 'coma'")
     
     return algorithm
 
@@ -495,7 +535,8 @@ def main():
             render=getattr(args, 'render', False),
             save_animation=save_animation,
             animation_dir=animation_dir if save_animation else "./animations",
-            evaluate_advanced_causal=True,
+            evaluate_advanced_causal=False,
+            evaluate_policy_quality=False,
             advanced_causal_steps=5000,
         )
         

@@ -72,6 +72,7 @@ def create_environment(env_config) -> MultiAgentEnv:
             max_episode_steps=config_dict.get('max_episode_steps', 50),
             force_coop=config_dict.get('force_coop', False),
             seed=config_dict.get('seed', None),
+            grid_observation=config_dict.get('grid_observation', True)
         )
 
     elif env_name == 'SimpleSpread' or env_name == 'simple_spread':

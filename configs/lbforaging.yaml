@@ -3,7 +3,7 @@
 network:
   hidden_dim: 64
   lr_actor: 3.0e-4
-  lr_bridge: 3.0e-4
+  lr_bridge: 1.0e-3
   lr_critic: 3.0e-4
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
@@ -31,8 +31,8 @@ algorithm:
 
 # Training Configuration
 training:
-  max_iterations: 3000
-  max_steps_per_iteration: 1024
+  max_iterations: 1500
+  max_steps_per_iteration: 2000
   log_interval: 2
   save_interval: 100
   eval_interval: 50
@@ -46,14 +46,15 @@ training:
 # Environment Configuration
 environment:
   env_name: "LBForaging"
-  num_agents: 3
-  field_size: 9
+  num_agents: 2
+  field_size: 8
   max_food: 2
-  player_level: [1, 2]
-  food_level: [1, 3]
+  player_level: [1, 1]
+  food_level: [1, 2]
   sight: 2
   max_episode_steps: 50
   force_coop: true
+  grid_observation: true
 
 # Weights & Biases Configuration
 wandb:

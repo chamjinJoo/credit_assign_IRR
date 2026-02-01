@@ -12,6 +12,7 @@ network:
 # Algorithm Configuration
 algorithm:
   gamma: 0.99
+  rnn_chunk_length: 50
   gae_lambda: 0.95
   clip_epsilon: 0.2
   entropy_coef: 0.01
@@ -61,7 +62,7 @@ environment:
   coop_bonus: 0.0 # default: 0.0 
   forage_reward: 3.0
   stag_reward: 5.0
-  mauling_punishment: 0.0
+  mauling_punishment: 0.0 # set as negative for activation
   grid_observation: false
   
 # Weights & Biases Configuration

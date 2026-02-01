@@ -218,6 +218,7 @@ class PCIRNNAgent:
 class PCIRNNAlgorithm:
     def __init__(
         self,
+        env,
         num_agents: int,
         obs_dim: int,
         action_dim: int,
@@ -258,6 +259,7 @@ class PCIRNNAlgorithm:
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
     ):
+        self.env = env
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -344,7 +346,6 @@ class PCIRNNAlgorithm:
             hidden_dim=hidden_dim,
             action_embedding_dim=8,
             # x_dim=obs_dim # x = o^i_t
-            # x_dim=obs_dim + (num_agents-1) # x = (o^i_t, \mathbf{h}_{t-1})
             x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # [SWITCH] x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         )
         
@@ -428,7 +429,7 @@ class PCIRNNAlgorithm:
         # Extract hidden states
         hidden_states_batch = {}
         if 'hidden_states' in batch_data[0] and batch_data[0]['hidden_states'] is not None:
-             if any(batch_data[0]['hidden_states'].values()):
+            if any(batch_data[0]['hidden_states'].values()):
                 for agent_id in range(self.num_agents):
                     if agent_id in batch_data[0]['hidden_states']:
                         p_states = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device) # (Batch, recurrent_N, hidden_dim)
@@ -683,8 +684,7 @@ class PCIRNNAlgorithm:
             agent.reset_rnn_states_batch(n_envs, device=self.device)
         # Track done status for each agent in each environment
         self.last_dones_batch = {i: [False] * n_envs for i in range(self.num_agents)}
-
-    
+   
     def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         self.temp_hidden_states = {} # Store current states for store_transition
@@ -1035,9 +1035,7 @@ class PCIRNNAlgorithm:
                     precomputed_masks = {}
                     for k in range(num_agents):
                         p_state_b = hidden_states_batch[k][0][i:end]  # (curr_bs, recurrent_N, hidden_dim)
-                        # 이미 device에 있을 가능성이 높지만, 한 번만 확인
-                        if p_state_b.device != self.device:
-                            p_state_b = p_state_b.to(self.device)
+                        if p_state_b.device != self.device: p_state_b = p_state_b.to(self.device)
                         precomputed_states[k] = p_state_b
                         
                         dones_b = dones_batch[i:end, k]
@@ -1094,10 +1092,8 @@ class PCIRNNAlgorithm:
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # using factual rewards instead of predicted rewards
-                r_factual = others_rewards_flat
-
                 # Opt 1) using real rewards
+                r_factual = others_rewards_flat
                 raw_effects = r_factual - baseline
                 
                 # Opt 2) using outcome bridge -- worse performance, do not use
@@ -1251,10 +1247,21 @@ class PCIRNNAlgorithm:
         for i in range(self.num_agents):
             for t, transition in enumerate(batch_data):
                 if 'delta' in transition and i in transition['delta']:
-                    scenario = self._classify_delta_scenario(transition, i)
-                    agent_losses[f'delta_agent_{i}_{scenario}_sum'] += transition['delta'][i]
-                    agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
-
+                    if self.env.__class__.__name__ == 'StagHuntEnv':
+                        scenario = self._classify_delta_scenario(transition, i)
+                        agent_losses[f'delta_agent_{i}_{scenario}_sum'] += transition['delta'][i]
+                        agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
+                    else:
+                        # check the accuracy of delta (predicting others' rewards)
+                        others_rewards_sum = sum([transition['bold_r_t'][j] for j in range(self.num_agents) if j != i])
+                        if others_rewards_sum == 0:
+                            # 1st case: no reward
+                            agent_losses[f'delta_agent{i}_no_reward_sum'] += transition['delta'][i]
+                            agent_losses[f'delta_agent{i}_no_reward_count'] += 1
+                        else:
+                            # 2nd case: positive reward
+                            agent_losses[f'delta_agent{i}_positive_reward_sum'] += transition['delta'][i]
+                            agent_losses[f'delta_agent{i}_positive_reward_count'] += 1
 
         # PPO Update
         for agent_id in range(self.num_agents):
@@ -1347,7 +1354,6 @@ class PCIRNNAlgorithm:
                 
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
-                
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 
                 surr1 = ratio * adv_batch
@@ -1356,7 +1362,7 @@ class PCIRNNAlgorithm:
                 # Masked Policy Loss
                 policy_loss = -torch.min(surr1, surr2)
                 policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
-                
+
                 # Masked Entropy Loss
                 entropy_loss = -entropy # entropy is (T)
                 entropy_loss = (entropy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
@@ -1469,8 +1475,12 @@ class PCIRNNAlgorithm:
                         baseline_type='weighted',
                         available_actions_batch=available_actions_batch
                     )
-                    
+                    # merging 1. summation
                     delta = C_matrix.sum(dim=2)
+                    # merging 2. max
+                    # delta = C_matrix.max(dim=2).values
+                
+                    # delta = torch.clamp(delta, min=0.0) # same as ReLU
                     delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
                     # Apply lambda
@@ -1481,7 +1491,9 @@ class PCIRNNAlgorithm:
                         shaped_rewards_all = rewards_batch + causal_lambdas * delta
                     else:
                         shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * delta
-                    
+                    shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
+
+
                     # Store shaped rewards and delta in transitions
                     for t_idx, t in enumerate(traj):
                         t['shaped_rewards'] = {agent_id: shaped_rewards_all[t_idx, agent_id].item() for agent_id in range(N)}

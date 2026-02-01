@@ -121,3 +121,10 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
     * consider $Z^i_t = \eta^i_{t-1}$. -> not satisfies conditional indep. condition
     * keep $Z^i_t = \mathbf{r}_{t-1}$, change $X^i_t = \{o^i_t, \mathbf{a}^{-i}_t\}$. -> conditional indep. for W is not satisfied.
     * keep $Z^i_t = \mathbf{r}_{t-1}$, **change $X^i_t = \{o^i_t, \mathbf{h}^{-i}_{t-1}\}$**. -> both conditional indep. are satisfied.
+
+# 26.01.28
+* Test `StagHuntEnv` without coord information in obs -> good
+
+# 26.02.01
+* Update the save_replay logic for SMACv2 -> watch replay on Window via Starcraft2.
+* Build a new pci method `q_pci_rnn`: outcome bridge function predict Q-values of the peers.

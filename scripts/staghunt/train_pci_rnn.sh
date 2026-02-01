@@ -5,7 +5,7 @@ num_agents=3
 forage_quantity=3 # default: the same as num_agents
 grid_observation=true
 config="configs/stag_hunt.yaml"
-
+ 
 # model setting
 model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=1.0
@@ -20,7 +20,7 @@ max_steps_per_iteration=2000
 n_rollout_threads=8
 log_interval=2
 device="cpu"
-seed=2
+seed=42
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

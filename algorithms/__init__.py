@@ -6,6 +6,7 @@ from .mappo_rnn import MAPPORNNAlgorithm
 from .ippo import IPPOAlgorithm
 from .ippo_rnn import IPPORNNAlgorithm
 from .coma import COMAAlgorithm
+from .q_pci_rnn import Q_PCIRNNAlgorithm
 
 __all__ = [
     "PCIMAPPOAlgorithm",
@@ -15,5 +16,6 @@ __all__ = [
     "IPPOAlgorithm",
     "IPPORNNAlgorithm",
     "X_PCIAlgorithm",
-    "COMAAlgorithm"
+    "COMAAlgorithm",
+    "Q_PCIRNNAlgorithm"
 ]

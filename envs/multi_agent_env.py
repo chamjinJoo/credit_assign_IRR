@@ -6,7 +6,6 @@ from typing import Dict, Tuple, List, Any, Optional
 from abc import ABC, abstractmethod
 import lbforaging
 import gymnasium as gym
-
 import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
@@ -127,7 +126,7 @@ class StagHuntEnv(MultiAgentEnv):
         # Observation space: coordinate(2) + 5x5 grid
         if self.grid_observation:
             # self.obs_dim = 2 + (2 * self.vision + 1)**2 * 3 # bitmask obs
-            self.obs_dim = 2 + (2 * self.vision + 1)**2 * (2*num_agents + 1) # original grid obs
+            self.obs_dim = (2 * self.vision + 1)**2 * (2*num_agents + 1) # exclude coord info.
         else:
             # num_agents + num_stags + num_hares. All have (x, y) coordinates
             self.obs_dim = (num_agents + num_agents + self.forage_quantity) * 2
@@ -427,8 +426,7 @@ class StagHuntEnv(MultiAgentEnv):
         
         for agent_id, action in actions.items():
             current_x, current_y = self.agent_positions[agent_id]
-            
-            # 이동 방향 계산
+
             if action == self.STAY:
                 new_x, new_y = current_x, current_y
             elif action == self.UP:
@@ -661,7 +659,8 @@ class StagHuntEnv(MultiAgentEnv):
                     grid_obs.extend(cell_info)
             
             # 전체 관찰 결합 (2 + 25*(num_agents+2) 차원)
-            full_obs = coord_obs + grid_obs
+            # full_obs = coord_obs + grid_obs
+            full_obs = grid_obs
             observations[agent_id] = np.array(full_obs, dtype=np.float32)
 
             # add stochasticity to obs
@@ -984,7 +983,6 @@ class StagHuntEnv(MultiAgentEnv):
         buf = fig.canvas.buffer_rgba()
         arr = np.asarray(buf)
         
-        # Figure 정리
         plt.close(fig)
         
         return arr[:, :, :3]  # Alpha 채널 제거
@@ -1011,6 +1009,7 @@ class LBForagingWrapper(MultiAgentEnv):
         force_coop: bool = False,
         player_level: Tuple[int, int] = (1, 1),
         food_level: Tuple[int, int] = (1, 3),
+        grid_observation: bool = True
     ):
         super().__init__(num_agents=num_agents, seed=seed)
         
@@ -1021,8 +1020,7 @@ class LBForagingWrapper(MultiAgentEnv):
         self.food_level = food_level
         self.max_episode_steps = max_episode_steps
         self.force_coop = force_coop
-        
-        # Gymnasium 환경 생성
+
         from gymnasium.envs.registration import register
         env_id = f"Foraging-{field_size}x{field_size}-{num_agents}p-{max_food}f"
         if force_coop:
@@ -1044,9 +1042,8 @@ class LBForagingWrapper(MultiAgentEnv):
                     "sight": sight,
                     "max_episode_steps": max_episode_steps,
                     "force_coop": force_coop,
-                    "grid_observation": True
+                    "grid_observation": grid_observation
         }
-        # 환경이 이미 등록되어 있으면 unregister하고 다시 등록
         if env_registered:
             try:
                 from gymnasium.envs.registration import registry
@@ -1069,11 +1066,9 @@ class LBForagingWrapper(MultiAgentEnv):
         self.agent_mapping = {i: f"agent_{i}" for i in range(self.num_agents)}
         self.reverse_mapping = {f"agent_{i}": i for i in range(self.num_agents)}
 
-        # Observation 및 action 차원 확인
-        # Gymnasium의 reset 표준에 따라 seed를 전달
         obs_array, _ = self.env.reset(seed=self._seed) 
-        # LBForaging의 관찰은 (N, obs_dim) 배열이므로, obs_dim은 두 번째 차원입니다.
-        # grid_observation인 경우 shape의 전체 크기를 사용
+        # LBForaging observation is array of shape (N, obs_dim)
+
         if self.kwargs.get("grid_observation", False):
             self.obs_dim = int(np.prod(obs_array[0].shape))
         else:
@@ -1084,10 +1079,7 @@ class LBForagingWrapper(MultiAgentEnv):
             self.action_dim = self.env.action_space.n
 
     def reset(self) -> Dict[int, np.ndarray]:
-        """환경을 리셋하고 초기 관찰을 반환합니다."""
         obs_array, _ = self.env.reset() # (observation_array, info_dict)
-        # numpy 배열을 Dict[agent_id: np.ndarray] 형식으로 변환
-        # grid_observation인 경우 3차원 텐서를 1차원 벡터로 flatten
         observations = {i: obs_array[i].astype(np.float32).flatten() for i in range(self.num_agents)}
         return observations
 
@@ -1097,61 +1089,46 @@ class LBForagingWrapper(MultiAgentEnv):
         Dict[int, bool],
         Dict[str, Any]
     ]:
-        """환경에서 한 스텝을 진행합니다."""
-        # 1. PCI-MAPPO Dict[int: int] 액션을 LBForaging의 np.ndarray[int] 형식으로 변환
-        # LBForaging은 (N,) 형태의 np.int64 배열을 기대합니다.
         gym_actions = np.array([actions[i] for i in range(self.num_agents)], dtype=np.int64)
         
-        # 2. 환경 스텝 실행
-        # Gymnasium의 step 표준: (obs_array, reward_array, terminated, truncated, info)
         step_result = self.env.step(gym_actions)
         obs_array, reward_array, terminated, truncated, info = step_result
         
-        # 3. LBForaging의 배열 결과를 PCI-MAPPO의 Dict[int: value] 형식으로 변환
         observations = {}
         rewards = {}
         dones = {}
         
         for i in range(self.num_agents):
-            # 관찰: (obs_dim,) 형태로 변환
             observations[i] = obs_array[i].astype(np.float32).flatten()
             # reward: each agent's maximum reward in one episode is 1.0
             rewards[i] = float(reward_array[i])
-        # 4. Done 처리 (terminated와 truncated를 합쳐서 episode_done 계산)
+     
         episode_done = bool(terminated) or bool(truncated)
         
-        # 모든 에이전트에 동일하게 적용
         for agent_id in self.agents:
             dones[agent_id] = episode_done
 
-        # Info 정보
+        # Info
         info_dict = {
             # 'step_count': self.env._elapsed_steps,
             'max_cycles': self.max_episode_steps,
             'episode_done': episode_done,
             'raw_info': info
         }
-        # for debugging
-        # self.env.render()
         return observations, rewards, dones, info_dict
-    
-    # get_obs_dim, get_action_dim, render, close는 기존 로직을 유지합니다.
+
     def get_obs_dim(self) -> int:
-        """관찰 차원을 반환합니다."""
         return self.obs_dim
     
     def get_action_dim(self) -> int:
-        """액션 차원을 반환합니다."""
         return self.action_dim
     
     def render(self, mode='human'):
-        """환경 상태를 렌더링합니다."""
         if hasattr(self.env, 'render'):
-            return self.env.render(mode=mode)
+            return self.env.render(mode)
         return None
     
     def close(self):
-        """환경을 닫습니다."""
         if hasattr(self.env, 'close'):
             self.env.close()
 
@@ -1234,7 +1211,7 @@ class SMACv2Wrapper(MultiAgentEnv):
         "One limitation of SMAC is the constant starting positions and types of units, 
         allowing methods to memorise action sequences for solving individual scenarios."
     """
-    def __init__(self, map_name: str = "10gen_protoss", seed: int = None, **kwargs):
+    def __init__(self, map_name: str = "10gen_protoss", seed: int = None, normalized_obs: bool = False, **kwargs):
         try:
             from smacv2.env import StarCraftCapabilityEnvWrapper # for SMACv2
         except ImportError:
@@ -1250,6 +1227,7 @@ class SMACv2Wrapper(MultiAgentEnv):
         self.agents = list(range(self.num_agents))
         self.obs_dim = self._env_info["obs_shape"]
         self.action_dim = self._env_info["n_actions"]
+        self.normalized_obs = normalized_obs
 
         super().__init__(num_agents=self.num_agents, seed=seed)
         
@@ -1274,6 +1252,15 @@ class SMACv2Wrapper(MultiAgentEnv):
         obs_list = self._env.get_obs()
         observations = {i: np.array(obs, dtype=np.float32) for i, obs in enumerate(obs_list)}
         
+        # normalize observation
+        if self.normalized_obs:
+            for i in observations:
+                obs = observations[i]
+                obs_min = obs.min()
+                obs_max = obs.max()
+                if obs_max - obs_min > 1e-8:  # avoid division by zero
+                    observations[i] = (obs - obs_min) / (obs_max - obs_min)
+
         # SMAC returns a single scalar reward (shared reward)
         rewards = {i: float(reward) for i in self.agents}
         
@@ -1298,10 +1285,14 @@ class SMACv2Wrapper(MultiAgentEnv):
     def get_action_dim(self) -> int:
         return self.action_dim
 
+    def save_replay(self, dir=None):
+        if dir is not None:
+            # StarCraftCapabilityEnvWrapper 내의 StarCraft2Env 접근
+            if hasattr(self._env, 'env') and hasattr(self._env.env, 'replay_dir'):
+                self._env.env.replay_dir = dir
+                
+        if hasattr(self._env, 'save_replay'):
+            self._env.save_replay()
+
     def close(self):
         self._env.close()
-
-def dict_to_tensor(obs_dict: Dict[int, np.ndarray], device: str = "cpu") -> Dict[int, torch.Tensor]:
-    """Convert observation dictionary to tensor dictionary."""
-    return {agent_id: torch.tensor(obs, dtype=torch.float32, device=device) 
-            for agent_id, obs in obs_dict.items()}

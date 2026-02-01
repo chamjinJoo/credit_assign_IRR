@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -54,7 +54,7 @@ class Trainer:
         self,
         config: Dict,
         env: MultiAgentEnv,
-        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm],
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm, Q_PCIRNNAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -518,6 +518,9 @@ class Trainer:
             elif "SMAC" in str(self.env):
                 if info.get('battle_won', False):
                     is_success = 1.0
+            elif "LBForaging" in str(self.env):
+                if sum(episode_reward.values()) >= 0.99:
+                    is_success = 1.0
             episode_successes.append(is_success)
             
             # Track recent rewards for logging
@@ -655,14 +658,15 @@ class Trainer:
                         # Check success
                         is_success = 0.0
                         info_ = infos_batch[env_idx]
+                        # for staghunt env
                         if 'stag_alive' in info_:
                             stag_alive = info_.get('stag_alive', {})
                             hare_alive = info_.get('hare_alive', {})
                             if not any(stag_alive.values()) and not any(hare_alive.values()):
                                 is_success = 1.0
-                        elif 'battle_won' in info_:
-                            if info_.get('battle_won', False):
-                                is_success = 1.0
+                        # for SMACs
+                        elif info_.get('battle_won', False):
+                            is_success = 1.0
                         episode_successes.append(is_success)
                         
                         # Track recent rewards
@@ -692,8 +696,7 @@ class Trainer:
         }
         
         return rollout_data
-
-    
+ 
     def evaluate_policy(self) -> Dict[str, float]:
         """
         Evaluate current policy for multiple episodes.
@@ -733,23 +736,8 @@ class Trainer:
                         if available_actions is not None and agent_id in available_actions:
                             avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.algorithm.device)
                             
-                        # Pass available_actions here. Make sure all algorithms support kwargs or update signature
-                        # Currently all algorithms' get_action support available_actions (or similar) or should be robust
                         if hasattr(self.algorithm.agents[agent_id], 'get_action'):
-                             # Prepare args based on signature inspection or try/except
-                             # But simpler is to rely on the algorithms we updated which now accept available_actions
-                             # However, we need to consistent.
-                             # Let's check signature? No, just assume we updated them.
-                             # Wait, the algorithm.agents[agent_id].get_action signature varies. 
-                             # For pci_rnn/mappo_rnn it's: get_action(obs, masks=None, available_actions=None)
-                             # For pci_mappo/x_pci it's: get_action(obs, available_actions=None)
-                             
-                             # We can use kwargs if supported, or just pass if expected.
-                             # Let's try passing available_actions if the variable is not None.
-                             
                              if avail_actions_tensor is not None:
-                                 # Checking if 'ip_rnn' or 'pci_rnn' based on class is tricky without import.
-                                 # We know we updated them.
                                  action, _, = self.algorithm.agents[agent_id].get_action(obs, available_actions=avail_actions_tensor)
                              else:
                                  action, _, = self.algorithm.agents[agent_id].get_action(obs)
@@ -1165,6 +1153,7 @@ class Trainer:
         render: bool = False, 
         save_animation: bool = False, 
         animation_dir: str = "./save_animations",
+        save_replay: bool = True,
         evaluate_advanced_causal: bool = False,
         advanced_causal_steps: int = 5000,
         evaluate_policy_quality: bool = True
@@ -1461,11 +1450,26 @@ class Trainer:
                             # Regular rendering
                             self.env.render()
                     
+                    # Get availability of actions
+                    available_actions = None
+                    if hasattr(self.env, "get_avail_actions"):
+                        avail = self.env.get_avail_actions()
+                        available_actions = {i: avail[i] for i in range(len(avail))}
+
                     # Get actions (deterministic for testing)
                     with torch.no_grad():
                         actions = {}
                         for agent_id, obs in observations.items():
-                            action, _ = self.algorithm.agents[agent_id].get_action(obs)
+                            # Handle available actions
+                            avail_actions_tensor = None
+                            if available_actions is not None and agent_id in available_actions:
+                                avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.algorithm.device)
+
+                            if avail_actions_tensor is not None:
+                                action, _, = self.algorithm.agents[agent_id].get_action(obs, available_actions=avail_actions_tensor)
+                            else:
+                                action, _, = self.algorithm.agents[agent_id].get_action(obs)
+                            
                             actions[agent_id] = action
                     
                     # Take step
@@ -1480,6 +1484,10 @@ class Trainer:
                     episode_length += 1
                     done = any(dones.values())
                 
+                if save_replay and hasattr(self.eval_env, 'save_replay'):
+                    self.logger.info(f"Saving replay for episode {episode + 1}")
+                    self.eval_env.save_replay(dir=animation_dir)
+
                 # Save animation if requested
                 if save_animation:
                     if frames:

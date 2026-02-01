@@ -8,10 +8,11 @@ config="configs/smacv2.yaml"
 model="ippo-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
 recurrent_N=1
+global_reward=true
 
 # training and logging 
-max_iterations=1500
-max_steps_per_iteration=1000
+max_iterations=5000
+max_steps_per_iteration=1600
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 seed=42
@@ -24,7 +25,7 @@ conda activate pcimarl
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-python main.py --env ${env} --config ${config} --model ${model} \
+python main.py --env ${env} --config ${config} --model ${model} --global-reward ${global_reward} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smacv2 \

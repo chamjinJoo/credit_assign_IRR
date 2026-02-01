@@ -21,6 +21,7 @@ class AlgorithmConfig:
     type: str = "pci_mappo"  # Algorithm type: pci_mappo, mappo, or ippo
     gamma: float = 0.99
     gae_lambda: float = 0.95
+    rnn_chunk_length: int = 50
     clip_epsilon: float = 0.2
     entropy_coef: float = 0.01
     value_coef: float = 0.5
@@ -41,7 +42,7 @@ class AlgorithmConfig:
     causal_lambda_warmup_steps: int = 10000
     causal_lambda_startingpoint: int = 0  # Starting iteration for causal lambda scheduling
     num_batches: int = 4  # Number of batches K for training
-    causal_mini_batch_size: int = 256  # Chunk size for RKHS solver
+    causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     # Buffer size limits for FIFO queue behavior
     max_buffer_size: int = 10000
@@ -69,7 +70,6 @@ class EnvironmentConfig:
     env_name: str = "simple_cooperative"
     name: str = "simple_cooperative"  # alias for env_name
     num_agents: int = 2
-    grid_size: int = 5
     max_steps: int = 50
     cooperation_bonus: float = 2.0
     # For toy causal env
@@ -103,6 +103,7 @@ class EnvironmentConfig:
     sight: int = 7
     max_episode_steps: int = 50
     force_coop: bool = False
+    grid_observation: bool = True
 
     # For Simple Stag Hunt environment
     cooperation_reward: int = 5
@@ -228,7 +229,7 @@ def parse_args() -> argparse.Namespace:
     # Environment
     parser.add_argument('--env', type=str, default='simple_cooperative',
                         help='Environment name')
-    parser.add_argument('--num-agents', type=int, default=3,
+    parser.add_argument('--num-agents', type=int, default=None,
                         help='Number of agents')
     parser.add_argument('--episode-length', type=int, default=None,
                         help='Episode length (for toy_causal)')
