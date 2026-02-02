@@ -339,10 +339,11 @@ class PCIRNNAlgorithm:
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
+            # [edit] outcome bridge function predicts all reward vector \in \mathbb{R}^N
             action_dim=action_dim,
             num_agents=num_agents,
             w_dim=obs_dim * (num_agents-1),
-            outcome_dim=num_agents-1,
+            outcome_dim=num_agents,
             hidden_dim=hidden_dim,
             action_embedding_dim=8,
             # x_dim=obs_dim # x = o^i_t
@@ -442,9 +443,8 @@ class PCIRNNAlgorithm:
         mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
         W_super = expanded_obs[mask].view(batch_size * num_agents, -1)
         
-        expanded_rewards = reward_batch.unsqueeze(1).expand(-1, num_agents, -1)
-        mask_rewards = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
-        Y_super = expanded_rewards[mask_rewards].view(batch_size * num_agents, -1)
+        # [EDIT] Y = r_t
+        Y_super = reward_batch.repeat_interleave(num_agents, dim=0)  # (batch_size * num_agents, num_agents)
 
         # [SWITCH] Constructing X_super = {o^i_t, h^{-i}_{t-1}}
         # 1. Gather all hidden states: (B, N, RecN*H)
@@ -535,7 +535,7 @@ class PCIRNNAlgorithm:
             # --- Update Outcome Bridge h_φ ---
             # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
             # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
-            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # [SWITCH] x=x_mb (o_mb + h_others)
+            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # [SWITCH] x=(o_mb, h_others)
             residuals_mb = y_mb - r_hat_mb
             
             if self.causal_lambda_adaptive_per_agent:
@@ -987,14 +987,7 @@ class PCIRNNAlgorithm:
                 
                 # r_pred_flat = self.outcome_bridge_net(actions_flat, w_t_flat) 
                 
-                mask_indices = torch.tensor([
-                    [j for j in range(num_agents) if j != k] 
-                    for k in range(num_agents)
-                ], device=self.device)
-                
-                others_rewards = r_b.unsqueeze(1).expand(-1, num_agents, -1)
-                others_rewards = torch.gather(others_rewards, 2, mask_indices.unsqueeze(0).expand(curr_bs, -1, -1))
-                others_rewards_flat = others_rewards.view(-1, num_agents - 1)
+                rewards_flat = r_b.unsqueeze(1).expand(-1, num_agents, -1).reshape(-1, num_agents)
                 
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
@@ -1023,7 +1016,8 @@ class PCIRNNAlgorithm:
                 # reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
                 reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded) # [SWITCH] x=x_expanded
                 
-                reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents - 1)
+                # [EDIT] outcome bridge now predicts all agents' rewards (num_agents instead of num_agents-1)
+                reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents)
                 r_hat_all = reg_estimates_cf # no q
 
                 # collect r_hat by factual actions
@@ -1064,20 +1058,7 @@ class PCIRNNAlgorithm:
                     probs_list.append(probs)
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
 
-                # baseline 1: contain factual action
-                """
-                if baseline_type == 'weighted':
-                    # 모든 action의 확률을 사용 (factual action 포함)
-                    sum_probs = action_probs_flat.sum(dim=1, keepdim=True)
-                    baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1) / sum_probs
-                elif baseline_type == 'average':
-                    # 모든 action을 포함하여 평균 계산 (factual action 포함)
-                    baseline = r_hat_all.mean(dim=1)
-                else:
-                    raise ValueError(f"Invalid baseline type: {baseline_type}")
-                """
-
-                # baseline 2: exclude factual action
+                # baseline: exclude factual action
                 factual_mask = torch.zeros_like(action_probs_flat).scatter_(1, actions_flat.unsqueeze(1), 1.0)
                 non_factual_mask = 1.0 - factual_mask
                 
@@ -1093,21 +1074,19 @@ class PCIRNNAlgorithm:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
                 # Opt 1) using real rewards
-                r_factual = others_rewards_flat
+                # [EDIT] Now using all agents' rewards (num_agents dimension)
+                r_factual = rewards_flat
                 raw_effects = r_factual - baseline
                 
                 # Opt 2) using outcome bridge -- worse performance, do not use
                 # raw_effects = r_hat_factual - baseline
 
-                # Reshape to [B, N, N-1]
-                effects_reshaped = raw_effects.view(curr_bs, num_agents, num_agents - 1)
+                # [EDIT] Reshape to [B, N, N] (now includes all agents)
+                effects_reshaped = raw_effects.view(curr_bs, num_agents, num_agents)
                 
-                # Scatter values into N x N matrix (Diagonal is 0)
-                # target_indices: [B, N, N-1] -> expand for batch
-                batch_target_indices = mask_indices.unsqueeze(0).expand(curr_bs, -1, -1)
-                
-                C_chunk = torch.zeros(curr_bs, num_agents, num_agents, device=self.device)
-                C_chunk.scatter_(2, batch_target_indices, effects_reshaped)
+                # [EDIT] effects_reshaped is already [B, N, N], so directly assign it
+                # No need for scatter operation since we have all agents' effects
+                C_chunk = effects_reshaped
                 
                 C_matrix[i:end] = C_chunk
             
@@ -1483,16 +1462,16 @@ class PCIRNNAlgorithm:
                     # delta = torch.clamp(delta, min=0.0) # same as ReLU
                     delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
-                    # Apply lambda
+                    # compute shaped rewards
+                    # (1-causal_lambda) * r^i + causal_lambda * causal_margin( = r - h^{\pi^i}(a', a^{-i}) )
                     if self.causal_lambda_adaptive_per_agent:
                         causal_lambdas = torch.tensor([
                             self.get_current_causal_lambda(agent_id=i) for i in range(N)
                         ], device=self.device).unsqueeze(0)
-                        shaped_rewards_all = rewards_batch + causal_lambdas * delta
+                        shaped_rewards_all = (1-causal_lambdas) * rewards_batch + causal_lambdas * delta
                     else:
-                        shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * delta
+                        shaped_rewards_all = (1-self.get_current_causal_lambda()) * rewards_batch + self.get_current_causal_lambda() * delta
                     shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
-
 
                     # Store shaped rewards and delta in transitions
                     for t_idx, t in enumerate(traj):

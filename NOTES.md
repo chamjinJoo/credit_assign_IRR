@@ -127,4 +127,5 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 # 26.02.01
 * Update the save_replay logic for SMACv2 -> watch replay on Window via Starcraft2.
-* Build a new pci method `q_pci_rnn`: outcome bridge function predict Q-values of the peers.
+* Build a new pci method `q_pci_rnn`: outcome bridge function predict Q-values of the peers. -> not completed
+* set outcome Y as the whole reward vector $\mathbf{r}_t$, thanks to $\mathbf{h}^{-i}_t \in X^i_t$.

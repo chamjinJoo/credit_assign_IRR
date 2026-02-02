@@ -20,10 +20,10 @@ algorithm:
   max_grad_norm: 0.5
   ppo_epochs: 4
   batch_size: 64
-  causal_lambda: 1.0
   use_value_parameter_sharing: false
 
   clip_delta: 0.01
+  causal_lambda: 1.0
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_adaptive_per_agent: false    # Enable agent-specific adaptive lambda
   causal_lambda_adaptive_alpha: 0.9  # EMA smoothing factor

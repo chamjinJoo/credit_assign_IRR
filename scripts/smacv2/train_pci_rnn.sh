@@ -6,7 +6,7 @@ config="configs/smacv2.yaml"
 
 # model setting
 model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=1.0
+causal_lambda=0.5
 clip_delta=0.01
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false

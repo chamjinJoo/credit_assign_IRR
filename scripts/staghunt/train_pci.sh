@@ -18,7 +18,7 @@ max_iterations=1500
 max_steps_per_iteration=2000
 log_interval=2
 device="cpu"
-seed=1
+seed=42
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
