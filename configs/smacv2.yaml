@@ -54,7 +54,7 @@ training:
   
 # Environment Configuration
 environment:
-  import_config: "configs/smacv2_configs_examples/sc2_gen_zerg_epo.yaml"
+  import_config: "configs/smacv2_configs_examples/sc2_gen_protoss_epo.yaml"
   env_name: "SMACv2"
   num_agents: 6
 

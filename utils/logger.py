@@ -5,7 +5,7 @@ from typing import Optional
 
 
 class Logger:
-    """Custom logger for PCI-MAPPO training."""
+    """Custom logger for training."""
     
     def __init__(
         self, 

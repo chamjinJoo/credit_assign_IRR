@@ -2,6 +2,9 @@
 save_checkpoints/
 save_animations/
 
+# plots
+plots/
+
 # logs
 logs/
 

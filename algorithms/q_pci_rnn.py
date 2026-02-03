@@ -262,7 +262,7 @@ class Q_PCIRNNAlgorithm:
             action_dim=action_dim,
             num_agents=num_agents,
             w_dim=obs_dim * (num_agents-1),
-            outcome_dim=num_agents-1,  # Predict other agents' returns (N-1 dim vector)
+            outcome_dim=num_agents,  # Predict agents' returns (N dim vector)
             hidden_dim=hidden_dim,
             action_embedding_dim=8,
             # x_dim=obs_dim # x = o^i_t
@@ -371,8 +371,7 @@ class Q_PCIRNNAlgorithm:
         agent_returns_batch = torch.tensor([[t['agent_returns'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)  # (B, N)
         
         expanded_agent_returns = agent_returns_batch.unsqueeze(1).expand(-1, num_agents, -1)  # (B, N, N)
-        mask_returns = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
-        Y_super = expanded_agent_returns[mask_returns].view(batch_size * num_agents, num_agents - 1)  # (B*N, N-1)
+        Y_super = expanded_agent_returns.reshape(batch_size * num_agents, num_agents)  # (B*N, N)
 
         # [SWITCH] Constructing X_super = {o^i_t, h^{-i}_{t-1}}
         # 1. Gather all hidden states: (B, N, RecN*H)
@@ -903,12 +902,12 @@ class Q_PCIRNNAlgorithm:
 
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
-                # Outcome bridge predicts other agents' returns (N-1 dim vector)
-                h_all = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded)  # (curr_bs*N*action_dim, N-1)
-                h_all = h_all.view(curr_bs * num_agents, action_dim, num_agents - 1)  # (curr_bs*N, action_dim, N-1)
+                # Outcome bridge predicts other agents' returns (N dim vector)
+                h_all = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded)  # (curr_bs*N*action_dim, N)
+                h_all = h_all.view(curr_bs * num_agents, action_dim, num_agents)  # (curr_bs*N, action_dim, N)
                 
                 # Collect h for factual actions: agent i's prediction of other agents' returns
-                h_factual = h_all[torch.arange(h_all.size(0)), actions_flat]  # (curr_bs*N, N-1)
+                h_factual = h_all[torch.arange(h_all.size(0)), actions_flat]  # (curr_bs*N, N)
                 
                 # Sum over other agents to get total return from others: 𝟙ᵀh(a, W, X)
                 Q_hat_all = h_all.sum(dim=2)  # (curr_bs*N, action_dim)
@@ -964,7 +963,7 @@ class Q_PCIRNNAlgorithm:
                     renormalized_probs_expanded = renormalized_probs.unsqueeze(2)  # (curr_bs*N, action_dim, 1)
                     
                     # Baseline for each other agent: weighted average over counterfactual actions
-                    h_baseline = (renormalized_probs_expanded * h_all).sum(dim=1)  # (curr_bs*N, N-1)
+                    h_baseline = (renormalized_probs_expanded * h_all).sum(dim=1)  # (curr_bs*N, N)
                     
                 elif baseline_type == 'averaged':
                     # Simple average over counterfactual actions
@@ -972,21 +971,13 @@ class Q_PCIRNNAlgorithm:
                     non_factual_mask_actions = 1.0 - factual_mask_actions
                     non_factual_mask_expanded = non_factual_mask_actions.unsqueeze(2)  # (curr_bs*N, action_dim, 1)
                     
-                    h_baseline = (h_all * non_factual_mask_expanded).sum(dim=1) / (action_dim - 1)  # (curr_bs*N, N-1)
+                    h_baseline = (h_all * non_factual_mask_expanded).sum(dim=1) / (action_dim - 1)  # (curr_bs*N, N)
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # Causal effect: actual global returns - baseline (now includes self)
-   
                 # Reshape to (curr_bs, N, N)
-                h_baseline_others = h_baseline.view(curr_bs, num_agents, num_agents - 1)
-                h_baseline_full = torch.zeros(curr_bs, num_agents, num_agents, device=self.device)
-                mask_others = ~torch.eye(num_agents, dtype=torch.bool, device=self.device)
-                h_baseline_full[:, mask_others] = h_baseline_others.reshape(curr_bs, -1)
-                
-                C_matrix[i:end] = h_baseline_full
+                C_matrix[i:end] = h_baseline.view(curr_bs, num_agents, num_agents)
 
-        # Return C_matrix: [B, N, N]
         return C_matrix
 
     def causal_intrinsic_reward(
@@ -1408,71 +1399,29 @@ class Q_PCIRNNAlgorithm:
                 joint_obs_batch = full_obs_batch.view(B, -1) # (B, N*ObsDim)
                 
                 with torch.no_grad():
-                    # For RNN Value Net, we need to pass sequence
-                    # Assume zero initial state for the chunks
                     h_0_val = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device) # (1, layers, hidden)
-                    # RNNValueNetwork expects (B, layers, hidden) if batch first? Let's check rnn.py again.
-                    # RNNLayer forward: hxs is (batch, layers, hidden). But initialization is usually (layers, batch, hidden).
-                    # Let's follow RNNPolicyNetwork's pattern: evaluate_actions passes (Batch, Layers, Hidden).
-                    # Actually, RNNLayer expects (Batch, Layers, Dim) in forward, but inside it does transpose.
-                    # Here we have trajectory as batch dim in RNN forward context (Sequence Length T=B) -> Wait, RNNLayer handles (T, N, D) logic?
-                    # The RNNValueNetwork uses RNNLayer. If we pass (B, D), it treats B as Batch Size? 
-                    # We want to treat B as Sequence Length for single environment trajectory.
-                    # But our RNNLayer implementation is optimized for (Batch, Sequence) or vice versa.
-                    # Let's simply run it as batch=1, seq_len=B.
                     
                     val_obs_input = joint_obs_batch.unsqueeze(1) # (B, 1, Dim) - Wait, RNNLayer usually takes (Batch, Dim) and handles hidden states step by step?
-                    # looking at RNNValueNetwork.forward:
-                    # x = feature_extractor(obs) -> (B, hidden)
-                    # x, rnn_states = rnn(x, rnn_states, masks)
-                    
-                    # If we want to compute values for the whole trajectory to get the LAST state for bootstrapping:
-                    # We can just feed the whole batch if we had the hidden states. But we don't track value net hidden states in rollout.
-                    # So we assume zero start.
-                    
-                    # Let's utilize the fact that we process trajectory step by step or use the bulk forward if possible.
-                    # RNNLayer forward logic: if x.size(0) == hxs.size(0): step-by-step.
-                    # We want to run sequence. But current RNNValueNetwork doesn't explicitly expose sequence processing unless we loop or restructure.
-                    # However, typical usage in PPO updates is chunked.
-                    # Here for bootstrapping, we only need the value of the NEXT state after the last step IF not done.
                     
                     next_value = 0.0
                     if not dones_batch[-1].any(): # If the last step is not done (Truncated)
-                         # We need to predict Value of next state. We don't have next_obs in traj usually?
-                         # transitions has 'next_observations'.
-                         last_transition = traj[-1]
-                         next_obs_dict = last_transition['next_observations']
-                         next_full_obs = torch.cat([next_obs_dict[i] for i in range(N)]).to(self.device).view(1, -1) # (1, N*D)
-                         
-                         # We need the hidden state AT the end of trajectory.
-                         # Since we don't store it, we must run inference on the whole trajectory.
-                         # This is expensive but necessary for correct bootstrapping with RNNs without stored states.
-                         # Alternative: Use simple MLP Value Net for global? No, user asked for RNN.
-                         
-                         # Run inference on trajectory
-                         # Batch size = 1 (since it's one env trajectory), Sequence Length = B
-                         # Input to RNN: (B, 1, InputDim) or just loop?
-                         # Our RNNLayer handles packed masks.
-                         
-                         val_h = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device) # (1, L, H)
-                         # Masks for trajectory
-                         val_masks = 1.0 - dones_batch.view(B, N) # (B, N) - Wait, global value mask?
-                         # Global value depends on ANY agent done? Or Env done?
-                         # Usually Env done. Let's assume dones_batch[:, 0] is representative or use .any()
-                         val_masks_global = 1.0 - dones_batch.any(dim=1, keepdim=True).float() # (B, 1)
-                         
-                         # Loop through trajectory to update hidden state
-                         for t_i in range(B):
-                             obs_t = joint_obs_batch[t_i].unsqueeze(0) # (1, Dim)
-                             mask_t = val_masks_global[t_i].unsqueeze(0) # (1, 1)
-                             _, val_h = self.global_value_net(obs_t, val_h, mask_t)
-                         
-                         # Now val_h is the hidden state after the last step.
-                         # Predict next value
-                         # Mask for next step is 1 (since we are continuing)
-                         next_mask = torch.ones(1, 1, device=self.device)
-                         pred_next_val, _ = self.global_value_net(next_full_obs, val_h, next_mask)
-                         next_value = pred_next_val.item()
+                        last_transition = traj[-1]
+                        next_obs_dict = last_transition['next_observations']
+                        next_full_obs = torch.cat([next_obs_dict[i] for i in range(N)]).to(self.device).view(1, -1) # (1, N*D)
+                        
+                        val_h = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device) # (1, L, H)
+                        # Masks for trajectory
+                        val_masks = 1.0 - dones_batch.view(B, N) # (B, N) - Wait, global value mask?
+                        val_masks_global = 1.0 - dones_batch.any(dim=1, keepdim=True).float() # (B, 1)
+                        
+                        # Loop through trajectory to update hidden state
+                        for t_i in range(B):
+                            obs_t = joint_obs_batch[t_i].unsqueeze(0) # (1, Dim)
+                            mask_t = val_masks_global[t_i].unsqueeze(0) # (1, 1)
+                            _, val_h = self.global_value_net(obs_t, val_h, mask_t)
+                        next_mask = torch.ones(1, 1, device=self.device)
+                        pred_next_val, _ = self.global_value_net(next_full_obs, val_h, next_mask)
+                        next_value = pred_next_val.item()
 
                 # Compute causal rewards
                 with torch.no_grad():

@@ -70,7 +70,7 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 * Some proposals for development of `PCI_RNN`:
     - add covariates $X=o^i_t$ on outcome bridge $h$ → $h(a,w,x)$
     - test various $Z_t=\mathbf{o}_{t-1} \text{ or } \mathbf{r}_{t-1}$
-    ✔️use **real counterfactual baseline without factual action** (details on below 2026.01.15)
+    ✔️ use **real counterfactual baseline without factual action** (details on below 2026.01.15)
 
 ## 2026.01.15
 * Test counterfactual baseline only with counterfactual actions — very good, outperforms x-pci
@@ -127,5 +127,15 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 # 26.02.01
 * Update the save_replay logic for SMACv2 -> watch replay on Window via Starcraft2.
-* Build a new pci method `q_pci_rnn`: outcome bridge function predict Q-values of the peers. -> not completed
 * set outcome Y as the whole reward vector $\mathbf{r}_t$, thanks to $\mathbf{h}^{-i}_t \in X^i_t$.
+* Build a new pci method `q_pci_rnn`: outcome bridge function predict Q-values. -> poor performance
+
+# 26.02.02
+* `pci-rnn`의 value network parameter sharing logic was wrong. Fix it.
+* `pci-rnn` shows poor performance in `SMAC, SMACv2` envs. How to improve?
+    1) decrease causal_lambda : `shaped_rewards_all = (1-causal_lambdas) * rewards_batch + causal_lambdas * delta`
+        * `causal_lambda=0.1` outperforms `0.5` and `1.0` on `SMAC`    
+    2) `10gen_protoss` scenario seems to be easier than `10gen_zerg`
+
+# 26.02.03
+* Found that outcome_bridge_network $h_{\theta}$ has hidden state dimension of `2*args.hidden_dim` -> edit as `args.hidden_dim`

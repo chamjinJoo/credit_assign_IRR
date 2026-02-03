@@ -125,11 +125,11 @@ class StagHuntEnv(MultiAgentEnv):
         
         # Observation space: coordinate(2) + 5x5 grid
         if self.grid_observation:
-            # self.obs_dim = 2 + (2 * self.vision + 1)**2 * 3 # bitmask obs
-            self.obs_dim = (2 * self.vision + 1)**2 * (2*num_agents + 1) # exclude coord info.
+            # self.obs_dim = (2 * self.vision + 1)**2 * 3 # bitmask obs
+            self.obs_dim = (2 * self.vision + 1)**2 * (2*num_agents + 1) 
         else:
             # num_agents + num_stags + num_hares. All have (x, y) coordinates
-            self.obs_dim = (num_agents + num_agents + self.forage_quantity) * 2
+            self.obs_dim = (num_agents + num_agents + self.forage_quantity) * 3
         
         # Environment state
         self.agent_positions = {}  # {agent_id: (x, y)}
@@ -553,9 +553,9 @@ class StagHuntEnv(MultiAgentEnv):
         return hunting_info
     
         return observations
-
-    '''
-    def _get_observations_from_grid(self) -> Dict[int, np.ndarray]:
+    
+    # bitmask observation
+    def _get_bitmask_grid_observations(self) -> Dict[int, np.ndarray]:
         """
         비트마스크 인코딩을 사용하여 차원을 압축한 그리드 기반 관찰값 생성.
         에이전트 수(N)에 관계없이 각 셀은 [Agent_Bitmask, Stag_ID, Hare_Presence] 3개 채널로 고정됨.
@@ -567,24 +567,15 @@ class StagHuntEnv(MultiAgentEnv):
         
         for agent_id in self.agents:
             agent_x, agent_y = self.agent_positions[agent_id]
-            
-            # 1. 자신의 상대적 좌표 (0~1 정규화)
-            coord_obs = [
-                agent_x / (self.grid_size_x - 1), 
-                agent_y / (self.grid_size_y - 1)
-            ]
-            
+       
             grid_obs = []
-            # 2. 시야 범위 내의 그리드 정보 수집
             for dy in range(-self.vision, self.vision + 1):
                 for dx in range(-self.vision, self.vision + 1):
                     check_x, check_y = agent_x + dx, agent_y + dy
                     check_pos = (check_x, check_y)
-                    
-                    # 채널 구성: [Agent_Bitmask, Stag_ID, Hare_Presence] -> 3차원 고정
+            
                     cell_info = [0.0, 0.0, 0.0]
                     
-                    # 그리드 경계 체크
                     if not (0 <= check_x < self.grid_size_x and 0 <= check_y < self.grid_size_y):
                         # 시야 밖은 -1.0으로 마스킹
                         cell_info = [-1.0, -1.0, -1.0]
@@ -611,13 +602,12 @@ class StagHuntEnv(MultiAgentEnv):
                                 break
                                 
                     grid_obs.extend(cell_info)
-            # observation: self-coordinate + vision-range grid information
-            full_obs = coord_obs + grid_obs 
-            observations[agent_id] = np.array(full_obs, dtype=np.float32)
+
+            observations[agent_id] = np.array(grid_obs, dtype=np.float32)
             
         return observations
-    '''
-    def _get_observations_from_grid(self) -> Dict[int, np.ndarray]:
+
+    def _get_grid_observations(self) -> Dict[int, np.ndarray]:
         """기존 그리드 기반 관찰"""
         observations = {}
         
@@ -633,35 +623,32 @@ class StagHuntEnv(MultiAgentEnv):
                     check_x, check_y = agent_x + dx, agent_y + dy
                     check_pos = (check_x, check_y)
                     
-                    # n+num_agents+1차원 튜플: (agent0, agent1, ..., agent_n-1, stag0, stag1, ..., stag_n-1, hare)
+                    # n+num_agents+1 dimensional tuple: (agent0, agent1, ..., agent_n-1, stag0, stag1, ..., stag_n-1, hare)
                     cell_info = [0.0] * (self.num_agents + self.num_agents + 1)
                     
-                    # 경계 밖은 -1로 masking
+                    # out of the grid is mask with -1
                     if not (0 <= check_x < self.grid_size_x and 0 <= check_y < self.grid_size_y):
                         cell_info = [-1.0] * (self.num_agents + self.num_agents + 1)
                     else:
-                        # 에이전트 확인 (여러 agent가 같은 위치에 있을 수 있음)
+                        # check agents (allow overlapping in a cell)
                         for other_agent_id in self.agents:
                             if self.agent_positions[other_agent_id] == check_pos:
                                 cell_info[other_agent_id] = 1.0
                         
-                        # Stag 확인 (각 stag별로 개별 인덱스 할당) - 살아있는 stag만 확인
+                        # check alive stags
                         for stag_id, stag_pos in self.stag_positions.items():
                             if stag_pos == check_pos and self.stag_alive.get(stag_id, False):
                                 cell_info[self.num_agents + stag_id] = 1.0  # stag_id에 해당하는 인덱스를 1로 설정 
                         
-                        # hare 확인 (식물들 체크) - 살아있는 hare만
+                        # check alive hares
                         for hare_id, hare_pos in self.hare_positions.items():
                             if hare_pos == check_pos and self.hare_alive.get(hare_id, False):
                                 cell_info[self.num_agents + self.num_agents] = 1.0
                                 break
                     
                     grid_obs.extend(cell_info)
-            
-            # 전체 관찰 결합 (2 + 25*(num_agents+2) 차원)
-            # full_obs = coord_obs + grid_obs
-            full_obs = grid_obs
-            observations[agent_id] = np.array(full_obs, dtype=np.float32)
+     
+            observations[agent_id] = np.array(grid_obs, dtype=np.float32)
 
             # add stochasticity to obs
             # self.obs_noise = 0.01
@@ -670,83 +657,55 @@ class StagHuntEnv(MultiAgentEnv):
         return observations
     
     def _get_observations_coordinate(self) -> Dict[int, np.ndarray]:
-        """새로운 좌표 기반 관찰
-        obs = [Agents, Stags, Hares] locations
-        out of 5x5 vision masked as -1
-        normalized with full grid size
-        """
         observations = {}
-        
-        # Grid sizes for normalization
         norm_x = self.grid_size_x - 1
         norm_y = self.grid_size_y - 1
-        
-        # Vision range check (5x5 centered on agent => dx, dy in [-2, 2])
         vision_range = 2
 
         for agent_id in self.agents:
             agent_x, agent_y = self.agent_positions[agent_id]
             obs_list = []
 
-            # 1. Agents - Self first, then others by index
-            # Self
-            if agent_id in self.agent_positions:
-                ax, ay = self.agent_positions[agent_id]
-                obs_list.extend([ax / norm_x, ay / norm_y]) # Always visible to self
-            else:
-                obs_list.extend([-1.0, -1.0])
-
-            # Others
-            for target_id in self.agents:
-                if target_id == agent_id:
-                    continue
-                    
-                target_pos = self.agent_positions.get(target_id)
-                if target_pos:
-                    tx, ty = target_pos
-                    # Check vision
+            # --- helper function: return [x, y, exist_flag] ---
+            def get_entity_obs(pos, alive, is_agent=False):
+                if pos and (alive or is_agent):
+                    tx, ty = pos
+                    # 시야 체크
                     if abs(tx - agent_x) <= vision_range and abs(ty - agent_y) <= vision_range:
-                        obs_list.extend([tx / norm_x, ty / norm_y])
+                        return [tx / norm_x, ty / norm_y, 1.0]
                     else:
-                        obs_list.extend([-1.0, -1.0])
+                        return [0.0, 0.0, -1.0]
                 else:
-                    obs_list.extend([-1.0, -1.0])
+                    return [0.0, 0.0, 0.0]
+
+            # 1. Agents
+            for target_id in self.agents:
+                target_pos = self.agent_positions.get(target_id)
+                # 자기 자신은 항상 보임
+                if target_id == agent_id:
+                    obs_list.extend([agent_x / norm_x, agent_y / norm_y, 1.0])
+                else:
+                    obs_list.extend(get_entity_obs(target_pos, True, is_agent=True))
 
             # 2. Stags
-            # self.stag_positions uses agent_id as key (0 to num_agents-1)
-            # We should iterate in a fixed order. keys are 0..num_agents-1
-            for stag_id in range(self.num_agents): # stag keys are same as agents
-                if self.stag_alive.get(stag_id, False):
-                    sx, sy = self.stag_positions[stag_id]
-                    # Check vision
-                    if abs(sx - agent_x) <= vision_range and abs(sy - agent_y) <= vision_range:
-                        obs_list.extend([sx / norm_x, sy / norm_y])
-                    else:
-                        obs_list.extend([-1.0, -1.0])
-                else:
-                    # Dead stag
-                    obs_list.extend([-1.0, -1.0])
+            for stag_id in range(self.num_agents):
+                s_pos = self.stag_positions.get(stag_id)
+                s_alive = self.stag_alive.get(stag_id, False)
+                obs_list.extend(get_entity_obs(s_pos, s_alive))
 
             # 3. Hares
             for hare_id in range(self.forage_quantity):
-                if self.hare_alive.get(hare_id, False):
-                    hx, hy = self.hare_positions[hare_id]
-                    # Check vision
-                    if abs(hx - agent_x) <= vision_range and abs(hy - agent_y) <= vision_range:
-                        obs_list.extend([hx / norm_x, hy / norm_y])
-                    else:
-                        obs_list.extend([-1.0, -1.0])
-                else:
-                    # Dead hare
-                    obs_list.extend([-1.0, -1.0])
-            
+                h_pos = self.hare_positions.get(hare_id)
+                h_alive = self.hare_alive.get(hare_id, False)
+                obs_list.extend(get_entity_obs(h_pos, h_alive))
+
             observations[agent_id] = np.array(obs_list, dtype=np.float32)
-            
         return observations
 
     def _get_observations(self) -> Dict[int, np.ndarray]:
         if self.grid_observation:
-            return self._get_observations_from_grid()
+            return self._get_grid_observations()
+            # return self._get_bitmask_grid_observations()
         else:
             return self._get_observations_coordinate()
     
@@ -1198,6 +1157,15 @@ class SMACWrapper(MultiAgentEnv):
         
     def get_action_dim(self) -> int:
         return self.action_dim
+
+    def save_replay(self, dir=None):
+        if dir is not None:
+            # StarCraftCapabilityEnvWrapper 내의 StarCraft2Env 접근
+            if hasattr(self._env, 'replay_dir'):
+                self._env.replay_dir = dir
+                
+        if hasattr(self._env, 'save_replay'):
+            self._env.save_replay()
 
     def close(self):
         self._env.close()

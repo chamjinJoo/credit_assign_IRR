@@ -3,8 +3,8 @@
 # Neural Network Configuration
 network:
   hidden_dim: 64
-  lr_actor: 5.0e-4
-  lr_bridge: 5.0e-4
+  lr_actor: 1.0e-3
+  lr_bridge: 1.0e-3
   lr_critic: 5.0e-4
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
@@ -17,7 +17,7 @@ algorithm:
   entropy_coef: 0.01
   value_coef: 0.5
   max_grad_norm: 10
-  ppo_epochs: 4
+  ppo_epochs: 10
   batch_size: 1
   causal_lambda: 1.0
   use_value_parameter_sharing: true

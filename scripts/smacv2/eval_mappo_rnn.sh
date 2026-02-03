@@ -5,7 +5,7 @@ env="SMACv2"
 config="configs/smacv2.yaml" 
 
 # model setting
-checkpoint="./save_checkpoints/20260201_013000/smacv2wrapper/checkpoints/best_model.pt"
+checkpoint="./save_checkpoints/20260203_102616/smacv2wrapper/checkpoints/checkpoint_700.pt"
 model="mappo-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
 recurrent_N=1

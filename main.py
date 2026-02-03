@@ -376,237 +376,247 @@ def main():
     logger.info(f"Configuration: {config.to_dict()}")
     
     # Create environment
-    logger.info("Creating environment...")
-    # Add seed to environment config
-    env_config = config.environment
-    if hasattr(env_config, '__dict__'):
-        env_config.seed = actual_seed
-    else:
-        env_config['seed'] = actual_seed
-    env = create_environment(env_config)
-    logger.info(f"Environment created: {env.__class__.__name__}")
-    logger.info(f"Number of agents: {env.num_agents}")
-    logger.info(f"Observation dimension: {env.get_obs_dim()}")
-    logger.info(f"Action dimension: {env.get_action_dim()}")
-
-    if hasattr(env, 'print_env_setting'):
-        logger.info(env.print_env_setting())
-        
-    # Auto-generate wandb run_name based on environment if not explicitly set
-    algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
-    if not config.wandb.run_name:
-        env_class_name = env.__class__.__name__
-        # For LBForagingWrapper, use env_id
-        if env_class_name == 'LBForagingWrapper' and hasattr(env, 'env_id'):
-            env_id = env.env_id
-            # Remove -v3 suffix from env_id if present
-            if env_id.endswith('-v3'):
-                env_id = env_id[:-3]
-            config.wandb.run_name = env_id
-        # For SMAC, use smac_{map_name}
-        elif env_class_name in ['SMACEnv', 'SMACWrapper']:
-            map_name = getattr(config.environment, 'map_name', 'unknown')
-            config.wandb.run_name = f"{map_name}"
-        # For SMACv2
-        elif env_class_name in ['SMACv2Env', 'SMACv2Wrapper']:
-            map_name = getattr(config.environment, 'map_name', 'unknown')
-            races = ['protoss', 'zerg', 'terran'] # find race from the map_name, [protoss, zerg, terran]
-            race = next((r for r in races if r in map_name), 'unknown')
-            n_units = config.environment.capability_config["n_units"]
-            n_enemies = config.environment.capability_config["n_enemies"] 
-            config.wandb.run_name = f"{race}_{n_units}_vs_{n_enemies}"
-        else:
-            # For other environments, use environment class name
-            env_name = env_class_name.lower()
-            config.wandb.run_name = env_name
-
-    # Log available environments
-    available_envs = get_available_environments()
-    logger.info(f"Available environments: {list(available_envs.keys())}")
-    
-    # Create algorithm
-    logger.info("Creating algorithm...")
-    algorithm = create_algorithm(env, config)
-    logger.info("Algorithm created")
-    
-    # Create trainer
-    logger.info("Creating trainer...")
-    
-    # Test 모드인 경우 checkpoint 저장 비활성화
-    is_test_mode = hasattr(args, 'test') and args.test
-    trainer_save_dir = None if is_test_mode else config.training.save_dir
-    
-    if is_test_mode:
-        logger.info("Test mode: Model checkpoint saving disabled")
-    
-    # wandb run name에 알고리즘 타입 추가
-    algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
-    wandb_run_name = config.wandb.run_name
-    if wandb_run_name:
-        # run_name이 있으면 앞에 알고리즘 타입 추가
-        wandb_run_name = f"{algorithm_type}_{wandb_run_name}_seed{actual_seed}"
-    else:
-        # run_name이 없으면 알고리즘 타입만 사용
-        wandb_run_name = algorithm_type
-    
-    # Create env_fn for parallel environments
-    n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
-    env_fn = None
-    if n_rollout_threads > 1:
-        # Create a function that creates a new environment instance
-        def env_fn(rank=0):
-            env_config_copy = config.environment
-            # Add rank to seed for diversity
-            seed = actual_seed + rank * 1000
-            
-            if hasattr(env_config_copy, '__dict__'):
-                env_config_copy.seed = seed
-            else:
-                env_config_copy['seed'] = seed
-            return create_environment(env_config_copy)
-    
-    trainer = Trainer(
-        config=config,
-        env=env,
-        algorithm=algorithm,
-        max_iterations=config.training.max_iterations,
-        max_steps_per_iteration=config.training.max_steps_per_iteration,
-        log_interval=config.training.log_interval,
-        save_interval=config.training.save_interval,
-        eval_interval=config.training.eval_interval,
-        eval_episodes=config.training.eval_episodes,
-        save_dir=trainer_save_dir,
-        use_wandb=config.wandb.use_wandb,
-        wandb_project=config.wandb.project,
-        wandb_run_name=wandb_run_name,
-        device=device,
-        n_rollout_threads=n_rollout_threads,  # [ADDED]
-        env_fn=env_fn  # [ADDED]
-    )
-    # Check for evaluation or test mode
-    if hasattr(args, 'eval') and args.eval:
-        if args.checkpoint:
-            logger.info(f"Loading checkpoint: {args.checkpoint}")
-            trainer.load_checkpoint(args.checkpoint)
-        
-        logger.info("Running evaluation...")
-        eval_results = trainer.evaluate_policy()
-        logger.info(f"Evaluation results: {eval_results}")
-        return
-    
-    # Always run causal effect evaluation after training
-    causal_eval_enabled = True
-    
-    if hasattr(args, 'test') and args.test:
-        if args.checkpoint:
-            logger.info(f"Loading checkpoint: {args.checkpoint}")
-            trainer.load_checkpoint(args.checkpoint)
-        else:
-            logger.info("No checkpoint provided, using random policy")
-        
-        logger.info("Running test...")
-        
-        # Ask user about animation saving
-        save_animation = input("Test episode들을 animation으로 저장하시겠습니까? (y/n): ").lower().strip()
-        save_animation = save_animation in ['y', 'yes', '예', 'ㅇ']
-        
-        if save_animation:
-            animation_dir = input("Animation 저장 디렉토리를 입력하세요 (기본값: ./animations): ").strip()
-            if not animation_dir:
-                animation_dir = "./animations"
-            logger.info(f"Animation 저장 디렉토리: {animation_dir}")
-        
-        # Test 모드에서 advanced causal evaluation 결과를 저장하기 위해 임시 save_dir 설정
-        if args.checkpoint:
-            # checkpoint 파일이 있으면 그 디렉토리를 사용
-            checkpoint_dir = os.path.dirname(args.checkpoint)
-            temp_save_dir = checkpoint_dir
-        else:
-            # checkpoint가 없으면 현재 디렉토리에 test_results 폴더 생성
-            temp_save_dir = "./test_results"
-            os.makedirs(temp_save_dir, exist_ok=True)
-        
-        # Temporarily set save_dir for evaluation results only
-        original_save_dir = trainer.save_dir
-        trainer.save_dir = temp_save_dir
-        
-        test_results = trainer.test_policy(
-            num_episodes=10,
-            render=getattr(args, 'render', False),
-            save_animation=save_animation,
-            animation_dir=animation_dir if save_animation else "./animations",
-            evaluate_advanced_causal=False,
-            evaluate_policy_quality=False,
-            advanced_causal_steps=5000,
-        )
-        
-        # Restore original save_dir (None for test mode)
-        trainer.save_dir = original_save_dir
-        
-        logger.info(f"Test results: {test_results}")
-        logger.info(f"Advanced causal evaluation results saved to: {temp_save_dir}/advanced_causal_evaluation")
-        return
-    
-    # Resume from checkpoint if provided
-    if hasattr(args, 'checkpoint') and args.checkpoint:
-        logger.info(f"Resuming from checkpoint: {args.checkpoint}")
-        trainer.load_checkpoint(args.checkpoint)
-    
-    # Start training
-    logger.info("Starting training...")
+    env = None
     try:
-        trainer.train()
-        logger.info("Training completed successfully!")
-        
-        # Run causal effect evaluation after training completion
-        # 일단 주석처리 - 나중에 필요하면 활성화
-        '''
-        if causal_eval_enabled:
-            logger.info("Running causal effect evaluation after training...")
-            # Use the latest checkpoint for evaluation
-            latest_checkpoint = trainer.get_latest_checkpoint_path()
-            if latest_checkpoint:
-                # Load checkpoint before evaluation
-                logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
-                trainer.load_checkpoint(latest_checkpoint)
+        logger.info("Creating environment...")
+        # Add seed to environment config
+        env_config = config.environment
+        if hasattr(env_config, '__dict__'):
+            env_config.seed = actual_seed
+        else:
+            env_config['seed'] = actual_seed
+        env = create_environment(env_config)
+        logger.info(f"Environment created: {env.__class__.__name__}")
+        logger.info(f"Number of agents: {env.num_agents}")
+        logger.info(f"Observation dimension: {env.get_obs_dim()}")
+        logger.info(f"Action dimension: {env.get_action_dim()}")
 
-                # Create a mock args object for causal evaluation
-                class MockArgs:
-                    def __init__(self, checkpoint_path, eval_episodes=50):
-                        self.checkpoint = checkpoint_path
-                        self.eval_episodes = eval_episodes
-                
-                mock_args = MockArgs(latest_checkpoint, eval_episodes=50)
-                run_causal_evaluation(env, algorithm, mock_args, logger)
+        if hasattr(env, 'print_env_setting'):
+            logger.info(env.print_env_setting())
+            
+        # Auto-generate wandb run_name based on environment if not explicitly set
+        algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
+        if not config.wandb.run_name:
+            env_class_name = env.__class__.__name__
+            # For LBForagingWrapper, use env_id
+            if env_class_name == 'LBForagingWrapper' and hasattr(env, 'env_id'):
+                env_id = env.env_id
+                # Remove -v3 suffix from env_id if present
+                if env_id.endswith('-v3'):
+                    env_id = env_id[:-3]
+                config.wandb.run_name = env_id
+            # For SMAC, use smac_{map_name}
+            elif env_class_name in ['SMACEnv', 'SMACWrapper']:
+                map_name = getattr(config.environment, 'map_name', 'unknown')
+                config.wandb.run_name = f"{map_name}"
+            # For SMACv2
+            elif env_class_name in ['SMACv2Env', 'SMACv2Wrapper']:
+                map_name = getattr(config.environment, 'map_name', 'unknown')
+                races = ['protoss', 'zerg', 'terran'] # find race from the map_name, [protoss, zerg, terran]
+                race = next((r for r in races if r in map_name), 'unknown')
+                n_units = config.environment.capability_config["n_units"]
+                n_enemies = config.environment.capability_config["n_enemies"] 
+                config.wandb.run_name = f"{race}_{n_units}_vs_{n_enemies}"
             else:
-                logger.warning("No checkpoint found for causal effect evaluation")
-        '''
-    except KeyboardInterrupt:
-        logger.info("Training interrupted by user")
-        trainer.save_checkpoint()
-        logger.info("Checkpoint saved before exit")
-        
-        # Run causal effect evaluation even after interruption if checkpoint exists
-        if causal_eval_enabled:
-            logger.info("Running causal effect evaluation after interruption...")
-            latest_checkpoint = trainer.get_latest_checkpoint_path()
-            if latest_checkpoint:
-                logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
-                trainer.load_checkpoint(latest_checkpoint)
+                # For other environments, use environment class name
+                env_name = env_class_name.lower()
+                config.wandb.run_name = env_name
 
-                class MockArgs:
-                    def __init__(self, checkpoint_path, eval_episodes=50):
-                        self.checkpoint = checkpoint_path
-                        self.eval_episodes = eval_episodes
+        # Log available environments
+        available_envs = get_available_environments()
+        logger.info(f"Available environments: {list(available_envs.keys())}")
+        
+        # Create algorithm
+        logger.info("Creating algorithm...")
+        algorithm = create_algorithm(env, config)
+        logger.info("Algorithm created")
+        
+        # Create trainer
+        logger.info("Creating trainer...")
+        
+        # Test 모드인 경우 checkpoint 저장 비활성화
+        is_test_mode = hasattr(args, 'test') and args.test
+        trainer_save_dir = None if is_test_mode else config.training.save_dir
+        
+        if is_test_mode:
+            logger.info("Test mode: Model checkpoint saving disabled")
+        
+        # wandb run name에 알고리즘 타입 추가
+        algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
+        wandb_run_name = config.wandb.run_name
+        if wandb_run_name:
+            # run_name이 있으면 앞에 알고리즘 타입 추가
+            wandb_run_name = f"{algorithm_type}_{wandb_run_name}_seed{actual_seed}"
+        else:
+            # run_name이 없으면 알고리즘 타입만 사용
+            wandb_run_name = algorithm_type
+        
+        # Create env_fn for parallel environments
+        n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
+        env_fn = None
+        if n_rollout_threads > 1:
+            # Create a function that creates a new environment instance
+            def env_fn(rank=0):
+                env_config_copy = config.environment
+                # Add rank to seed for diversity
+                seed = actual_seed + rank * 1000
                 
-                mock_args = MockArgs(latest_checkpoint, eval_episodes=50)
-                run_causal_evaluation(env, algorithm, mock_args, logger)
+                if hasattr(env_config_copy, '__dict__'):
+                    env_config_copy.seed = seed
+                else:
+                    env_config_copy['seed'] = seed
+                return create_environment(env_config_copy)
+        
+        trainer = Trainer(
+            config=config,
+            env=env,
+            algorithm=algorithm,
+            max_iterations=config.training.max_iterations,
+            max_steps_per_iteration=config.training.max_steps_per_iteration,
+            log_interval=config.training.log_interval,
+            save_interval=config.training.save_interval,
+            eval_interval=config.training.eval_interval,
+            eval_episodes=config.training.eval_episodes,
+            save_dir=trainer_save_dir,
+            use_wandb=config.wandb.use_wandb,
+            wandb_project=config.wandb.project,
+            wandb_run_name=wandb_run_name,
+            device=device,
+            n_rollout_threads=n_rollout_threads,  # [ADDED]
+            env_fn=env_fn  # [ADDED]
+        )
+        # Check for evaluation or test mode
+        if hasattr(args, 'eval') and args.eval:
+            if args.checkpoint:
+                logger.info(f"Loading checkpoint: {args.checkpoint}")
+                trainer.load_checkpoint(args.checkpoint)
+            
+            logger.info("Running evaluation...")
+            eval_results = trainer.evaluate_policy()
+            logger.info(f"Evaluation results: {eval_results}")
+            return
+        
+        # Always run causal effect evaluation after training
+        causal_eval_enabled = True
+        
+        if hasattr(args, 'test') and args.test:
+            if args.checkpoint:
+                logger.info(f"Loading checkpoint: {args.checkpoint}")
+                trainer.load_checkpoint(args.checkpoint)
             else:
-                logger.warning("No checkpoint found for causal effect evaluation")
-                
-    except Exception as e:
-        logger.error(f"Training failed with error: {e}")
+                logger.info("No checkpoint provided, using random policy")
+            
+            logger.info("Running test...")
+            
+            # Ask user about animation saving
+            save_animation = input("Test episode들을 animation으로 저장하시겠습니까? (y/n): ").lower().strip()
+            save_animation = save_animation in ['y', 'yes', '예', 'ㅇ']
+            
+            if save_animation:
+                animation_dir = input("Animation 저장 디렉토리를 입력하세요 (기본값: ./animations): ").strip()
+                if not animation_dir:
+                    animation_dir = "./animations"
+                logger.info(f"Animation 저장 디렉토리: {animation_dir}")
+            
+            # Test 모드에서 advanced causal evaluation 결과를 저장하기 위해 임시 save_dir 설정
+            if args.checkpoint:
+                # checkpoint 파일이 있으면 그 디렉토리를 사용
+                checkpoint_dir = os.path.dirname(args.checkpoint)
+                temp_save_dir = checkpoint_dir
+            else:
+                # checkpoint가 없으면 현재 디렉토리에 test_results 폴더 생성
+                temp_save_dir = "./test_results"
+                os.makedirs(temp_save_dir, exist_ok=True)
+            
+            # Temporarily set save_dir for evaluation results only
+            original_save_dir = trainer.save_dir
+            trainer.save_dir = temp_save_dir
+            
+            test_results = trainer.test_policy(
+                num_episodes=10,
+                render=getattr(args, 'render', False),
+                save_animation=save_animation,
+                animation_dir=animation_dir if save_animation else "./animations",
+                evaluate_advanced_causal=False,
+                evaluate_policy_quality=False,
+                advanced_causal_steps=5000,
+            )
+            
+            # Restore original save_dir (None for test mode)
+            trainer.save_dir = original_save_dir
+            
+            logger.info(f"Test results: {test_results}")
+            logger.info(f"Advanced causal evaluation results saved to: {temp_save_dir}/advanced_causal_evaluation")
+            return
+        
+        # Resume from checkpoint if provided
+        if hasattr(args, 'checkpoint') and args.checkpoint:
+            logger.info(f"Resuming from checkpoint: {args.checkpoint}")
+            trainer.load_checkpoint(args.checkpoint)
+        
+        # Start training
+        logger.info("Starting training...")
+        try:
+            trainer.train()
+            logger.info("Training completed successfully!")
+            
+            # Run causal effect evaluation after training completion
+            # 일단 주석처리 - 나중에 필요하면 활성화
+            '''
+            if causal_eval_enabled:
+                logger.info("Running causal effect evaluation after training...")
+                # Use the latest checkpoint for evaluation
+                latest_checkpoint = trainer.get_latest_checkpoint_path()
+                if latest_checkpoint:
+                    # Load checkpoint before evaluation
+                    logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
+                    trainer.load_checkpoint(latest_checkpoint)
+
+                    # Create a mock args object for causal evaluation
+                    class MockArgs:
+                        def __init__(self, checkpoint_path, eval_episodes=50):
+                            self.checkpoint = checkpoint_path
+                            self.eval_episodes = eval_episodes
+                    
+                    mock_args = MockArgs(latest_checkpoint, eval_episodes=50)
+                    run_causal_evaluation(env, algorithm, mock_args, logger)
+                else:
+                    logger.warning("No checkpoint found for causal effect evaluation")
+            '''
+        except KeyboardInterrupt:
+            logger.info("Training interrupted by user")
+            trainer.save_checkpoint()
+            logger.info("Checkpoint saved before exit")
+            
+            # Run causal effect evaluation even after interruption if checkpoint exists
+            if causal_eval_enabled:
+                logger.info("Running causal effect evaluation after interruption...")
+                latest_checkpoint = trainer.get_latest_checkpoint_path()
+                if latest_checkpoint:
+                    logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
+                    trainer.load_checkpoint(latest_checkpoint)
+
+                    class MockArgs:
+                        def __init__(self, checkpoint_path, eval_episodes=50):
+                            self.checkpoint = checkpoint_path
+                            self.eval_episodes = eval_episodes
+                    
+                    mock_args = MockArgs(latest_checkpoint, eval_episodes=50)
+                    run_causal_evaluation(env, algorithm, mock_args, logger)
+                else:
+                    logger.warning("No checkpoint found for causal effect evaluation")
+                    
+        except Exception as e:
+            logger.error(f"Training failed with error: {e}")
+            raise
+    except:
         raise
+    finally:
+        if env is not None:
+            logger.info("Closing environment...")
+            if hasattr(env, 'close'):
+                env.close()
+            logger.info("Environment closed")
 
 if __name__ == "__main__":
     main()

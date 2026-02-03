@@ -36,21 +36,20 @@ class OutcomeBridgeNetwork(nn.Module):
         # Bridge network with 3 hidden layers
         self.mlp = MLPBase(
             input_dim=input_dim,
-            hidden_size=2*hidden_dim,
+            hidden_size=hidden_dim,
             layer_N=2,
             use_feature_normalization=True,
             use_orthogonal=True,
             use_ReLU=True,
             use_layer_norm=True
         )
-        self.output_layer = nn.Linear(2*hidden_dim, outcome_dim)
+        self.output_layer = nn.Linear(hidden_dim, outcome_dim)
 
         self.bridge_network = nn.Sequential(
             self.mlp,
             self.output_layer
         )
 
-        
     def forward(
         self, 
         actions: torch.Tensor, 

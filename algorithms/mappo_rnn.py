@@ -171,6 +171,7 @@ class MAPPORNNAlgorithm:
             recurrent_N=recurrent_N,
             out_dim=1 if global_reward else num_agents
         )
+
         self.value_net.to(self.device)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
         

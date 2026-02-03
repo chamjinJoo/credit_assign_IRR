@@ -757,10 +757,10 @@ class Trainer:
                     hare_alive = info.get('hare_alive', {})
                     if not any(stag_alive.values()) and not any(hare_alive.values()):
                         episode_success = 1.0
-                elif self.eval_env.__class__.__name__ == "SMACEnv":
-                     if info.get('battle_won', False):
-                         episode_success = 1.0
-                
+                        
+                if info.get('battle_won', False): # for SMAC and SMACv2
+                    episode_success = 1.0
+
                 # Update statistics
                 for agent_id, reward in rewards.items():
                     episode_reward[agent_id] += reward
