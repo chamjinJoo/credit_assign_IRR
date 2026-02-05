@@ -44,6 +44,8 @@ class AlgorithmConfig:
     num_batches: int = 4  # Number of batches K for training
     causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
+    
+    use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
     max_buffer_size: int = 10000
 
@@ -59,6 +61,7 @@ class TrainingConfig:
     save_dir: str = "./save_checkpoints"
     device: str = "cpu"
     n_rollout_threads: int = 1  # [ADDED] Number of parallel environments for rollout collection
+    episodes_per_iteration: Optional[int] = None  # [ADDED] Number of episodes to collect per iteration
     # Reproducibility settings
     seed: int = 42
     deterministic: bool = True
@@ -127,6 +130,64 @@ class EnvironmentConfig:
     # Generic args for any environment
     env_args: Dict[str, Any] = field(default_factory=dict)
 
+    def get_relevant_config(self) -> Dict[str, Any]:
+        """Get configuration dictionary with only relevant fields for the current environment."""
+        base_config = asdict(self)
+        relevant_config = {}
+        
+        # Common fields for all environments
+        common_fields = {
+            'env_name', 'name', 'num_agents', 'seed', 'use_visualization', 
+            'visualize_freq', 'save_animations', 'animation_interval', 'env_args'
+        }
+        
+        # Environment specific fields map
+        env_specific_fields = {
+            'simple_cooperative': {'max_steps', 'cooperation_bonus', 'episode_length'},
+            'toy_causal': {'episode_length'},
+            'dec_tiger': {'failure_obs_prob', 'fully_observable'},
+            'staghunt': {
+                'stag_move_prob', 'coop_bonus', 'forage_reward', 'stag_reward', 
+                'mauling_punishment', 'grid_observation', 'forage_quantity', 'max_steps'
+            },
+            'mpe_simple_spread': {'local_ratio', 'max_cycles', 'continuous_actions'},
+            'lbforaging': {
+                'env_id', 'field_size', 'max_food', 'player_level', 'food_level', 
+                'sight', 'max_episode_steps', 'force_coop', 'grid_observation'
+            },
+            'simple_stag_hunt': {
+                'cooperation_reward', 'defect_alone_reward', 'defect_together_reward',
+                'failed_cooperation_punishment', 'eps_per_game'
+            },
+            'smac': {'map_name'},
+            'smacv2': {'map_name', 'capability_config'}
+        }
+        
+        # Determine current env key
+        current_env = self.env_name.lower()
+        # Handle aliases or specific checks if needed
+        if 'stag' in current_env and 'hunt' in current_env and 'simple' not in current_env:
+            current_env = 'staghunt'
+        elif 'mpe' in current_env or 'spread' in current_env:
+            current_env = 'mpe_simple_spread'
+        elif 'foraging' in current_env:
+            current_env = 'lbforaging'
+            
+        # Select relevant fields
+        fields_to_keep = common_fields.union(env_specific_fields.get(current_env, set()))
+        
+        # SMAC/SMACv2 special handling
+        if 'smac' in current_env:
+             fields_to_keep.add('map_name')
+             if 'v2' in current_env:
+                  fields_to_keep.add('capability_config')
+
+        for key, value in base_config.items():
+            if key in fields_to_keep:
+                relevant_config[key] = value
+                
+        return relevant_config
+        
 @dataclass
 class WandbConfig:
     """Weights & Biases configuration."""
@@ -249,6 +310,8 @@ def parse_args() -> argparse.Namespace:
                         help='Training device (cpu/cuda)')
     parser.add_argument('--n-rollout-threads', type=int, default=1,
                         help='Number of parallel environments for rollout collection')  # [ADDED]
+    parser.add_argument('--episodes-per-iteration', type=int, default=None,
+                        help='Number of episodes to collect per iteration')  # [ADDED]
 
     
     # Algorithm
@@ -349,6 +412,12 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.training.log_interval = args.log_interval
     if hasattr(args, 'n_rollout_threads') and args.n_rollout_threads:  # [ADDED]
         config.training.n_rollout_threads = args.n_rollout_threads
+    if hasattr(args, 'episodes_per_iteration') and args.episodes_per_iteration:  # [ADDED]
+        config.training.episodes_per_iteration = args.episodes_per_iteration
+        # Auto-enable EpisodeBuffer if episodes_per_iteration is set
+        if hasattr(config.algorithm, 'use_episode_buffer'):
+             config.algorithm.use_episode_buffer = True
+             print(f"Auto-enabling EpisodeBuffer because episodes_per_iteration is set to {args.episodes_per_iteration}")
 
     
     # Support both 'model' and 'algorithm_type' for backward compatibility

@@ -4,6 +4,7 @@ from .bridge_network import OutcomeBridgeNetwork, ActionBridgeNetwork, RewardPre
 from .mlp import MLPLayer, MLPBase
 
 from .rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
+from .coma_rnn_critic import COMARNNCritic
 
 __all__ = [
     "PolicyNetwork",
@@ -14,5 +15,7 @@ __all__ = [
     "ActionBridgeNetwork",
     "RewardPredictor",
     "MLPLayer",
-    "MLPBase"
+    "MLPBase",
+    "COMARNNCritic"
 ]
+

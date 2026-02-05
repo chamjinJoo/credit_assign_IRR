@@ -139,3 +139,7 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 # 26.02.03
 * Found that outcome_bridge_network $h_{\theta}$ has hidden state dimension of `2*args.hidden_dim` -> edit as `args.hidden_dim`
+
+# 26.02.04
+* `SMACv2` change batch_size: $1600 \to 3200$ (number of steps per iter), keep the total steps for training $\approx 10^7$. 
+* Baseline: **COMA** (rnn verision), test on StagHunt.

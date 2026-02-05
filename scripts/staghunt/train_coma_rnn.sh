@@ -1,0 +1,31 @@
+#!/bin/bash
+# env setting 
+env="StagHunt"
+num_agents=3
+forage_quantity=3   
+grid_observation=true
+config="configs/stag_hunt.yaml"
+
+# model setting
+model="coma-rnn" # [pci-mappo, mappo, ippo, coma]
+recurrent_N=1
+
+# training and logging
+n_rollout_threads=8
+max_iterations=1500
+max_steps_per_iteration=2000
+log_interval=2
+device="cpu"
+seed=42
+
+# Conda 초기화 및 환경 활성화
+eval "$(conda shell.bash hook)"
+conda activate pcimarl
+
+# CuBLAS workspace config for deterministic behavior
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
+python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
+    --config ${config} --model ${model} --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} \
+    --max-iterations ${max_iterations} --log-interval ${log_interval} --device ${device} --seed ${seed} \
+    --use-wandb --wandb-project pci-marl-staghunt

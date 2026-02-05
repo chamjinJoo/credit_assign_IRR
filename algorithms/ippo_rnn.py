@@ -8,7 +8,7 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import RNNPolicyNetwork, RNNValueNetwork
-from utils.buffer import TransitionBuffer
+from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class IPPORNNAgent:
     """
@@ -139,6 +139,7 @@ class IPPORNNAlgorithm:
         device: str = "cpu",
         rnn_chunk_length: int = 16,
         global_reward: bool = False,
+        use_episode_buffer: bool = False,
     ):
         self.global_reward = global_reward
         print("global_reward:", self.global_reward)
@@ -162,8 +163,12 @@ class IPPORNNAlgorithm:
         self.num_batches = num_batches
     
         self.training_steps = 0
+        self.use_episode_buffer = use_episode_buffer
         
-        self.buffer_manager = TransitionBuffer(max_buffer_size=10000)
+        if use_episode_buffer:
+            self.buffer_manager = EpisodeBuffer(max_episodes=100)
+        else:
+            self.buffer_manager = TransitionBuffer(max_buffer_size=10000)
         
         # Agents
         self.agents = {}
@@ -366,6 +371,10 @@ class IPPORNNAlgorithm:
             info=info
         )
         
+        if self.use_episode_buffer:
+            if any(dones.values()):
+                self.buffer_manager.finish_episode(env_id=env_idx)
+        
         # Update done status and reset RNN if done
         for agent_id in range(self.num_agents):
             self.last_dones_batch[env_idx][agent_id] = dones[agent_id]
@@ -378,6 +387,11 @@ class IPPORNNAlgorithm:
                 self.rnn_states_value_batch[agent_id][env_idx] = torch.zeros(
                    self.recurrent_N, self.hidden_dim, device=self.device
                 )
+
+    def finish_episode(self, env_id: int = 0):
+        """Finish current episode if using EpisodeBuffer."""
+        if self.use_episode_buffer:
+            self.buffer_manager.finish_episode(env_id=env_id)
 
     def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
@@ -625,19 +639,25 @@ class IPPORNNAlgorithm:
         return dict(agent_losses)
 
     def update(self, **kwargs):
-        if self.buffer_manager.is_main_buffer_empty():
-            return {}
-        
-        transitions = self.buffer_manager.get_main_buffer_transitions()
-        
-        # [FIX] Compute GAE on full trajectories before chunking
-        try:
-            # 1. Group by env_id
+        # Get trajectories based on buffer type
+        if self.use_episode_buffer:
+            if not self.buffer_manager.has_completed_episodes():
+                return {}
+            episode_trajectories = self.buffer_manager.get_completed_episodes()
+            # episode_trajectories is already grouped by episodes
+            env_trajectories = {i: traj for i, traj in enumerate(episode_trajectories)}
+        else:
+            if self.buffer_manager.is_main_buffer_empty():
+                return {}
+            transitions = self.buffer_manager.get_main_buffer_transitions()
+            
+            # Group by env_id for TransitionBuffer
             env_trajectories = defaultdict(list)
             for t in transitions:
                 env_id = t['info'].get('env_id', 0)
                 env_trajectories[env_id].append(t)
-            
+        
+        try:
             # 2. Compute GAE for each trajectory
             for env_id, traj in env_trajectories.items():
                 if len(traj) == 0:

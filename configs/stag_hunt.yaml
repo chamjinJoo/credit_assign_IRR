@@ -41,8 +41,9 @@ algorithm:
 
 # Training Configuration
 training:
-  max_iterations: 3000
-  max_steps_per_iteration: 1024
+  max_iterations: 1500
+  max_steps_per_iteration: 2000
+  episodes_per_iteration: null
   log_interval: 2
   save_interval: 100
   eval_interval: 50

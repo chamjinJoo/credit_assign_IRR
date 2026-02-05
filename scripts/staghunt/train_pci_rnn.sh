@@ -3,7 +3,7 @@
 env="StagHunt"
 num_agents=3
 forage_quantity=3 # default: the same as num_agents
-grid_observation=false
+grid_observation=true
 config="configs/stag_hunt.yaml"
  
 # model setting
@@ -11,12 +11,12 @@ model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=1.0
 clip_delta=0.01
 use_value_parameter_sharing=true
-causal_lambda_adaptive_per_agent=false
 recurrent_N=1
 
 # training and logging 
 max_iterations=1500
 max_steps_per_iteration=2000
+episodes_per_iteration=32 # if it is set, use EpiosdeBuffer automatically 
 n_rollout_threads=8
 log_interval=2
 device="cpu"
@@ -31,6 +31,12 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
     --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
-    --recurrent-N ${recurrent_N} --n-rollout-threads ${n_rollout_threads} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --clip-delta ${clip_delta} --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-staghunt
+    --recurrent-N ${recurrent_N} \
+    --n-rollout-threads ${n_rollout_threads} \
+    --max-steps ${max_steps_per_iteration} \
+    --episodes-per-iteration ${episodes_per_iteration} \
+    --max-iterations ${max_iterations} \
+    --clip-delta ${clip_delta} \
+    --causal-lambda ${causal_lambda} \
+    --log-interval ${log_interval} --device ${device} --seed ${seed} \
+    --use-wandb --wandb-project pci-marl-staghunt

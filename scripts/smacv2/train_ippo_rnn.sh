@@ -18,6 +18,7 @@ device="cpu"  # recommended to use cuda if available, but default to cpu for saf
 seed=42
 n_rollout_threads=8
 
+export SC2PATH="$HOME/StarCraftII"
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
 conda activate pcimarl
@@ -25,7 +26,7 @@ conda activate pcimarl
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-python main.py --env ${env} --config ${config} --model ${model} --global-reward ${global_reward} \
+xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} --global-reward ${global_reward} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smacv2 \

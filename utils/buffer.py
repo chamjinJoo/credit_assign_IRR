@@ -115,8 +115,8 @@ class EpisodeBuffer:
         """
         self.max_episodes = max_episodes
         
-        # Current episode being built
-        self.current_episode: List[Dict] = []
+        # Current episodes being built (keyed by env_id, default 0 for single env)
+        self.current_episodes: Dict[int, List[Dict]] = defaultdict(list)
         
         # Completed episodes
         self.completed_episodes: List[List[Dict]] = []
@@ -132,10 +132,13 @@ class EpisodeBuffer:
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
         hidden_states: Dict[int, torch.Tensor],
-        info: Dict = None
+        info: Dict = None,
+        masks: Dict[int, float] = None,
+        available_actions: Optional[Dict[int, List[int]]] = None,
+        env_id: int = 0
     ):
         """
-        Store transition in current episode.
+        Store transition in current episode for specific environment.
         
         Args:
             prev_observations: Dict mapping agent_id to previous observation tensor
@@ -148,6 +151,9 @@ class EpisodeBuffer:
             dones: Dict mapping agent_id to done flag
             hidden_states: Dict mapping agent_id to hidden state tensor
             info: Additional information from environment
+            masks: Dict mapping agent_id to mask value (for RNN)
+            available_actions: Dict mapping agent_id to available actions (optional)
+            env_id: Environment ID (default 0)
         """
         transition = {
             'bold_o_t_minus_1': prev_observations,
@@ -159,23 +165,28 @@ class EpisodeBuffer:
             'next_observations': next_observations,
             'dones': dones,
             'hidden_states': hidden_states,
+            'masks': masks if masks is not None else {},
+            'available_actions': available_actions,
             'info': info if info is not None else {},
         }
         
-        self.current_episode.append(transition)
+        self.current_episodes[env_id].append(transition)
     
-    def finish_episode(self) -> Optional[List[Dict]]:
+    def finish_episode(self, env_id: int = 0) -> Optional[List[Dict]]:
         """
-        Finish current episode and move it to completed episodes.
+        Finish current episode for specific environment and move it to completed episodes.
         
+        Args:
+            env_id: Environment ID (default 0)
+            
         Returns:
             Completed episode (list of transitions) if episode is not empty, None otherwise
         """
-        if len(self.current_episode) == 0:
+        if len(self.current_episodes[env_id]) == 0:
             return None
         
-        completed_episode = self.current_episode.copy()
-        self.current_episode = []
+        completed_episode = self.current_episodes[env_id].copy()
+        self.current_episodes[env_id] = []
         
         # Add to completed episodes
         self.completed_episodes.append(completed_episode)
@@ -200,8 +211,8 @@ class EpisodeBuffer:
         self.completed_episodes = []
     
     def clear_current_episode(self):
-        """Clear current episode being built."""
-        self.current_episode = []
+        """Clear all current episodes."""
+        self.current_episodes = defaultdict(list)
     
     def clear_all(self):
         """Clear both current episode and completed episodes."""
@@ -213,23 +224,27 @@ class EpisodeBuffer:
         return len(self.completed_episodes) > 0
     
     def has_incomplete_episode(self) -> bool:
-        """Check if there is an incomplete episode in current_episode."""
-        return len(self.current_episode) > 0
+        """Check if there is an incomplete episode in any current_episode."""
+        return any(len(ep) > 0 for ep in self.current_episodes.values())
     
     def get_num_completed_episodes(self) -> int:
         """Get number of completed episodes."""
         return len(self.completed_episodes)
     
-    def get_current_episode_length(self) -> int:
-        """Get length of current episode being built."""
-        return len(self.current_episode)
+    def get_current_episode_length(self, env_id: int = 0) -> int:
+        """Get length of current episode being built for env_id."""
+        return len(self.current_episodes[env_id])
     
     def get_buffer_info(self) -> Dict[str, int]:
         """Get buffer information for monitoring."""
         return {
             'num_completed_episodes': len(self.completed_episodes),
-            'current_episode_length': len(self.current_episode),
+            'current_episode_length_mean': sum(len(ep) for ep in self.current_episodes.values()) / max(1, len(self.current_episodes)),
             'has_incomplete_episode': 1 if self.has_incomplete_episode() else 0,
             'max_episodes': self.max_episodes,
         }
+
+    def clear_buffer(self):
+        """Clear buffer (alias for clear_all to match TransitionBuffer interface)."""
+        self.clear_all()
 

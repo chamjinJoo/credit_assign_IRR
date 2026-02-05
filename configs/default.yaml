@@ -37,6 +37,7 @@ algorithm:
 training:
   max_iterations: 1000
   max_steps_per_iteration: 128
+  episodes_per_iteration: null # Set this to null to use max_steps_per_iteration, or an integer to collect a fixed number of episodes per iteration (useful for EpisodeBuffer)
   log_interval: 10
   save_interval: 100
   eval_interval: 50

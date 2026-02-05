@@ -10,7 +10,7 @@ from torch.distributions import Categorical
 from algorithms.networks.rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
 from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
 from algorithms.networks.mlp import MLPBase
-from utils.buffer import TransitionBuffer
+from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class RBFKernel(nn.Module):
     def __init__(self, gamma: float = 1.0):
@@ -240,6 +240,7 @@ class PCIRNNAlgorithm:
         # Value network parameter sharing
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
+        use_episode_buffer: bool = False, # [ADDED] Use EpisodeBuffer instead of TransitionBuffer
     ):
         self.env = env
         self.num_agents = num_agents
@@ -253,6 +254,7 @@ class PCIRNNAlgorithm:
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         self.causal_mini_batch_size = causal_mini_batch_size 
         self.use_value_parameter_sharing = use_value_parameter_sharing
+        self.use_episode_buffer = use_episode_buffer
 
         # for causal intrinsic reward
         self.clip_delta = clip_delta
@@ -286,9 +288,12 @@ class PCIRNNAlgorithm:
         self.batch_size = batch_size
         self.num_batches = num_batches
         
-        self.buffer_manager = TransitionBuffer(
-            max_buffer_size=max_buffer_size
-        )
+        if self.use_episode_buffer:
+            self.buffer_manager = EpisodeBuffer(max_episodes=max_buffer_size) # Treat buffer_size as max_episodes roughly
+        else:
+            self.buffer_manager = TransitionBuffer(
+                max_buffer_size=max_buffer_size
+            )
         
         self.agents = {}
         for i in range(num_agents):
@@ -347,6 +352,7 @@ class PCIRNNAlgorithm:
         )
 
         self.action_embedding_for_kernel = nn.Embedding(action_dim, 8)
+
         self.feature_projector = nn.Sequential(
             nn.Linear((num_agents-1) + 8 + obs_dim, hidden_dim),
             nn.ReLU(),
@@ -796,25 +802,32 @@ class PCIRNNAlgorithm:
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
         info: Dict = None,
-        available_actions: Optional[Dict[int, List[int]]] = None # [ADDED]
+        available_actions: Optional[Dict[int, List[int]]] = None, # [ADDED]
+        env_id: int = 0
     ):
         # Update last_dones for next step's mask
         self.last_dones = dones.copy()
         
-        self.buffer_manager.store_transition(
-            prev_observations=prev_observations,
-            prev_rewards=prev_rewards,
-            prev_actions=prev_actions,
-            observations=observations,
-            actions=actions,
-            rewards=rewards,
-            next_observations=next_observations,
-            dones=dones,
-            masks=self.temp_masks,
-            hidden_states=self.temp_hidden_states, 
-            available_actions=available_actions, # [ADDED]
-            info=info
-        )
+        # Prepare kwargs
+        kwargs = {
+            'prev_observations': prev_observations,
+            'prev_rewards': prev_rewards,
+            'prev_actions': prev_actions,
+            'observations': observations,
+            'actions': actions,
+            'rewards': rewards,
+            'next_observations': next_observations,
+            'dones': dones,
+            'masks': self.temp_masks,
+            'hidden_states': self.temp_hidden_states, 
+            'available_actions': available_actions,
+            'info': info
+        }
+        
+        if self.use_episode_buffer:
+             kwargs['env_id'] = env_id
+             
+        self.buffer_manager.store_transition(**kwargs)
     
     def store_transition_from_env( # for vectorized env
         self,
@@ -851,20 +864,30 @@ class PCIRNNAlgorithm:
         info['env_id'] = env_idx
         
         # Store transition
-        self.buffer_manager.store_transition(
-            prev_observations=prev_observations,
-            prev_rewards=prev_rewards,
-            prev_actions=prev_actions,
-            observations=observations,
-            actions=actions_only,
-            rewards=rewards,
-            next_observations=next_observations,
-            dones=dones,
-            masks=masks,
-            hidden_states=hidden_states,
-            available_actions=available_actions,
-            info=info
-        )
+        kwargs = {
+            'prev_observations': prev_observations,
+            'prev_rewards': prev_rewards,
+            'prev_actions': prev_actions,
+            'observations': observations,
+            'actions': actions_only,
+            'rewards': rewards,
+            'next_observations': next_observations,
+            'dones': dones,
+            'masks': masks,
+            'hidden_states': hidden_states,
+            'available_actions': available_actions,
+            'info': info
+        }
+        
+        if self.use_episode_buffer:
+             kwargs['env_id'] = env_idx
+             
+        self.buffer_manager.store_transition(**kwargs)
+        
+        if self.use_episode_buffer:
+            # Check if episode is done (any agent done)
+            if any(dones.values()):
+                self.buffer_manager.finish_episode(env_id=env_idx)
         
         # Update done status for this environment
         for agent_id in range(self.num_agents):
@@ -878,6 +901,11 @@ class PCIRNNAlgorithm:
                 self.agents[agent_id].rnn_states_value_batch[env_idx] = torch.zeros(
                     self.recurrent_N, self.hidden_dim, device=self.device
                 )
+
+    def finish_episode(self, env_id: int = 0):
+        """Finish current episode if using EpisodeBuffer."""
+        if self.use_episode_buffer:
+            self.buffer_manager.finish_episode(env_id=env_id)
     
     def compute_gae(
         self,
@@ -1369,19 +1397,27 @@ class PCIRNNAlgorithm:
         return dict(agent_losses)
 
     def update(self, **kwargs):
-        if self.buffer_manager.is_main_buffer_empty(): return {}
-        transitions = self.buffer_manager.get_main_buffer_transitions()
+        trajectories = []
         
-        # [FIX] Compute GAE on full trajectories before chunking
-        try:
-            # 1. Group by env_id
+        if self.use_episode_buffer:
+            if not self.buffer_manager.has_completed_episodes(): return {}
+            trajectories = self.buffer_manager.get_completed_episodes()
+
+        else: # TransitionBuffer need preproccessing to align the data to episodic trajectories.
+            if self.buffer_manager.is_main_buffer_empty(): return {}
+            transitions = self.buffer_manager.get_main_buffer_transitions()
+            
+            # Group by env_id
             env_trajectories = defaultdict(list)
             for t in transitions:
                 env_id = t['info'].get('env_id', 0)
                 env_trajectories[env_id].append(t)
-   
+            trajectories = list(env_trajectories.values())
+  
+        # Compute GAE on full trajectories before chunking
+        try:
             # 2. Compute causal rewards for each trajectory
-            for env_id, traj in env_trajectories.items():
+            for traj in trajectories:
                 # NOTE: traj is the many episodes of a specific environment, done mask should work
                 if len(traj) == 0:
                     continue
@@ -1459,7 +1495,7 @@ class PCIRNNAlgorithm:
                             t['delta'][agent_id] = delta[t_idx, agent_id].item()
 
             # 3. Compute GAE for each trajectory using shaped rewards
-            for env_id, traj in env_trajectories.items():
+            for traj in trajectories:
                 if len(traj) == 0:
                     continue
                 
@@ -1513,7 +1549,7 @@ class PCIRNNAlgorithm:
             all_chunks = []
             chunk_len = self.rnn_chunk_length
             
-            for env_id, traj in env_trajectories.items():
+            for traj in trajectories:
                 if len(traj) == 0: continue
                 
                 # Add active_mask to existing transitions
@@ -1577,9 +1613,14 @@ class PCIRNNAlgorithm:
             print(f"[ERROR] Failed to restructure rollout data: {e}")
             import traceback
             traceback.print_exc()
-            # Fallback
-            batch_size = max(1, len(transitions) // self.num_batches)
-            batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
+            # Fallback - just use raw transitions/episodes as batches if possible, but structure likely mismatch
+            return {} 
+            
+        # Clear buffers
+        if self.use_episode_buffer:
+            self.buffer_manager.clear_completed_episodes()
+        else:
+            self.buffer_manager.clear_buffer()
             
         total_losses = defaultdict(float)
         

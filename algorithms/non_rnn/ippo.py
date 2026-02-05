@@ -8,7 +8,7 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
-from utils.buffer import TransitionBuffer
+from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class IPPOAgent:
     """
@@ -83,6 +83,7 @@ class IPPOAlgorithm:
         num_batches: int = 4,  # Number of batches K for training
         device: str = "cpu",  # Device for computation
         global_reward: bool = False,
+        use_episode_buffer: bool = False,
     ):
         self.global_reward = global_reward
         self.num_agents = num_agents
@@ -103,11 +104,13 @@ class IPPOAlgorithm:
         self.num_batches = num_batches
     
         self.training_steps = 0
+        self.use_episode_buffer = use_episode_buffer
         
         # Create experience buffer
-        self.buffer_manager = TransitionBuffer(
-            max_buffer_size=10000
-        )
+        if use_episode_buffer:
+            self.buffer_manager = EpisodeBuffer(max_episodes=100)
+        else:
+            self.buffer_manager = TransitionBuffer(max_buffer_size=10000)
         # Create agents
         self.agents = {}
         for i in range(num_agents):
@@ -227,6 +230,15 @@ class IPPOAlgorithm:
             hidden_states={i: None for i in range(self.num_agents)},
             info=info
         )
+        
+        if self.use_episode_buffer:
+            if any(dones.values()):
+                self.buffer_manager.finish_episode(env_id=env_idx)
+
+    def finish_episode(self, env_id: int = 0):
+        """Finish current episode if using EpisodeBuffer."""
+        if self.use_episode_buffer:
+            self.buffer_manager.finish_episode(env_id=env_id)
     
     def get_actions(self, observations: Dict[int, torch.Tensor]) -> Dict[int, Tuple[int, float]]:
         """
@@ -449,18 +461,26 @@ class IPPOAlgorithm:
         """
         Main update function that orchestrates the training process for one iteration.
         """
-        if self.buffer_manager.is_main_buffer_empty():
-            return {}
-
-        transitions = self.buffer_manager.get_main_buffer_transitions()
-        
-        # [FIX] Compute GAE on full trajectories before batching
-        try:
-            # 1. Group by env_id
+        # Get trajectories based on buffer type
+        if self.use_episode_buffer:
+            if not self.buffer_manager.has_completed_episodes():
+                return {}
+            episode_trajectories = self.buffer_manager.get_completed_episodes()
+            # episode_trajectories is already grouped by episodes
+            env_trajectories = {i: traj for i, traj in enumerate(episode_trajectories)}
+        else:
+            if self.buffer_manager.is_main_buffer_empty():
+                return {}
+            transitions = self.buffer_manager.get_main_buffer_transitions()
+            
+            # Group by env_id for TransitionBuffer
             env_trajectories = defaultdict(list)
             for t in transitions:
                 env_id = t['info'].get('env_id', 0)
                 env_trajectories[env_id].append(t)
+        
+        # [FIX] Compute GAE on full trajectories before batching
+        try:
             
             # 2. Compute GAE for each trajectory
             for env_id, traj in env_trajectories.items():

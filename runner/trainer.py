@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, COMARNNAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -54,7 +54,7 @@ class Trainer:
         self,
         config: Dict,
         env: MultiAgentEnv,
-        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm, Q_PCIRNNAlgorithm],
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, COMARNNAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm, Q_PCIRNNAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -67,10 +67,12 @@ class Trainer:
         wandb_run_name: Optional[str] = None,
         device: str = "cpu",
         n_rollout_threads: int = 1,  # [ADDED] Number of parallel environments
-        env_fn: Optional[callable] = None  # [ADDED] Function to create environment (for parallel)
+        env_fn: Optional[callable] = None,  # [ADDED] Function to create environment (for parallel)
+        episodes_per_iteration: Optional[int] = None  # [ADDED] Number of episodes to collect per iteration
     ):
         self.config = config
         self.n_rollout_threads = n_rollout_threads
+        self.episodes_per_iteration = episodes_per_iteration
         
         # Setup environment (single or parallel)
         if n_rollout_threads > 1:
@@ -229,6 +231,11 @@ class Trainer:
         # Create metadata directory
         metadata_dir = os.path.dirname(self.save_dir)  # Remove 'checkpoints' from path
         
+        # Prepare full config with filtered environment config
+        config_dict = self.config.to_dict() if hasattr(self.config, 'to_dict') else self.config
+        if hasattr(self.config.environment, 'get_relevant_config'):
+             config_dict['environment'] = self.config.environment.get_relevant_config()
+             
         metadata = {
             "simulation_info": {
                 "timestamp": datetime.now().isoformat(),
@@ -237,20 +244,14 @@ class Trainer:
                 "obs_dim": self.env.get_obs_dim(),
                 "action_dim": self.env.get_action_dim()
             },
-            "training_config": {
-                "max_iterations": self.max_iterations,
-                "max_steps_per_iteration": self.max_steps_per_iteration,
-                "log_interval": self.log_interval,
-                "save_interval": self.save_interval,
-                "eval_interval": self.eval_interval,
-                "eval_episodes": self.eval_episodes,
-                "device": self.device
-            },
-            "directories": {
-                "base_save_dir": self.base_save_dir,
-                "simulation_dir": self.save_dir,
-                "checkpoint_dir": self.save_dir
-            }
+            
+            "config": config_dict,
+            
+            # "directories": {
+            #     "base_save_dir": self.base_save_dir,
+            #     "simulation_dir": self.save_dir,
+            #     "checkpoint_dir": self.save_dir
+            # }
         }
         
         # Save metadata
@@ -274,11 +275,8 @@ class Trainer:
             f.write(f"  checkpoints/     - Model checkpoints\n")
             f.write(f"  logs/           - Training logs (if enabled)\n")
             f.write(f"  results/        - Evaluation results (if enabled)\n")
-        
         self.logger.info(f"Simulation metadata saved to: {metadata_dir}")
         self.logger.info(f"Checkpoint directory: {self.save_dir}")
-    
-
     
     def _save_training_summary(self, total_time: float, final_eval: Dict[str, float]):
         """Save final training summary and results."""
@@ -421,7 +419,11 @@ class Trainer:
         episode_lengths = []
         episode_successes = []
         
-        while step_count < self.max_steps_per_iteration:
+        # Determine loop condition
+        use_ep_buffer = getattr(self.algorithm, 'use_episode_buffer', False)
+        use_ep_limit = use_ep_buffer and self.episodes_per_iteration is not None
+        
+        while (episode_count < self.episodes_per_iteration if use_ep_limit else step_count < self.max_steps_per_iteration):
             # Reset environment and agents
             observations = self.env.reset()
             self.algorithm.reset_agents()
@@ -441,7 +443,9 @@ class Trainer:
             episode_length = 0
             done = False
             
-            while not done and step_count < self.max_steps_per_iteration:
+            # Inner loop: Run until episode is done.
+            # If NOT using episode limit (i.e. using step limit), also break if max steps reached.
+            while not done and (use_ep_limit or step_count < self.max_steps_per_iteration):
                 # Get available actions
                 available_actions = None
                 if hasattr(self.env, "get_avail_actions"):
@@ -495,7 +499,7 @@ class Trainer:
             # For COMA, finish the episode in the buffer only if episode actually completed
             # If episode was cut short due to max_steps_per_iteration, keep it in current_episode
             # for the next iteration to continue collecting
-            if isinstance(self.algorithm, COMAAlgorithm):
+            if isinstance(self.algorithm, (COMAAlgorithm, COMARNNAlgorithm)):
                 if done:  # Episode actually completed
                     self.algorithm.finish_episode()
                 # else: Incomplete episode remains in current_episode for next iteration
@@ -585,7 +589,11 @@ class Trainer:
         env_episode_lengths = [0] * self.n_rollout_threads
         env_dones = [False] * self.n_rollout_threads
         
-        while step_count < self.max_steps_per_iteration:
+        # Determine loop condition
+        use_ep_buffer = getattr(self.algorithm, 'use_episode_buffer', False)
+        use_ep_limit = use_ep_buffer and self.episodes_per_iteration is not None
+
+        while (episode_count < self.episodes_per_iteration if use_ep_limit else step_count < self.max_steps_per_iteration):
             # Get available actions
             available_actions_batch = self.env.get_avail_actions_batch()
             
@@ -714,6 +722,7 @@ class Trainer:
             observations = dict_to_tensor(observations, device=self.algorithm.device)
             
             episode_reward = defaultdict(float)
+            episode_success = 0.0
             episode_length = 0
             done = False
             
@@ -756,10 +765,10 @@ class Trainer:
                     stag_alive = info.get('stag_alive', {})
                     hare_alive = info.get('hare_alive', {})
                     if not any(stag_alive.values()) and not any(hare_alive.values()):
-                        episode_success = 1.0
+                        episode_success += 1.0
                         
                 if info.get('battle_won', False): # for SMAC and SMACv2
-                    episode_success = 1.0
+                    episode_success += 1.0
 
                 # Update statistics
                 for agent_id, reward in rewards.items():
@@ -776,6 +785,7 @@ class Trainer:
         
         # Compile evaluation metrics
         eval_info = {
+            'eval_success_rate': episode_success / self.eval_episodes,
             'eval_mean_reward': np.mean([np.mean(rewards) for rewards in eval_rewards.values()]),
             'eval_std_reward': np.std([np.mean(rewards) for rewards in eval_rewards.values()]),
             'eval_mean_length': np.mean(eval_lengths),
@@ -896,6 +906,7 @@ class Trainer:
         
         if self.use_wandb:
             wandb_data = {
+                'eval/success_rate': eval_info['eval_success_rate'],
                 'eval/mean_reward': eval_info['eval_mean_reward'],
                 'eval/std_reward': eval_info['eval_std_reward'],
                 'eval/mean_length': eval_info['eval_mean_length'],
@@ -1047,7 +1058,7 @@ class Trainer:
                 if hasattr(self.algorithm, 'value_optimizer'):
                     state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
         
-        elif isinstance(self.algorithm, COMAAlgorithm):
+        elif isinstance(self.algorithm, (COMAAlgorithm, COMARNNAlgorithm)):
             # COMA specific states
             state['critic'] = self.algorithm.critic.state_dict()
             state['target_critic'] = self.algorithm.target_critic.state_dict()

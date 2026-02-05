@@ -13,7 +13,7 @@ import torch
 from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
 from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
 from envs import create_environment, get_available_environments
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, COMARNNAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
 from runner import Trainer
 
 
@@ -114,6 +114,7 @@ def create_algorithm(env, config):
             env_required_agents=env_required_agents,
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
+            use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', False),
         )
     elif algorithm_type == 'x_pci':
         algorithm = X_PCIAlgorithm(
@@ -210,6 +211,22 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
+    elif algorithm_type == 'coma_rnn':
+        algorithm = COMARNNAlgorithm(
+            num_agents=env.num_agents,
+            obs_dim=env.get_obs_dim(),
+            action_dim=env.get_action_dim(),
+            hidden_dim=network_config.hidden_dim,
+            recurrent_N=getattr(network_config, 'recurrent_N', 1),
+            lr_actor=network_config.lr_actor,
+            lr_critic=network_config.lr_critic,
+            gamma=algorithm_config.gamma,
+            td_lambda=algorithm_config.gae_lambda,
+            entropy_coef=algorithm_config.entropy_coef,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
+            device=config.training.device,
+        )
     elif algorithm_type == 'mappo_rnn':
         algorithm = MAPPORNNAlgorithm(
             num_agents=env.num_agents,
@@ -293,7 +310,7 @@ def create_algorithm(env, config):
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 50),
         )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'pci_rnn', 'q_pci_rnn', 'mappo', 'mappo_rnn', 'ippo', 'ippo_rnn', 'x_pci', or 'coma'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'pci_rnn', 'q_pci_rnn', 'mappo', 'mappo_rnn', 'ippo', 'ippo_rnn', 'x_pci', 'coma', or 'coma_rnn'")
     
     return algorithm
 
@@ -369,11 +386,11 @@ def main():
     
     # Create logger
     logger = Logger(name=algorithm_type)
-    logger.info(f"Starting {algorithm_type} training")
+    logger.info(f"Start {algorithm_type} training")
     
     # Log reproducibility information
     log_reproducibility_info(actual_seed, logger)
-    logger.info(f"Configuration: {config.to_dict()}")
+    # logger.info(f"Configuration: {config.to_dict()}")
     
     # Create environment
     env = None
@@ -482,7 +499,8 @@ def main():
             wandb_project=config.wandb.project,
             wandb_run_name=wandb_run_name,
             device=device,
-            n_rollout_threads=n_rollout_threads,  # [ADDED]
+            n_rollout_threads=n_rollout_threads,
+            episodes_per_iteration=getattr(config.training, 'episodes_per_iteration', None), # [ADDED]
             env_fn=env_fn  # [ADDED]
         )
         # Check for evaluation or test mode

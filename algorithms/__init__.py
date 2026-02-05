@@ -1,12 +1,14 @@
-from .x_pci import X_PCIAlgorithm
-from .pci_mappo import PCIMAPPOAlgorithm
+from .non_rnn.x_pci import X_PCIAlgorithm
+from .non_rnn.pci_mappo import PCIMAPPOAlgorithm
+from .non_rnn.mappo import MAPPOAlgorithm
+from .non_rnn.ippo import IPPOAlgorithm
+from .non_rnn.coma import COMAAlgorithm
+
 from .pci_rnn import PCIRNNAlgorithm
-from .mappo import MAPPOAlgorithm
 from .mappo_rnn import MAPPORNNAlgorithm
-from .ippo import IPPOAlgorithm
 from .ippo_rnn import IPPORNNAlgorithm
-from .coma import COMAAlgorithm
 from .q_pci_rnn import Q_PCIRNNAlgorithm
+from .coma_rnn import COMARNNAlgorithm
 
 __all__ = [
     "PCIMAPPOAlgorithm",
@@ -17,5 +19,6 @@ __all__ = [
     "IPPORNNAlgorithm",
     "X_PCIAlgorithm",
     "COMAAlgorithm",
+    "COMARNNAlgorithm",
     "Q_PCIRNNAlgorithm"
 ]
