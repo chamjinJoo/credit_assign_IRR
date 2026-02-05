@@ -226,6 +226,7 @@ def create_algorithm(env, config):
             max_grad_norm=algorithm_config.max_grad_norm,
             target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
             device=config.training.device,
+            use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', True),
         )
     elif algorithm_type == 'mappo_rnn':
         algorithm = MAPPORNNAlgorithm(

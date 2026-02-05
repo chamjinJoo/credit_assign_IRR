@@ -140,6 +140,7 @@ class COMARNNAlgorithm:
         target_update_interval: int = 200,
         critic_train_steps: int = 1,
         device: str = "cpu",
+        use_episode_buffer: bool = True, # [ADDED] Default True for COMA
     ):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
@@ -156,8 +157,11 @@ class COMARNNAlgorithm:
         self.target_update_interval = target_update_interval
         self.critic_train_steps = critic_train_steps
         
+        self.use_episode_buffer = use_episode_buffer
+        
         # Episode buffer for COMA (episode-based training)
-        self.buffer_manager = EpisodeBuffer(max_episodes=32)
+        # Assuming we always use EpisodeBuffer for COMA regardless of flag for now,
+        self.buffer_manager = EpisodeBuffer(max_episodes=100) # Increased default size
         
         # Create agents (with shared policy parameters like pymarl MAC)
         self.agents = {}

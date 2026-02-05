@@ -143,3 +143,7 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 # 26.02.04
 * `SMACv2` change batch_size: $1600 \to 3200$ (number of steps per iter), keep the total steps for training $\approx 10^7$. 
 * Baseline: **COMA** (rnn verision), test on StagHunt.
+
+# 26.02.05
+* Complete `EpisodeBuffer` -> if `episodes_per_iteration` is set, automatically use EpisodeBuffer.
+* Cleanup the config for different envs.

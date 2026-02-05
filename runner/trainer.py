@@ -823,7 +823,18 @@ class Trainer:
         """Log training metrics."""
         # Log to console
         self.logger.info(f"Iteration {self.iteration}")
-        self.logger.info(f"  Steps: {rollout_data['step_count']}")
+        
+        # Calculate steps to show
+        steps_val = rollout_data['step_count']
+        if getattr(self.algorithm, 'use_episode_buffer', False):
+            # For EpisodeBuffer, show effective steps (sum of lengths) as primary
+            effective_steps = sum(rollout_data['episode_lengths'])
+            
+            # effective: step data reflected on training (excluding zero-padded data)  
+            # env steps: step data containing zero-padding
+            self.logger.info(f"  Effective Steps: {effective_steps} (Full Steps: {steps_val})")
+        else:
+            self.logger.info(f"  Steps: {steps_val}")
         self.logger.info(f"  Episodes: {rollout_data['episode_count']}")
         self.logger.info(f"  Mean Episode Reward: {rollout_data['mean_episode_reward']:.3f}")
         self.logger.info(f"  Mean Episode Length: {rollout_data['mean_episode_length']:.1f}")
