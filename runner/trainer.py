@@ -714,6 +714,7 @@ class Trainer:
         """
         eval_rewards = defaultdict(list)
         eval_lengths = []
+        eval_successes = []
         
         for episode in range(self.eval_episodes):
             # Reset environment and agents (use eval_env for evaluation)
@@ -765,10 +766,10 @@ class Trainer:
                     stag_alive = info.get('stag_alive', {})
                     hare_alive = info.get('hare_alive', {})
                     if not any(stag_alive.values()) and not any(hare_alive.values()):
-                        episode_success += 1.0
+                        episode_success = 1.0
                         
                 if info.get('battle_won', False): # for SMAC and SMACv2
-                    episode_success += 1.0
+                    episode_success = 1.0
 
                 # Update statistics
                 for agent_id, reward in rewards.items():
@@ -782,10 +783,11 @@ class Trainer:
             for agent_id, total_reward in episode_reward.items():
                 eval_rewards[agent_id].append(total_reward)
             eval_lengths.append(episode_length)
+            eval_successes.append(episode_success)
         
         # Compile evaluation metrics
         eval_info = {
-            'eval_success_rate': episode_success / self.eval_episodes,
+            'eval_success_rate': np.mean(eval_successes) if eval_successes else 0.0,
             'eval_mean_reward': np.mean([np.mean(rewards) for rewards in eval_rewards.values()]),
             'eval_std_reward': np.std([np.mean(rewards) for rewards in eval_rewards.values()]),
             'eval_mean_length': np.mean(eval_lengths),
@@ -1009,11 +1011,20 @@ class Trainer:
         }
         
         # Save agent states
-        for agent_id, agent in self.algorithm.agents.items():
-            state['agents'][agent_id] = {
-                'policy_net': agent.policy_net.state_dict(),
-                'optimizer': agent.optimizer.state_dict(),
-            }
+        if isinstance(self.algorithm, COMARNNAlgorithm):
+            # COMA RNN uses shared policy — save once, no per-agent optimizer
+            state['shared_policy'] = self.algorithm.shared_policy.state_dict()
+            state['policy_optimizer'] = self.algorithm.policy_optimizer.state_dict()
+            for agent_id, agent in self.algorithm.agents.items():
+                state['agents'][agent_id] = {
+                    'policy_net': agent.policy_net.state_dict(),
+                }
+        else:
+            for agent_id, agent in self.algorithm.agents.items():
+                state['agents'][agent_id] = {
+                    'policy_net': agent.policy_net.state_dict(),
+                    'optimizer': agent.optimizer.state_dict(),
+                }
         
         # Save algorithm-specific states
         if isinstance(self.algorithm, (PCIMAPPOAlgorithm, PCIRNNAlgorithm)):
@@ -1095,10 +1106,17 @@ class Trainer:
         algorithm_state = checkpoint['algorithm_state']
     
         # Load agent states
-        for agent_id, agent_state in algorithm_state['agents'].items():
-            agent = self.algorithm.agents[int(agent_id)]
-            agent.policy_net.load_state_dict(agent_state['policy_net'])
-            agent.optimizer.load_state_dict(agent_state['optimizer'])
+        if isinstance(self.algorithm, COMARNNAlgorithm):
+            # COMA RNN: load shared policy and optimizer
+            if 'shared_policy' in algorithm_state:
+                self.algorithm.shared_policy.load_state_dict(algorithm_state['shared_policy'])
+            if 'policy_optimizer' in algorithm_state:
+                self.algorithm.policy_optimizer.load_state_dict(algorithm_state['policy_optimizer'])
+        else:
+            for agent_id, agent_state in algorithm_state['agents'].items():
+                agent = self.algorithm.agents[int(agent_id)]
+                agent.policy_net.load_state_dict(agent_state['policy_net'])
+                agent.optimizer.load_state_dict(agent_state['optimizer'])
         
         # Load algorithm-specific states
         if isinstance(self.algorithm, PCIMAPPOAlgorithm):

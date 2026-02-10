@@ -345,8 +345,9 @@ class MAPPORNNAlgorithm:
         available_actions: Optional[Dict[int, List[int]]] = None
     ):
         """Store transition from a specific parallel environment."""
-        # Extract actions only
+        # Extract actions and log_probs separately
         actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
+        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
         
         # Extract hidden states/masks for this environment
         hidden_states = self.temp_hidden_states_batch[env_idx]
@@ -367,6 +368,7 @@ class MAPPORNNAlgorithm:
             masks=masks,
             hidden_states=hidden_states,
             available_actions=available_actions,
+            log_probs=log_probs_dict,
             info=info
         )
         
@@ -398,10 +400,8 @@ class MAPPORNNAlgorithm:
         actions = {}
         self.temp_hidden_states = {}
         self.temp_masks = {}
+        self.temp_log_probs = {}
         
-        # We assume all agents have same Done status for masking Central Value?
-        # Typically central value mask = min(all agent masks) or just one of them if synchronous.
-        # We use agent 0's mask for central value.
         mask0 = 1.0 if not self.last_dones.get(0, False) else 0.0
         mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
         
@@ -413,7 +413,6 @@ class MAPPORNNAlgorithm:
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
             mask_tensor = torch.tensor([mask], dtype=torch.float32, device=self.device)
             
-            # Prepare available actions tensor
             avail_actions_tensor = None
             if available_actions is not None and agent_id in available_actions:
                 avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
@@ -421,10 +420,9 @@ class MAPPORNNAlgorithm:
             action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             actions[agent_id] = (action, log_prob)
-            # Store (policy_state, central_value_state) for each agent
-            # We enforce v_state on all agents so buffer structure is consistent
             self.temp_hidden_states[agent_id] = (p_state, v_state)
             self.temp_masks[agent_id] = mask
+            self.temp_log_probs[agent_id] = log_prob
             
         return actions
 
@@ -434,6 +432,9 @@ class MAPPORNNAlgorithm:
         
         kwargs['masks'] = self.temp_masks
         kwargs['hidden_states'] = self.temp_hidden_states
+        # Extract log_probs from temp storage if not already provided
+        if 'log_probs' not in kwargs:
+            kwargs['log_probs'] = self.temp_log_probs
         self.buffer_manager.store_transition(**kwargs)
 
     def compute_gae(self, rewards, values, next_value, dones):
@@ -578,9 +579,12 @@ class MAPPORNNAlgorithm:
                 if agent_id in available_actions_batch:
                     avail_actions_batch_merged = available_actions_batch[agent_id]
 
-            with torch.no_grad():
-                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
-                old_log_probs = old_log_probs.detach()
+            # Use stored log_probs from rollout (not recalculated)
+            old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+            if num_chunks > 0:
+                old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
+            else:
+                old_log_probs = old_log_probs_raw
         
             for _ in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)

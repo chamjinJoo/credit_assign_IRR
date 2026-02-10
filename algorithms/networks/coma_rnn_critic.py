@@ -48,8 +48,7 @@ class COMARNNCritic(nn.Module):
             action_dim * num_agents +   # last actions (one-hot)
             num_agents                  # agent id (one-hot)
         )
-        
-        # pymarl uses 128 hidden dim with 2 layers
+
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
         self.fc3 = nn.Linear(hidden_dim, action_dim)

@@ -30,7 +30,8 @@ class TransitionBuffer:
         dones: Dict[int, bool],
         masks: Dict[int, float],
         hidden_states: Dict[int, torch.Tensor],
-        available_actions: Optional[Dict[int, List[int]]] = None, # [ADDED]
+        available_actions: Optional[Dict[int, List[int]]] = None,
+        log_probs: Optional[Dict[int, float]] = None,
         info: Dict = None
     ):
         """
@@ -63,7 +64,8 @@ class TransitionBuffer:
             'dones': dones,
             'masks': masks,
             'hidden_states': hidden_states,
-            'available_actions': available_actions, # [ADDED]
+            'available_actions': available_actions,
+            'log_probs': log_probs,
             'info': info if info is not None else {},  # Environment info (e.g., stag_hunts, hare_hunts)
         }
         
@@ -135,6 +137,7 @@ class EpisodeBuffer:
         info: Dict = None,
         masks: Dict[int, float] = None,
         available_actions: Optional[Dict[int, List[int]]] = None,
+        log_probs: Optional[Dict[int, float]] = None,
         env_id: int = 0
     ):
         """
@@ -167,6 +170,7 @@ class EpisodeBuffer:
             'hidden_states': hidden_states,
             'masks': masks if masks is not None else {},
             'available_actions': available_actions,
+            'log_probs': log_probs,
             'info': info if info is not None else {},
         }
         

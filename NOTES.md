@@ -142,8 +142,13 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 # 26.02.04
 * `SMACv2` change batch_size: $1600 \to 3200$ (number of steps per iter), keep the total steps for training $\approx 10^7$. 
-* Baseline: **COMA** (rnn verision), test on StagHunt.
+* Baseline: **COMA** (rnn verision), testing...
+    * Target critic update interval: default=10
 
 # 26.02.05
 * Complete `EpisodeBuffer` -> if `episodes_per_iteration` is set, automatically use EpisodeBuffer.
 * Cleanup the config for different envs.
+
+# 26.02.10
+* **Correction**: `PPO`-related algorithms re-compute old policy prob. when policy updates -> fix it by storing old_policy_probs while collecting rollout data.
+    * `rMAPPO` shows reasonable performance in `StagHunt`, but `rPCI` still outperforms.

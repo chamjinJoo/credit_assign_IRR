@@ -15,7 +15,8 @@ from utils.buffer import EpisodeBuffer
 class COMARNNAgent:
     """
     Single agent for COMA-RNN algorithm.
-    Uses RNN-based policy network for partial observability.
+    Uses shared RNN-based policy network (pymarl-style parameter sharing).
+    Agent ID is concatenated as one-hot to the observation input.
     """
     
     def __init__(
@@ -25,7 +26,8 @@ class COMARNNAgent:
         action_dim: int,
         hidden_dim: int = 64,
         recurrent_N: int = 1,
-        lr_actor: float = 3e-4,
+        num_agents: int = 1,
+        policy_net: RNNPolicyNetwork = None,
         device: str = "cpu"
     ):
         self.agent_id = agent_id
@@ -33,17 +35,22 @@ class COMARNNAgent:
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.recurrent_N = recurrent_N
+        self.num_agents = num_agents
         self.device = device
         
-        # RNN Policy Network
-        self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
-        self.policy_net.to(device)
-        
-        self.optimizer = optim.RMSprop(self.policy_net.parameters(), lr=lr_actor, alpha=0.99, eps=1e-5)
+        # Shared RNN Policy Network (pymarl-style parameter sharing)
+        self.policy_net = policy_net
         
         # RNN hidden state
         self.rnn_state_policy = None
         self.reset_rnn_state()
+    
+    def _add_agent_id(self, obs: torch.Tensor) -> torch.Tensor:
+        """Concatenate agent_id one-hot encoding to observation (pymarl-style)."""
+        leading_shape = obs.shape[:-1]
+        agent_id_onehot = torch.zeros(*leading_shape, self.num_agents, device=obs.device)
+        agent_id_onehot[..., self.agent_id] = 1.0
+        return torch.cat([obs, agent_id_onehot], dim=-1)
         
     def reset_rnn_state(self):
         """Reset RNN hidden state (single environment)."""
@@ -61,9 +68,10 @@ class COMARNNAgent:
         available_actions: torch.Tensor = None,
         return_rnn_state: bool = True
     ) -> Tuple[int, float, Optional[torch.Tensor]]:
-        """Get action from RNN policy (single environment)."""
+        """Get action from shared RNN policy (single environment)."""
         with torch.no_grad():
-            obs_in = obs.unsqueeze(0) if obs.dim() == 1 else obs
+            obs_with_id = self._add_agent_id(obs)
+            obs_in = obs_with_id.unsqueeze(0) if obs_with_id.dim() == 1 else obs_with_id
             
             if masks is None:
                 batch_size = obs_in.size(0)
@@ -99,10 +107,11 @@ class COMARNNAgent:
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Get actions for a batch of environments."""
         with torch.no_grad():
+            obs_with_id = self._add_agent_id(obs_batch)
             prev_states = self.rnn_states_policy_batch.clone()
             
             action, log_prob, next_states = self.policy_net.get_action_and_log_prob(
-                obs_batch, 
+                obs_with_id, 
                 self.rnn_states_policy_batch, 
                 masks_batch, 
                 available_actions_batch
@@ -118,7 +127,7 @@ class COMARNNAlgorithm:
     COMA (Counterfactual Multi-Agent Policy Gradients) Algorithm with RNN support.
     
     Based on pymarl implementation:
-    - RNN-based policy for partial observability
+    - RNN-based policy with parameter sharing (agent_id one-hot concatenated)
     - Centralized critic with counterfactual baseline
     - TD-lambda target for value estimation
     - Episode-based training
@@ -137,10 +146,10 @@ class COMARNNAlgorithm:
         td_lambda: float = 0.8,
         entropy_coef: float = 0.01,
         max_grad_norm: float = 10.0,
-        target_update_interval: int = 200,
+        target_update_interval: int = 10,
         critic_train_steps: int = 1,
         device: str = "cpu",
-        use_episode_buffer: bool = True, # [ADDED] Default True for COMA
+        use_episode_buffer: bool = True,
     ):
         self.num_agents = num_agents
         self.obs_dim = obs_dim
@@ -160,10 +169,20 @@ class COMARNNAlgorithm:
         self.use_episode_buffer = use_episode_buffer
         
         # Episode buffer for COMA (episode-based training)
-        # Assuming we always use EpisodeBuffer for COMA regardless of flag for now,
-        self.buffer_manager = EpisodeBuffer(max_episodes=100) # Increased default size
+        self.buffer_manager = EpisodeBuffer(max_episodes=100)
         
-        # Create agents (with shared policy parameters like pymarl MAC)
+        # Shared Policy Network (pymarl-style parameter sharing)
+        # Input: obs + agent_id one-hot
+        self.shared_policy = RNNPolicyNetwork(
+            obs_dim + num_agents, action_dim, hidden_dim, recurrent_N
+        )
+        self.shared_policy.to(self.device)
+        
+        self.policy_optimizer = optim.RMSprop(
+            self.shared_policy.parameters(), lr=lr_actor, alpha=0.99, eps=1e-5
+        )
+        
+        # Create agents with shared policy
         self.agents = {}
         for i in range(num_agents):
             self.agents[i] = COMARNNAgent(
@@ -172,7 +191,8 @@ class COMARNNAlgorithm:
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                lr_actor=lr_actor,
+                num_agents=num_agents,
+                policy_net=self.shared_policy,
                 device=self.device
             )
         
@@ -226,7 +246,7 @@ class COMARNNAlgorithm:
         """Concatenate all agent observations to form joint observation."""
         sorted_obs = [observations[i] for i in range(self.num_agents) if i in observations]
         if not sorted_obs:
-            device = next(self.agents[0].policy_net.parameters()).device
+            device = next(self.shared_policy.parameters()).device
             return torch.zeros(self.num_agents * self.obs_dim, device=device)
         return torch.cat(sorted_obs, dim=-1)
 
@@ -346,6 +366,7 @@ class COMARNNAlgorithm:
             dones=dones,
             hidden_states=self.temp_hidden_states.copy(),
             info=info,
+            available_actions=available_actions,
             env_id=0  # Default to 0 for single env
         )
 
@@ -382,6 +403,7 @@ class COMARNNAlgorithm:
             dones=dones,
             hidden_states=hidden_states,
             info=info,
+            available_actions=available_actions,
             env_id=env_idx  # Pass env_id
         )
         
@@ -412,293 +434,256 @@ class COMARNNAlgorithm:
         self,
         rewards: torch.Tensor,       # [Batch, T]
         terminated: torch.Tensor,    # [Batch, T]
-        target_qs: torch.Tensor,     # [Batch, T, num_agents]
-        mask: torch.Tensor,          # [Batch, T] (padding mask)
+        mask: torch.Tensor,          # [Batch, T]
+        target_qs: torch.Tensor,     # [Batch, T+1, num_agents]
         gamma: float,
         td_lambda: float
     ) -> torch.Tensor:
         """
-        Build TD-lambda targets with batch support.
-        
+        Build TD-lambda targets     
         Args:
-            rewards: Team rewards [Batch, T]
-            terminated: Terminated flags [Batch, T]
-            target_qs: Target Q-values for taken actions [Batch, T, num_agents]
-            mask: Padding mask (1.0 for valid, 0.0 for padding) [Batch, T]
-            gamma: Discount factor
-            td_lambda: TD-lambda coefficient
-            
+            rewards: [B, T]
+            terminated: [B, T]
+            mask: [B, T] (1=valid, 0=padded/post-terminal)
+            target_qs: [B, T+1, N] — Q-values including next state
+            gamma, td_lambda: scalars
         Returns:
-            TD-lambda targets [Batch, T, num_agents]
+            [B, T, N]
         """
-        B, T = rewards.shape
-        targets = torch.zeros(B, T, self.num_agents, device=self.device)
+        B, Tp1, N = target_qs.shape
+        T = Tp1 - 1
         
-        # Last step target
-        running_target = target_qs[:, -1, :] if T > 0 else torch.zeros(B, self.num_agents, device=self.device)
+        ret = target_qs.new_zeros(B, Tp1, N)
+        # Initialize last lambda-return for not-terminated episodes
+        ret[:, -1] = target_qs[:, -1] * (1 - terminated.sum(dim=1, keepdim=True))
         
-        for t in reversed(range(T)):
-            # Valid mask for this step (not terminated AND not padded)
-            # If terminated, next value should be 0 (handled by mask logic in formula usually, but here explicit)
-            # Target calculation uses NEXT step's value.
-            
-            mask_t = mask[:, t].unsqueeze(1) # [B, 1]
-            term_t = terminated[:, t].unsqueeze(1) # [B, 1]
-            reward_t = rewards[:, t].unsqueeze(1) # [B, 1]
-            
-            # If terminated at t, target is just reward (bootstrapping handled by 0 mask)
-            # Actually, standard formula: r + gamma * (1-term) * ( ... )
-             
-            if t == T - 1:
-                # Last step in sequence (might be terminal or truncated)
-                target_val = reward_t + gamma * (1 - term_t) * running_target
-            else:
-                # TD-lambda: G_t^λ = r_t + γ * (1-d_t) * ((1-λ) * Q_{t+1} + λ * G_{t+1}^λ)
-                next_q = target_qs[:, t + 1, :]
-                target_val = reward_t + gamma * (1 - term_t) * (
-                    (1 - td_lambda) * next_q + td_lambda * running_target
-                )
-            
-            targets[:, t, :] = target_val
-            running_target = target_val
-            
-            # Apply padding mask (zero out targets for padded steps to avoid garbage)
-            # Though loss masking handles this, it's cleaner to zero it out.
-            # targets[:, t, :] *= mask_t # Optional
+        # Backwards recursive update
+        for t in range(T-1, -1, -1):
+            ret[:, t] = td_lambda * gamma * ret[:, t+1] + mask[:, t:t+1] * (
+                rewards[:, t:t+1] + (1 - td_lambda) * gamma * target_qs[:, t+1] * (1 - terminated[:, t:t+1])
+            )
         
-        return targets
+        # Return from t=0 to t=T-1
+        return ret[:, :-1]
 
     def _pad_and_stack(self, episodes: List[List[Dict]]) -> Dict[str, torch.Tensor]:
         """
         Convert list of episodes to batch of tensors with padding.
-        
-        Args:
-            episodes: List of episodes (each is list of transitions)
-            
-        Returns:
-            Batch dictionary with tensors [Batch, T_max, ...]
         """
         batch_size = len(episodes)
-        max_t = max(len(ep) for ep in episodes)
+        max_t = max(len(ep) for ep in episodes)  # T transitions
+        Tp1 = max_t + 1  # T+1 for obs/actions
         
-        # Pre-allocate tensors
-        joint_obs = torch.zeros(batch_size, max_t, self.obs_dim * self.num_agents, device=self.device)
-        agent_obs = torch.zeros(batch_size, max_t, self.num_agents, self.obs_dim, device=self.device)
-        actions = torch.zeros(batch_size, max_t, self.num_agents, dtype=torch.long, device=self.device)
+        # T+1 length tensors (obs, actions, avail_actions)
+        joint_obs = torch.zeros(batch_size, Tp1, self.obs_dim * self.num_agents, device=self.device)
+        agent_obs = torch.zeros(batch_size, Tp1, self.num_agents, self.obs_dim, device=self.device)
+        actions = torch.zeros(batch_size, Tp1, self.num_agents, dtype=torch.long, device=self.device)
+        available_actions = torch.ones(batch_size, Tp1, self.num_agents, self.action_dim, device=self.device)
+        has_available_actions = False
+        
+        # T length tensors (rewards, terminated, masks)
         rewards = torch.zeros(batch_size, max_t, device=self.device)
         terminated = torch.zeros(batch_size, max_t, device=self.device)
         masks = torch.zeros(batch_size, max_t, device=self.device)
         
-        # Pre-allocate for hidden states: [Batch, Num_Agents, Recurrent_N, Hidden_Dim]
-        # We only need initial hidden states for the batch forward pass
-        # But we might want to store all if needed, but for now just h0 is enough for re-rollout if we do full seq.
-        # Actually, for training, we re-run the RNN on the full sequence starting from 0 (or stored h0).
-        # Assuming episodes start from beginning, h0 is 0. 
-        # If we use chunking, we need stored h0. Here we assume full episodes.
-        
         for b, episode in enumerate(episodes):
             t_len = len(episode)
             
-            # Collect episode data
-            # Note: This loop might be slow in python for very long episodes/many episodes.
-            # Optimized by gathering lists first then converting to tensor is usually faster.
-            e_joint_obs = []
-            e_agent_obs = []
-            e_actions = []
-            e_rewards = []
-            e_terminated = []
-            
             for t, trans in enumerate(episode):
-                e_joint_obs.append(self._concatenate_observations(trans['bold_o_t']))
-                e_agent_obs.append(torch.stack([trans['bold_o_t'][i] for i in range(self.num_agents)]))
-                e_actions.append(torch.tensor([trans['bold_a_t'][i] for i in range(self.num_agents)], dtype=torch.long))
-                e_rewards.append(sum(trans['bold_r_t'].values()) / self.num_agents)
-                e_terminated.append(1.0 if any(trans['dones'].values()) else 0.0)
+                # Obs and actions at time t
+                joint_obs[b, t] = self._concatenate_observations(trans['bold_o_t']).to(self.device)
+                agent_obs[b, t] = torch.stack([trans['bold_o_t'][i] for i in range(self.num_agents)]).to(self.device)
+                actions[b, t] = torch.tensor([trans['bold_a_t'][i] for i in range(self.num_agents)], dtype=torch.long, device=self.device)
+                rewards[b, t] = sum(trans['bold_r_t'].values()) / self.num_agents
+                terminated[b, t] = 1.0 if any(trans['dones'].values()) else 0.0
+                
+                # Available actions
+                avail = trans.get('available_actions', None)
+                if avail is not None:
+                    has_available_actions = True
+                    for i in range(self.num_agents):
+                        if i in avail:
+                            available_actions[b, t, i] = torch.tensor(avail[i], dtype=torch.float32, device=self.device)
+                
+                # Fill T+1 slot with next_observations from last transition
+                if t == t_len - 1 and 'next_observations' in trans:
+                    next_obs = trans['next_observations']
+                    joint_obs[b, t+1] = self._concatenate_observations(next_obs).to(self.device)
+                    agent_obs[b, t+1] = torch.stack([next_obs[i] for i in range(self.num_agents)]).to(self.device)
             
-            # Stack and assign
-            if t_len > 0:
-                joint_obs[b, :t_len] = torch.stack(e_joint_obs).to(self.device)
-                agent_obs[b, :t_len] = torch.stack(e_agent_obs).to(self.device)
-                actions[b, :t_len] = torch.stack(e_actions).to(self.device)
-                rewards[b, :t_len] = torch.tensor(e_rewards, device=self.device)
-                terminated[b, :t_len] = torch.tensor(e_terminated, device=self.device)
-                masks[b, :t_len] = 1.0
+            # Masks: valid timesteps, zeroed after termination (pymarl style)
+            masks[b, :t_len] = 1.0
         
-        return {
-            'joint_obs': joint_obs,      # [B, T, Joint_Obs]
-            'agent_obs': agent_obs,      # [B, T, N, Obs]
-            'actions': actions,          # [B, T, N]
-            'rewards': rewards,          # [B, T]
-            'terminated': terminated,    # [B, T]
-            'masks': masks               # [B, T]
+        # pymarl: mask[:, 1:] *= (1 - terminated[:, :-1])
+        if max_t > 1:
+            masks[:, 1:] = masks[:, 1:] * (1 - terminated[:, :-1])
+        
+        result = {
+            'joint_obs': joint_obs,              # [B, T+1, Joint_Obs]
+            'agent_obs': agent_obs,              # [B, T+1, N, Obs]
+            'actions': actions,                  # [B, T+1, N]
+            'rewards': rewards,                  # [B, T]
+            'terminated': terminated,            # [B, T]
+            'masks': masks,                      # [B, T]
         }
+        
+        if has_available_actions:
+            result['available_actions'] = available_actions  # [B, T+1, N, A]
+        
+        return result
 
     def _train_critic_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
-        Train critic using batch data.
-        
-        Args:
-            batch: Batch dictionary from _pad_and_stack
-            
-        Returns:
-            Critic training statistics
+        Train critic using batch data (pymarl style: per-timestep reverse update).
         """
-        joint_obs = batch['joint_obs']      # [B, T, Joint_Diff]
-        agent_obs = batch['agent_obs']      # [B, T, N, Obs]
-        actions = batch['actions']          # [B, T, N]
-        rewards = batch['rewards']          # [B, T]
-        terminated = batch['terminated']    # [B, T]
-        masks = batch['masks']              # [B, T]
+        joint_obs = batch['joint_obs']        # [B, T+1, Joint]
+        agent_obs = batch['agent_obs']        # [B, T+1, N, Obs]
+        actions = batch['actions']            # [B, T+1, N]
+        rewards = batch['rewards']            # [B, T] (T = T+1 - 1)
+        terminated = batch['terminated']      # [B, T]
+        masks = batch['masks']                # [B, T]
         
-        B, T, N = actions.shape
+        B, Tp1, N = actions.shape
+        T = Tp1 - 1
         
-        # Prepare actions onehot
-        actions_onehot = self._to_one_hot(actions) # [B, T, N, A]
+        # Prepare actions onehot [B, T+1, N, A]
+        actions_onehot = self._to_one_hot(actions)
         
-        # Prepare last actions (shifted right, pad with 0 at start)
+        # Last actions (shifted right, pad with 0)
         zero_action = torch.zeros(B, 1, N, self.action_dim, device=self.device)
-        last_actions_onehot = torch.cat([zero_action, actions_onehot[:, :-1]], dim=1) # [B, T, N, A]
+        last_actions_onehot = torch.cat([zero_action, actions_onehot[:, :-1]], dim=1)
         
-        # Calculate Target Q-values (Batch forward)
+        # Target Q-values [B, T+1, N] for TD-lambda
         with torch.no_grad():
-            target_qs = torch.zeros(B, T, N, device=self.device)
-            # Optimized: Compute all agents in parallel if possible, or loop agents
-            # COMACritic takes agent_id. We loop over agents.
+            target_qs = torch.zeros(B, Tp1, N, device=self.device)
             for i in range(N):
-                # Target Critic Forward: [B, T, A]
-                target_q_vals = self.target_critic.forward_batch(
-                    joint_obs, 
-                    agent_obs[:, :, i], 
-                    actions_onehot, 
-                    last_actions_onehot, 
-                    i
-                )
-                # Gather taken actions: [B, T, 1]
-                taken_target_q = target_q_vals.gather(2, actions[:, :, i:i+1])
-                target_qs[:, :, i] = taken_target_q.squeeze(2)
+                tq = self.target_critic.forward_batch(
+                    joint_obs, agent_obs[:, :, i], actions_onehot, last_actions_onehot, i
+                )  # [B, T+1, A]
+                target_qs[:, :, i] = tq.gather(2, actions[:, :, i:i+1]).squeeze(2)
         
-        # Build TD-lambda targets
+        # Build TD-lambda targets [B, T, N]
         targets = self._build_td_lambda_targets(
-            rewards, terminated, target_qs, masks, self.gamma, self.td_lambda
-        ) # [B, T, N]
+            rewards, terminated, masks, target_qs, self.gamma, self.td_lambda
+        )
         
-        # Calculate Current Q-values and Loss
-        critic_loss = 0
-        
-        for i in range(N):
-            # Critic Forward: [B, T, A]
-            q_vals = self.critic.forward_batch(
-                joint_obs,
-                agent_obs[:, :, i],
-                actions_onehot,
-                last_actions_onehot,
-                i
-            )
-            # Gather taken actions: [B, T]
-            q_taken = q_vals.gather(2, actions[:, :, i:i+1]).squeeze(2)
+        # Per-timestep reverse critic update (pymarl style)
+        # Compute Q-values fresh at each timestep to avoid retain_graph issues
+        total_critic_loss = 0.0
+        for t in reversed(range(T)):
+            if masks[:, t].sum() == 0:
+                continue
             
-            # Masked Bellman Error
-            td_error = (q_taken - targets[:, :, i].detach()) * masks
+            # Fresh forward pass for this timestep only
+            critic_loss = 0
+            for i in range(N):
+                q_t = self.critic(
+                    joint_obs[:, t], agent_obs[:, t, i],
+                    actions_onehot[:, t], last_actions_onehot[:, t], i
+                )  # [B, A]
+                q_taken_t = q_t.gather(1, actions[:, t, i:i+1]).squeeze(1)  # [B]
+                target_t = targets[:, t, i]  # [B]
+                td_error = (q_taken_t - target_t.detach()) * masks[:, t]
+                loss = (td_error ** 2).sum() / masks[:, t].sum().clamp(min=1.0)
+                critic_loss = critic_loss + loss
             
-            # Mean over valid steps (sum / sum(mask))
-            loss = (td_error ** 2).sum() / masks.sum().clamp(min=1.0)
-            critic_loss += loss
+            self.critic_optimizer.zero_grad()
+            critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
+            self.critic_optimizer.step()
+            self.critic_training_steps += 1
+            total_critic_loss += critic_loss.item()
         
-        # Update Critic
-        self.critic_optimizer.zero_grad()
-        critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.max_grad_norm)
-        self.critic_optimizer.step()
-        
-        self.critic_training_steps += 1
-        return {'critic_loss': critic_loss.item()}
+        return {'critic_loss': total_critic_loss / max(T, 1)}
 
     def _train_actors_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
         """
-        Train actors using batch data and counterfactual baseline.
+        Train actors using batch data and counterfactual baseline (pymarl style).
+        Uses shared policy network with batch RNN forward.
         """
-        joint_obs = batch['joint_obs']      # [B, T, Joint]
-        agent_obs = batch['agent_obs']      # [B, T, N, Obs]
-        actions = batch['actions']          # [B, T, N]
-        masks = batch['masks']              # [B, T]
+        joint_obs = batch['joint_obs'][:, :-1]      # [B, T, Joint] (exclude last)
+        agent_obs = batch['agent_obs'][:, :-1]      # [B, T, N, Obs]
+        actions = batch['actions'][:, :-1]           # [B, T, N]
+        masks = batch['masks']                       # [B, T]
+        avail_actions = batch.get('available_actions', None)  # [B, T+1, N, A] or None
         
         B, T, N = actions.shape
         
-        # Actions onehot
-        actions_onehot = self._to_one_hot(actions) # [B, T, N, A]
+        # Actions onehot [B, T, N, A]
+        actions_onehot = self._to_one_hot(actions)
         
         # Last actions
         zero_action = torch.zeros(B, 1, N, self.action_dim, device=self.device)
-        last_actions_onehot = torch.cat([zero_action, actions_onehot[:, :-1]], dim=1) # [B, T, N, A]
+        last_actions_onehot = torch.cat([zero_action, actions_onehot[:, :-1]], dim=1)
+        
+        # Flatten mask for pymarl style: [B*T*N]
+        mask_flat = masks.unsqueeze(2).expand(-1, -1, N).reshape(-1)
         
         actor_losses = {}
+        total_pg_loss = 0
+        total_entropy_loss = 0
         
-        # Loop over agents
         for i in range(N):
-            # 1. Get Policy Outputs (Batch RNN forward)
-            # Reshape inputs for RNN: [B, T, Obs]
-            agent_obs_i = agent_obs[:, :, i] 
-            
-            # Initial hidden state: Zeros [B, Recurrent_N, Hidden]
+            # 1. Prepare observation with agent_id one-hot
+            agent_obs_i = agent_obs[:, :, i]  # [B, T, Obs]
+            agent_id_onehot = torch.zeros(B, T, N, device=self.device)
+            agent_id_onehot[:, :, i] = 1.0
+            obs_with_id = torch.cat([agent_obs_i, agent_id_onehot], dim=-1)  # [B, T, Obs+N]
+
+            # 2. Batch RNN forward
+            obs_flat = obs_with_id.transpose(0, 1).contiguous().reshape(T * B, -1)
+            masks_rnn = masks.transpose(0, 1).contiguous().reshape(T * B, 1)
             h0 = torch.zeros(B, self.recurrent_N, self.hidden_dim, device=self.device)
             
-            # Fast way: Pass [T, B, Obs] through GRU directly.
-            # Accessing internal GRU: self.agents[i].policy_net.rnn.rnn
+            x = self.shared_policy.feature_extractor(obs_flat)
+            x, _ = self.shared_policy.rnn(x, h0, masks_rnn)
+            logits = self.shared_policy.output_layer(x)
+            logits = logits.view(T, B, -1).transpose(0, 1).contiguous()  # [B, T, A]
             
-            logits_list = []
-            h_t = h0 # [B, recurrent_N, H]
+            # 3. pymarl style: softmax -> mask -> renormalize (no in-place ops)
+            probs = F.softmax(logits, dim=-1)  # [B, T, A]
+            if avail_actions is not None:
+                agent_avail = avail_actions[:, :-1, i]  # [B, T, A] (exclude last)
+                probs = probs * agent_avail
+                probs = probs / probs.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+                probs = probs * agent_avail
             
-            for t_step in range(T):
-                obs_t = agent_obs[:, t_step, i] # [B, Obs]
-                mask_t = masks[:, t_step].unsqueeze(1) # [B, 1]
-                
-                # Check RNNPolicyNetwork forward: usually returns logits or action/logprob.
-                # We need logits/probs for analytical gradient.
-                # RNNPolicyNetwork call: x, h = net(x, h, mask) -> x is logits
-                
-                step_logits, h_t = self.agents[i].policy_net(obs_t, h_t, mask_t)
-                logits_list.append(step_logits)
+            # 4. Get Q-values with no_grad
+            with torch.no_grad():
+                q_vals = self.critic.forward_batch(
+                    joint_obs, agent_obs[:, :, i], actions_onehot, last_actions_onehot, i
+                )  # [B, T, A]
             
-            logits = torch.stack(logits_list, dim=1) # [B, T, A]
+            # 5. Counterfactual Baseline
+            baseline = (probs * q_vals).sum(dim=-1).detach()  # [B, T]
+            q_taken = q_vals.gather(2, actions[:, :, i:i+1]).squeeze(2)  # [B, T]
+            advantages = (q_taken - baseline).detach()  # [B, T]
             
-            # 2. Compute Probabilities
-            probs = F.softmax(logits, dim=-1) # [B, T, A]
-            log_probs = F.log_softmax(logits, dim=-1) # [B, T, A]
+            # 6. Policy gradient loss (pymarl style: log(pi_taken))
+            pi_taken = probs.gather(2, actions[:, :, i:i+1]).squeeze(2)  # [B, T]
+            pi_taken = torch.where(masks > 0, pi_taken, torch.ones_like(pi_taken))  # log(1)=0 for masked
+            log_pi_taken = torch.log(pi_taken + 1e-8)
             
-            # 3. Get Q-values (Critic)
-            q_vals = self.critic.forward_batch(
-                joint_obs, agent_obs[:, :, i], actions_onehot, last_actions_onehot, i
-            ) # [B, T, A]
-            
-            # 4. Counterfactual Baseline
-            # ∑_a π(a) * Q(s, u^{-i}, a)
-            baseline = (probs * q_vals).sum(dim=2, keepdim=True) # [B, T, 1]
-            
-            # 5. Advantage
-            q_taken = q_vals.gather(2, actions[:, :, i:i+1]) # [B, T, 1]
-            advantages = (q_taken - baseline).detach() # [B, T, 1]
-            
-            # 6. Loss
-            # Log prob of taken action
-            log_prob_taken = log_probs.gather(2, actions[:, :, i:i+1]) # [B, T, 1]
-            
-            # Masked Mean PG Loss
-            pg_loss = -(log_prob_taken * advantages * masks.unsqueeze(2)).sum() / masks.sum().clamp(min=1.0)
+            pg_loss = -((advantages * log_pi_taken) * masks).sum() / masks.sum().clamp(min=1.0)
             
             # Entropy
-            entropy = -(probs * log_probs).sum(dim=2) # [B, T]
+            log_probs = torch.log(probs + 1e-8)
+            entropy = -(probs * log_probs).sum(dim=-1)  # [B, T]
             entropy_loss = -(entropy * masks).sum() / masks.sum().clamp(min=1.0)
             
-            total_loss = pg_loss + self.entropy_coef * entropy_loss
-            
-            # Update
-            self.agents[i].optimizer.zero_grad()
-            total_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.agents[i].policy_net.parameters(), self.max_grad_norm)
-            self.agents[i].optimizer.step()
+            total_pg_loss += pg_loss
+            total_entropy_loss += entropy_loss
             
             actor_losses[f'agent_{i}_pg_loss'] = pg_loss.item()
             actor_losses[f'agent_{i}_entropy'] = -entropy_loss.item()
+        
+        # Single update for shared policy
+        total_loss = total_pg_loss + self.entropy_coef * total_entropy_loss
+        
+        self.policy_optimizer.zero_grad()
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.shared_policy.parameters(), self.max_grad_norm)
+        self.policy_optimizer.step()
             
         return actor_losses
 

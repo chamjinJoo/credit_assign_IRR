@@ -346,8 +346,9 @@ class IPPORNNAlgorithm:
         available_actions: Optional[Dict[int, List[int]]] = None
     ):
         """Store transition from a specific parallel environment."""
-        # Extract actions only
+        # Extract actions and log_probs separately
         actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
+        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
         
         # Extract hidden states/masks for this environment
         hidden_states = self.temp_hidden_states_batch[env_idx]
@@ -368,6 +369,7 @@ class IPPORNNAlgorithm:
             masks=masks,
             hidden_states=hidden_states,
             available_actions=available_actions,
+            log_probs=log_probs_dict,
             info=info
         )
         
@@ -397,12 +399,12 @@ class IPPORNNAlgorithm:
         actions = {}
         self.temp_hidden_states = {}
         self.temp_masks = {}
+        self.temp_log_probs = {}
         
         for agent_id, obs in observations.items():
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
             mask_tensor = torch.tensor([mask], dtype=torch.float32, device=self.device)
             
-            # Prepare available actions tensor
             avail_actions_tensor = None
             if available_actions is not None and agent_id in available_actions:
                 avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
@@ -416,6 +418,7 @@ class IPPORNNAlgorithm:
             actions[agent_id] = (action, log_prob)
             self.temp_hidden_states[agent_id] = (p_state, v_state)
             self.temp_masks[agent_id] = mask
+            self.temp_log_probs[agent_id] = log_prob
             
         return actions
     
@@ -446,7 +449,8 @@ class IPPORNNAlgorithm:
             masks=self.temp_masks,
             hidden_states=self.temp_hidden_states,
             info=info,
-            available_actions=available_actions # [ADDED]
+            available_actions=available_actions,
+            log_probs=self.temp_log_probs
         )
 
     def compute_gae(self, rewards, values, next_value, dones):
@@ -594,9 +598,12 @@ class IPPORNNAlgorithm:
                  if agent_id in available_actions_batch:
                     avail_actions_batch_merged = available_actions_batch[agent_id]
 
-            with torch.no_grad():
-                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
-                old_log_probs = old_log_probs.detach()
+            # Use stored log_probs from rollout (not recalculated)
+            old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+            if num_chunks > 0:
+                old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
+            else:
+                old_log_probs = old_log_probs_raw
             
             for _ in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)

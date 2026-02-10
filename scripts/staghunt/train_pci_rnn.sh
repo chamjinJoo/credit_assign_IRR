@@ -16,11 +16,11 @@ recurrent_N=1
 # training and logging 
 max_iterations=1500
 max_steps_per_iteration=2000
-episodes_per_iteration=40 # if it is set, use EpiosdeBuffer automatically 
+episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically 
 n_rollout_threads=8
 log_interval=2
 device="cpu"
-seed=42
+seed=1
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

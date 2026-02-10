@@ -224,7 +224,7 @@ def create_algorithm(env, config):
             td_lambda=algorithm_config.gae_lambda,
             entropy_coef=algorithm_config.entropy_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
-            target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
+            target_update_interval=getattr(algorithm_config, 'target_update_interval', 10),
             device=config.training.device,
             use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', True),
         )

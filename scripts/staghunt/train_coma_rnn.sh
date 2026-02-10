@@ -13,7 +13,7 @@ recurrent_N=1
 # training and logging
 n_rollout_threads=8
 max_iterations=1500
-max_steps_per_iteration=2000
+episodes_per_iteration=40
 log_interval=2
 device="cpu"
 seed=42
@@ -26,6 +26,6 @@ conda activate pcimarl
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 python main.py --env ${env} --num-agents ${num_agents} --forage-quantity ${forage_quantity} --grid-observation ${grid_observation} \
-    --config ${config} --model ${model} --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} \
+    --config ${config} --model ${model} --recurrent-N ${recurrent_N} --episodes-per-iteration ${episodes_per_iteration} \
     --max-iterations ${max_iterations} --log-interval ${log_interval} --device ${device} --seed ${seed} \
     --use-wandb --wandb-project pci-marl-staghunt
