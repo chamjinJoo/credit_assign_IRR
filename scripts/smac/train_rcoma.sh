@@ -7,7 +7,7 @@ map_name="2s3z"
 config="configs/smac.yaml" 
 
 # model setting
-model="coma-rnn"
+model="r-coma"
 recurrent_N=1
 
 # training and logging 

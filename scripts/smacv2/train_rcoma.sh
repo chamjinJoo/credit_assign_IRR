@@ -5,7 +5,7 @@ env="SMACv2"
 config="configs/smacv2.yaml" 
 
 # model setting
-model="coma-rnn"
+model="r-coma"
 recurrent_N=1
 
 # training and logging 

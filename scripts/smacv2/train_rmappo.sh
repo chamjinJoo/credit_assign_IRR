@@ -26,6 +26,12 @@ conda activate pcimarl
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} \
-    --use-value-parameter-sharing ${use_value_parameter_sharing} --n-rollout-threads ${n_rollout_threads}\
-    --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smacv2
+    --use-value-parameter-sharing ${use_value_parameter_sharing} \
+    --n-rollout-threads ${n_rollout_threads} \
+    --recurrent-N ${recurrent_N} \
+    --max-steps ${max_steps_per_iteration} \
+    --max-iterations ${max_iterations} \
+    --log-interval ${log_interval} \
+    --device ${device} --seed ${seed} \
+    --use-wandb \
+    --wandb-project pci-marl-smacv2 

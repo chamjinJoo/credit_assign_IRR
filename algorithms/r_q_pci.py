@@ -6,13 +6,13 @@ import numpy as np
 from typing import Any, Dict, List, Tuple, Optional
 from collections import defaultdict
 import random
+import copy
 
 from torch.distributions import Categorical
-from algorithms.networks.rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
+from algorithms.networks.rnn import RNNLayer, RNNPolicyNetwork
 from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
 from algorithms.networks.mlp import MLPBase
 from utils.buffer import TransitionBuffer
-
 
 class RBFKernel(nn.Module):
     """
@@ -54,7 +54,45 @@ class RBFKernel(nn.Module):
         dists_sq = torch.sum((x1 - x2)**2, dim=-1) 
         return torch.exp(-gamma * dists_sq)
 
-class Q_PCIRNNAgent:
+class WPredictor(nn.Module):
+    """Gaussian MLP for modeling P(w|z,x) as a diagonal Gaussian.
+    Used to sample w for computing E_w[h(a,w,x)]."""
+    def __init__(self, z_dim: int, x_dim: int, w_dim: int, hidden_dim: int = 64):
+        super().__init__()
+        self.w_dim = w_dim
+        input_dim = z_dim + x_dim
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        )
+        self.mu_head = nn.Linear(hidden_dim, w_dim)
+        self.logvar_head = nn.Linear(hidden_dim, w_dim)
+    
+    def forward(self, z: torch.Tensor, x: torch.Tensor):
+        """Returns (mu, log_var) for P(w|z,x)."""
+        h = self.net(torch.cat([z, x], dim=-1))
+        mu = self.mu_head(h)
+        log_var = self.logvar_head(h).clamp(-10, 2)  # clamp for stability
+        return mu, log_var
+    
+    def sample(self, z: torch.Tensor, x: torch.Tensor, n_samples: int = 8):
+        """Sample w from P(w|z,x). Returns (n_samples, B, w_dim)."""
+        mu, log_var = self.forward(z, x)
+        std = (0.5 * log_var).exp()
+        # (n_samples, B, w_dim)
+        eps = torch.randn(n_samples, *mu.shape, device=mu.device)
+        return mu.unsqueeze(0) + std.unsqueeze(0) * eps
+    
+    def loss(self, z: torch.Tensor, x: torch.Tensor, w_target: torch.Tensor):
+        """Gaussian NLL loss: 0.5 * (log_var + (w - mu)^2 / var)."""
+        mu, log_var = self.forward(z, x)
+        var = log_var.exp()
+        nll = 0.5 * (log_var + (w_target - mu) ** 2 / (var + 1e-8))
+        return nll.mean()
+
+class r_Q_PCIAgent:
     def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, recurrent_N: int = 1, lr_actor: float = 3e-4):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
@@ -101,8 +139,6 @@ class Q_PCIRNNAgent:
                 masks_in = masks.unsqueeze(0) if masks.dim() == 1 else masks
                 return_rnn_state = True
 
-            # rnn_state needs (layers, batch, dim)? No, RNNLayer expects (Batch, Layers, Dim)
-            # self.rnn_state_policy is (layers, dim) -> unsqueeze(0) -> (1, layers, dim)
             curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
             
             # Handle available actions
@@ -160,7 +196,7 @@ class Q_PCIRNNAgent:
             
         return actions, log_probs, prev_states
     
-class Q_PCIRNNAlgorithm:
+class rQPCIAlgorithm:
     def __init__(
         self,
         env,
@@ -249,7 +285,7 @@ class Q_PCIRNNAlgorithm:
         
         self.agents = {}
         for i in range(num_agents):
-            self.agents[i] = Q_PCIRNNAgent(
+            self.agents[i] = r_Q_PCIAgent(
                 agent_id=i,
                 obs_dim=obs_dim,
                 action_dim=action_dim,
@@ -265,13 +301,12 @@ class Q_PCIRNNAlgorithm:
             outcome_dim=num_agents,  # Predict agents' returns (N dim vector)
             hidden_dim=hidden_dim,
             action_embedding_dim=8,
-            # x_dim=obs_dim # x = o^i_t
-            x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # [SWITCH] x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+            x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            # z_dim=obs_dim * num_agents, # prev joint observation
-            z_dim=num_agents, # [SWITCH] Z=prev rewards
+            z_dim=obs_dim * num_agents, # prev joint observation
+            # z_dim=num_agents, # [SWITCH] Z=prev rewards
             # z_dim=hidden_dim * recurrent_N, # [SWITCH] Z=own hidden state
             # z_dim=obs_dim * num_agents + num_agents, # [SWITCH] Z = [Joint Obs, Joint Reward]
             # z_dim=obs_dim * num_agents + action_dim * num_agents, # [SWITCH] Z = [Joint Obs, Joint Action]
@@ -293,16 +328,11 @@ class Q_PCIRNNAlgorithm:
         self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_bridge)
         self.kernel_action_embed_optimizer = optim.Adam(self.action_embedding_for_kernel.parameters(), lr=lr_bridge)
         
-        # [NEW] Global Value Network for Bootstrapping
-        # Input: Joint Observation (obs_dim * num_agents)
-        self.global_value_net = RNNValueNetwork(
-            obs_dim=obs_dim * num_agents,
-            hidden_dim=hidden_dim,
-            recurrent_N=recurrent_N,
-            out_dim=1
-        )
-        self.global_value_optimizer = optim.Adam(self.global_value_net.parameters(), lr=lr_actor) # Use actor lr for now
-        
+        # K_z-based w selection: number of top-k neighbors
+        self.w_pred_n_samples = 8  # top-k neighbors for kernel-based w selection
+        self._cached_topk_w = None  # populated by update_causal_networks
+        self._cached_topk_k = 0
+
         # Keep track of done status for masks
         self.last_dones = {i: False for i in range(num_agents)}
         
@@ -316,7 +346,8 @@ class Q_PCIRNNAlgorithm:
         self.critic_kernel_z.to(self.device)
         self.critic_kernel_w.to(self.device)
         self.action_embedding_for_kernel.to(self.device)
-        self.global_value_net.to(self.device) # [NEW]
+
+
     
     def get_current_causal_lambda(self, agent_id: Optional[int] = None) -> float:
         # Agent별 adaptive lambda 사용
@@ -333,7 +364,364 @@ class Q_PCIRNNAlgorithm:
         else:
             progress = effective_steps / self.causal_lambda_warmup_steps
             return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
-       
+
+    def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 16) -> Dict[str, float]:
+        # Fixes:
+        #   (1) hidden shift applied consistently to both π(a|o') and X' (others' hidden in next state)
+        #   (2) TD-λ target uses bootstrap init (G_next = V_next[-1]) to handle truncated rollouts
+
+        if self.get_current_causal_lambda() == 0.0:
+            return {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
+
+        batch_size = len(batch_data)
+        num_agents = self.num_agents
+        device = self.device
+
+        # === 1. Data Preparation (Vectorized) ===
+        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device)  # Default Z
+        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
+        # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
+        # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(batch_size, -1).float()
+        
+        obs_batch = torch.stack(
+            [torch.stack(list(t['bold_o_t'].values())) for t in batch_data]
+        ).to(device)  # (B, N, D)
+
+        action_batch = torch.tensor(
+            [[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data],
+            dtype=torch.long, device=device
+        )  # (B, N)
+
+        reward_batch = torch.tensor(
+            [[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data],
+            dtype=torch.float32, device=device
+        )  # (B, N)
+
+        dones_batch = torch.tensor(
+            [[t['dones'][i] for i in range(num_agents)] for t in batch_data],
+            dtype=torch.float32, device=device
+        )  # (B, N)
+
+        # --- Available actions batch (optional) ---
+        # We will also shift it for next-state policy eval if provided.
+        available_actions_batch = {}
+        if ('available_actions' in batch_data[0]) and (batch_data[0]['available_actions'] is not None):
+            # batch_data[t]['available_actions'][agent_id] is assumed to be a list/array mask over actions
+            for k in range(num_agents):
+                if (batch_data[0]['available_actions'] is not None) and (k in batch_data[0]['available_actions']):
+                    available_actions_batch[k] = torch.tensor(
+                        [t['available_actions'][k] for t in batch_data],
+                        dtype=torch.float32, device=device
+                    )  # (B, A)
+
+        # --- Extract hidden states (stored in transition; pre-action hidden) ---
+        hidden_states_batch = {}
+        if ('hidden_states' in batch_data[0]) and (batch_data[0]['hidden_states'] is not None) and batch_data[0]['hidden_states']:
+            for agent_id in range(num_agents):
+                if agent_id in batch_data[0]['hidden_states']:
+                    p_states = torch.stack([t['hidden_states'][agent_id] for t in batch_data]).to(device)
+                    # (B, recurrent_N, hidden_dim)
+                    hidden_states_batch[agent_id] = p_states
+
+        # Super-rows are (t, i) flattened to BN
+        A_super = action_batch.view(-1)  # (B*N,)
+
+        # W_super: other agents' obs at current state
+        expanded_obs = obs_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N_treat, N, D)
+        mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+            batch_size, -1, -1, self.obs_dim
+        )
+        W_super = expanded_obs[mask].view(batch_size * num_agents, -1)  # (B*N, (N-1)*D)
+
+        # === Construct X_super = [o^i_t, h^{-i}_{t-1}] ===
+        # 1) H_all: (B, N, RecN*H)
+        h_list = []
+        for i in range(num_agents):
+            if i in hidden_states_batch:
+                h_list.append(hidden_states_batch[i].view(batch_size, -1))
+            else:
+                h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
+        H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
+
+        # 2) H_others_super: (B*N, (N-1)*RecN*H)
+        expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N_treat, N, RecN*H)
+        mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+            batch_size, -1, -1, self.recurrent_N * self.hidden_dim
+        )
+        H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1)
+
+        # 3) X_super: (B*N, D + (N-1)*RecN*H)
+        obs_super = obs_batch.view(-1, self.obs_dim)  # (B*N, D)
+        X_super = torch.cat([obs_super, H_others_super], dim=1)
+
+        # === 2. Target construction (TD-λ) ===
+        # next_obs_batch: (B, N, D)
+        next_obs_batch = torch.stack([
+            torch.stack([t['next_observations'][i].to(device) for i in range(num_agents)])
+            for t in batch_data
+        ]).to(device)
+
+        # W_next_super: other agents' obs at next state
+        expanded_next_obs = next_obs_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)
+        mask_others = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+            batch_size, -1, -1, self.obs_dim
+        )
+        W_next_super = expanded_next_obs[mask_others].view(batch_size * num_agents, -1)  # (B*N, (N-1)*D)
+
+        # --- Build shifted hidden states for next-state eval: hidden_next[t] = hidden_saved[t+1] ---
+        # Important: hidden saved in transitions is pre-action hidden, so we shift forward by 1.
+        hidden_states_next = {}
+
+        # Also shift available actions for next-state policy eval (optional):
+        # avail_next[t] = avail_saved[t+1] (since avail_saved[t] corresponds to o_t)
+        available_actions_next_batch = {}
+
+        with torch.no_grad():
+            for k in range(num_agents):
+                # ---- available actions shift ----
+                if k in available_actions_batch:
+                    avail_k = available_actions_batch[k]  # (B, A)
+                    if batch_size >= 2:
+                        available_actions_next_batch[k] = torch.cat([avail_k[1:], avail_k[-1:]], dim=0)
+                    else:
+                        available_actions_next_batch[k] = avail_k.clone()
+
+                # ---- hidden shift ----
+                if k in hidden_states_batch:
+                    hs = hidden_states_batch[k]  # (B, RecN, H) == stored pre-action hidden
+
+                    # We need the last "tail" (h_{B-1}) which isn't stored; approximate by one forward on the last obs.
+                    # Compute tail_state = f(h_{B-2}, o_{B-1}) (or f(h_init, o_0) if B==1).
+                    last_obs_k = obs_batch[-1, k, :].unsqueeze(0)  # (1, D)
+                    last_state_in = hs[-1:].clone()                # (1, RecN, H)
+
+                    # mask for processing obs_{B-1}: should be 1 - done_{B-2} (previous step),
+                    # because mask indicates whether to reset BEFORE processing current obs.
+                    if batch_size >= 2:
+                        mask_last = (1.0 - dones_batch[-2, k]).view(1, 1)  # (1,1)
+                    else:
+                        mask_last = torch.ones(1, 1, device=device)
+
+                    avail_last = None
+                    if k in available_actions_batch:
+                        avail_last = available_actions_batch[k][-1:].clone()
+
+                    # policy_net returns (logits, next_rnn_state)
+                    _, tail_state = self.agents[k].policy_net(
+                        last_obs_k, last_state_in, mask_last, available_actions=avail_last
+                    )
+                    tail_state = tail_state.detach()  # (1, RecN, H)
+
+                    # shift: next_hidden[t] = hidden_saved[t+1], with tail filled by computed tail_state
+                    if batch_size >= 2:
+                        hidden_states_next[k] = torch.cat([hs[1:], tail_state], dim=0)  # (B, RecN, H)
+                    else:
+                        hidden_states_next[k] = tail_state  # (1, RecN, H)
+                # else: missing -> handled as zeros later
+
+        # --- Build H_others_next_super from shifted hidden states (THIS IS THE IMPORTANT FIX) ---
+        h_next_list = []
+        for i in range(num_agents):
+            if i in hidden_states_next:
+                h_next_list.append(hidden_states_next[i].view(batch_size, -1))
+            else:
+                h_next_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
+        H_all_next = torch.stack(h_next_list, dim=1)  # (B, N, RecN*H)
+
+        expanded_H_next = H_all_next.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N_treat, N, RecN*H)
+        mask_H_next = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+            batch_size, -1, -1, self.recurrent_N * self.hidden_dim
+        )
+        H_others_next_super = expanded_H_next[mask_H_next].view(batch_size * num_agents, -1)  # (B*N, (N-1)*RecN*H)
+
+        # X_next_super = [o'^i, h^{-i}_t]
+        obs_next_super = next_obs_batch.view(-1, self.obs_dim)  # (B*N, D)
+        X_next_super = torch.cat([obs_next_super, H_others_next_super], dim=1)
+
+        # --- Compute V_next (policy-weighted) ---
+        BN = batch_size * num_agents
+        A = self.action_dim
+
+        with torch.no_grad():
+            # h_all_next: (BN, A, N_outcome)
+            all_actions = torch.arange(A, device=device).repeat(BN)  # (BN*A,)
+            W_next_expanded = W_next_super.repeat_interleave(A, dim=0)  # (BN*A, w_dim)
+            X_next_expanded = X_next_super.repeat_interleave(A, dim=0)  # (BN*A, x_dim)
+
+            h_all_next = self.outcome_bridge_net(all_actions, W_next_expanded, x=X_next_expanded)  # (BN*A, N)
+            h_all_next = h_all_next.view(BN, A, num_agents)  # (BN, A, N)
+
+            # π(a|o') for each agent (treat index aligns with (t, i))
+            probs_next_list = []
+            for k in range(num_agents):
+                next_obs_k = next_obs_batch[:, k, :]  # (B, D)
+
+                if k in hidden_states_next:
+                    p_state_k = hidden_states_next[k]  # (B, RecN, H)  ~ h_t aligned with o_{t+1}
+                else:
+                    p_state_k = torch.zeros(batch_size, self.recurrent_N, self.hidden_dim, device=device)
+
+                # mask for next step is (1 - done_t)
+                mask_k = (1.0 - dones_batch[:, k]).unsqueeze(1)  # (B, 1)
+
+                avail_k_next = None
+                if k in available_actions_next_batch:
+                    avail_k_next = available_actions_next_batch[k]  # (B, A)
+
+                logits_k, _ = self.agents[k].policy_net(
+                    next_obs_k, p_state_k, mask_k, available_actions=avail_k_next
+                )
+                probs_next_list.append(torch.softmax(logits_k, dim=-1))  # (B, A)
+
+            # (B, N, A) -> (BN, A)
+            probs_next = torch.stack(probs_next_list, dim=1).view(BN, A)  # (BN, A)
+
+            # V_next: (BN, N_outcome)
+            V_next = (probs_next.unsqueeze(2) * h_all_next).sum(dim=1)  # (BN, N)
+
+            # --- TD-λ target ---
+            td_lambda = getattr(self, "td_lambda", 0.95)
+
+            V_next_3d = V_next.view(batch_size, num_agents, num_agents)  # (B, N_treat, N_outcome)
+            r_super_3d = reward_batch.unsqueeze(1).expand(-1, num_agents, -1)   # (B, N_treat, N_outcome)
+            done_super_3d = dones_batch.unsqueeze(1).expand(-1, num_agents, -1) # (B, N_treat, N_outcome)
+
+            Y_3d = torch.zeros_like(V_next_3d)  # (B, N, N)
+
+            # IMPORTANT: bootstrap init for truncated tail (instead of zeros)
+            # G_next corresponds to G_{t+1} in the recursion.
+            G_next = V_next_3d[-1].clone()  # (N_treat, N_outcome)
+
+            for t_idx in reversed(range(batch_size)):
+                not_done = 1.0 - done_super_3d[t_idx]  # (N, N)
+                G_next = r_super_3d[t_idx] + self.gamma * not_done * (
+                    (1.0 - td_lambda) * V_next_3d[t_idx] + td_lambda * G_next
+                )
+                Y_3d[t_idx] = G_next
+
+            Y_super = Y_3d.view(batch_size * num_agents, num_agents)  # (BN, N_outcome)
+
+        # === 3. Z-super ===
+        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0)  # (B*N, N*D)
+
+        # === 4. Mini-batch Training Loop ===
+        total_samples = A_super.size(0)
+        indices = torch.arange(total_samples, device=device)
+
+        avg_outcome_loss = 0.0
+        avg_action_loss = 0.0
+
+        agent_residual_errors = {i: [] for i in range(num_agents)}
+        num_updates = 0
+        chunk_size = self.causal_mini_batch_size
+
+        for i in range(0, total_samples, chunk_size):
+            idx = indices[i:i + chunk_size]
+            current_batch_size = idx.size(0)
+
+            a_mb = A_super[idx]
+            w_mb = W_super[idx]
+            y_mb = Y_super[idx]
+            z_mb = Z_super[idx]
+            x_mb = X_super[idx]
+            o_mb = obs_super[idx]
+            batch_agent_ids = idx % num_agents
+
+            # --- Update Outcome Bridge h_φ ---
+            q_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb)
+            residuals_mb = y_mb - q_hat_mb
+
+            if self.causal_lambda_adaptive_per_agent:
+                for j, agent_id in enumerate(batch_agent_ids):
+                    residual_error = torch.norm(residuals_mb[j], p=2).item()
+                    agent_residual_errors[int(agent_id.item())].append(residual_error)
+
+            action_embeds_mb = self.action_embedding_for_kernel(a_mb)
+            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, x_mb], dim=1)
+            K_z = self.critic_kernel_z(kernel_feat_z)
+
+            reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
+            solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
+
+            per_sample_loss_h = (residuals_mb * (K_z @ solved_residuals)).sum(dim=1)
+            loss_h = per_sample_loss_h.mean()
+
+            # --- Update Action Bridge q_θ (disabled as in your code) ---
+            loss_q = torch.tensor(0.0, device=device)
+
+            total_loss = loss_h + loss_q
+
+            self.outcome_bridge_optimizer.zero_grad()
+            self.action_bridge_optimizer.zero_grad()
+            self.kernel_action_embed_optimizer.zero_grad()
+
+            total_loss.backward()
+
+            self.outcome_bridge_optimizer.step()
+            # self.action_bridge_optimizer.step()  # still disabled
+            self.kernel_action_embed_optimizer.step()
+
+            avg_outcome_loss += loss_h.item()
+            avg_action_loss += loss_q.item()
+            num_updates += 1
+
+        # === 5. Cache top-k w values using full K_z for compute_causal_Q ===
+        with torch.no_grad():
+            k = self.w_pred_n_samples
+            BN = total_samples
+
+            a_embed_full = self.action_embedding_for_kernel(A_super)  # (BN, embed_dim)
+            kernel_feat_full = torch.cat([Z_super, a_embed_full, X_super], dim=1)  # (BN, feat_dim)
+            K_z_full = self.critic_kernel_z(kernel_feat_full)  # (BN, BN)
+
+            agent_ids = torch.arange(num_agents, device=device).repeat(batch_size)  # (BN,)
+            agent_mask = (agent_ids.unsqueeze(0) == agent_ids.unsqueeze(1))  # (BN, BN)
+            K_z_full[~agent_mask] = -float('inf')
+            K_z_full.fill_diagonal_(-float('inf'))
+
+            effective_k = min(k, batch_size - 1)
+            _, topk_idx = K_z_full.topk(effective_k, dim=1)  # (BN, k)
+
+            self._cached_topk_w = W_super[topk_idx]  # (BN, k, w_dim)
+            self._cached_topk_k = effective_k
+
+        return_dict = {
+            'outcome_bridge_loss': avg_outcome_loss / max(1, num_updates),
+            'action_bridge_loss': avg_action_loss / max(1, num_updates),
+        }
+
+        # Adaptive lambda update
+        if self.causal_lambda_adaptive_per_agent:
+            for agent_id in range(num_agents):
+                if len(agent_residual_errors[agent_id]) > 0:
+                    avg_error = np.mean(agent_residual_errors[agent_id])
+
+                    if self.adaptive_error_ema_per_agent[agent_id] is None:
+                        self.adaptive_error_ema_per_agent[agent_id] = avg_error
+                    else:
+                        self.adaptive_error_ema_per_agent[agent_id] = (
+                            self.causal_lambda_adaptive_alpha * self.adaptive_error_ema_per_agent[agent_id] +
+                            (1 - self.causal_lambda_adaptive_alpha) * avg_error
+                        )
+
+                    error_ratio = self.adaptive_error_ema_per_agent[agent_id] / (
+                        self.causal_lambda_adaptive_error_threshold + 1e-8
+                    )
+
+                    lambda_factor = 1.0 / (1.0 + error_ratio)
+                    new_lambda = self.causal_lambda * lambda_factor
+                    self.adaptive_lambda_per_agent[agent_id] = np.clip(
+                        new_lambda,
+                        self.causal_lambda_adaptive_min,
+                        self.causal_lambda_adaptive_max
+                    )
+
+                    return_dict[f'adaptive_lambda_agent_{agent_id}'] = self.adaptive_lambda_per_agent[agent_id]
+                    return_dict[f'adaptive_error_ema_agent_{agent_id}'] = self.adaptive_error_ema_per_agent[agent_id]
+
+        return return_dict
+    '''
+    # PREV. Version.
     def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 16) -> Dict[str, float]:
         if self.get_current_causal_lambda() == 0.0:
             return {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
@@ -343,8 +731,8 @@ class Q_PCIRNNAlgorithm:
         device = self.device
 
         # === 1. Data Preparation (Vectorized) ===
-        # joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
-        joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
+        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
+        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
         # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(batch_size, -1).float()
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
@@ -366,14 +754,9 @@ class Q_PCIRNNAlgorithm:
         mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
         W_super = expanded_obs[mask].view(batch_size * num_agents, -1)
         
-        # Y_super: other agents' individual returns (N-1 dim vector for each agent)
-        # Each agent predicts the returns of all other agents
-        agent_returns_batch = torch.tensor([[t['agent_returns'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)  # (B, N)
-        
-        expanded_agent_returns = agent_returns_batch.unsqueeze(1).expand(-1, num_agents, -1)  # (B, N, N)
-        Y_super = expanded_agent_returns.reshape(batch_size * num_agents, num_agents)  # (B*N, N)
 
-        # [SWITCH] Constructing X_super = {o^i_t, h^{-i}_{t-1}}
+
+        # Constructing X_super = {o^i_t, h^{-i}_{t-1}}
         # 1. Gather all hidden states: (B, N, RecN*H)
         h_list = []
         for i in range(num_agents):
@@ -392,23 +775,96 @@ class Q_PCIRNNAlgorithm:
         obs_super = obs_batch.view(-1, self.obs_dim)
         X_super = torch.cat([obs_super, H_others_super], dim=1)
 
-        # Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
-        Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
+        # === TD Target for outcome bridge training ===
+        # target[j] = r^j_t + γ * (1-done) * V(s')[j]
+        # V(s')[j] = Σ_a π(a|o') * h_φ(a, W', X')[j]  (policy-weighted value)
+        next_obs_batch = torch.stack([
+            torch.stack([t['next_observations'][i].to(device) for i in range(num_agents)]) 
+            for t in batch_data
+        ]).to(device)  # (B, N, D)
+        
+        # W' for next state
+        expanded_next_obs = next_obs_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)
+        mask_others = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
+        W_next_super = expanded_next_obs[mask_others].view(batch_size * num_agents, -1)  # (B*N, (N-1)*D)
+        
+        # X' = (o_i', h^{-i}) — reuse current hidden states as approximation
+        obs_next_super = next_obs_batch.view(-1, self.obs_dim)
+        X_next_super = torch.cat([obs_next_super, H_others_super], dim=1)
+        
+        # --- NEW: build shifted hidden states for next-state policy eval ---
+        hidden_states_next = {}
+        for k in range(num_agents):
+            if k in hidden_states_batch:
+                hs = hidden_states_batch[k]  # (B, RecN, H)
+                # shift left: next_hidden[t] = hidden[t+1]
+                tail = torch.zeros_like(hs[:1])  # (1, RecN, H)
+                hidden_states_next[k] = torch.cat([hs[1:], tail], dim=0)  # (B, RecN, H)    
+
+        with torch.no_grad():
+            # Compute V(s') = Σ_a π(a|o') * h_φ(a, W', X') using observed W'
+            BN = batch_size * num_agents
+            all_actions = torch.arange(self.action_dim, device=device).repeat(BN)  # (BN*A,)
+            W_next_expanded = W_next_super.repeat_interleave(self.action_dim, dim=0)  # (BN*A, w_dim)
+            X_next_expanded = X_next_super.repeat_interleave(self.action_dim, dim=0)  # (BN*A, x_dim)
+            
+            h_all_next = self.outcome_bridge_net(all_actions, W_next_expanded, x=X_next_expanded)  # (BN*A, N)
+            h_all_next = h_all_next.view(BN, self.action_dim, num_agents)  # (BN, A, N)
+            
+            # Compute π(a|o') for each agent at next state
+            probs_next_list = []
+            for k in range(num_agents):
+                next_obs_k = next_obs_batch[:, k, :]  # (B, D)
+                if k in hidden_states_next:
+                    p_state_k = hidden_states_next[k]  # (B, RecN, H)
+                else:
+                    p_state_k = torch.zeros(batch_size, self.recurrent_N, self.hidden_dim, device=device)
+                mask_k = (1.0 - dones_batch[:, k]).unsqueeze(1)  # (B, 1)
+                
+                avail_k = None
+                if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
+                    if k in batch_data[0]['available_actions']:
+                        avail_k = torch.tensor([t['available_actions'][k] for t in batch_data], dtype=torch.float32, device=device)
+                
+                logits_k, _ = self.agents[k].policy_net(next_obs_k, p_state_k, mask_k, available_actions=avail_k)
+                probs_next_list.append(torch.softmax(logits_k, dim=-1))  # (B, A)
+            
+            # Stack and reshape: (B, N, A) -> (BN, A)
+            probs_next = torch.stack(probs_next_list, dim=1).view(BN, self.action_dim)  # (BN, A)
+            
+            # V(s') = Σ_a π(a) * E_w[h_φ(a, w, X')]  → (BN, N)
+            V_next = (probs_next.unsqueeze(2) * h_all_next).sum(dim=1)  # (BN, N)
+
+            not_done_super = (1.0 - dones_batch).unsqueeze(1).expand(-1, num_agents, -1).reshape(BN, num_agents)
+            reward_super = reward_batch.unsqueeze(1).expand(-1, num_agents, -1).reshape(BN, num_agents)
+            Y_super = reward_super + self.gamma * not_done_super * V_next  # TD target (BN, N)
+            
+
+            # TD-lambda Target instead of 1-step TD
+            td_lambda = 0.95
+            with torch.no_grad():
+                # V_next: (BN, N)  [기존 코드에서 계산한 그대로 사용]
+                V_next_3d = V_next.view(batch_size, num_agents, num_agents)  # (B, N_treat, N_outcome)
+
+                r_super_3d = reward_batch.unsqueeze(1).expand(-1, num_agents, -1)  # (B, N_treat, N_outcome)
+                done_super_3d = dones_batch.unsqueeze(1).expand(-1, num_agents, -1) # (B, N_treat, N_outcome)
+
+                Y_3d = torch.zeros_like(V_next_3d)  # (B, N, N)
+                G_next = torch.zeros(num_agents, num_agents, device=device)  # (N_treat, N_outcome)
+
+                for t_idx in reversed(range(batch_size)):
+                    not_done = 1.0 - done_super_3d[t_idx]  # (N, N)
+                    G_next = r_super_3d[t_idx] + self.gamma * not_done * (
+                        (1.0 - td_lambda) * V_next_3d[t_idx] + td_lambda * G_next
+                    )
+                    Y_3d[t_idx] = G_next
+                Y_super = Y_3d.view(batch_size * num_agents, num_agents)  # (BN, N)
+                
+        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
+        # Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
         # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
-        
-        ''' [SWITCH] Z=own hidden state 
-        z_list = [] 
-        for i in range(num_agents):
-            if i in hidden_states_batch:
-                # hidden_states_batch[i] is (Batch, RecN, H)
-                z_list.append(hidden_states_batch[i].view(batch_size, -1))
-            else:
-                z_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
-                # default self.recurrent_N is 1, but for generality.
-        Stack (B, N, RecN*H) then flatten -> (B*N, RecN*H)
-        Z_super = torch.stack(z_list, dim=1).view(-1, self.recurrent_N * self.hidden_dim)
-        '''            
+         
         obs_super = obs_batch.view(-1, self.obs_dim)
 
         # === 2. Mini-batch Training Loop ===
@@ -417,6 +873,7 @@ class Q_PCIRNNAlgorithm:
 
         avg_outcome_loss = 0.0
         avg_action_loss = 0.0
+
         agent_residual_errors = {i: [] for i in range(num_agents)}
         num_updates = 0
         chunk_size = self.causal_mini_batch_size 
@@ -434,8 +891,6 @@ class Q_PCIRNNAlgorithm:
             batch_agent_ids = idx % num_agents
 
             # --- Update Outcome Bridge h_φ ---
-            # q_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
-            # q_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
             q_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # [SWITCH] x=x_mb (o_mb + h_others)
             residuals_mb = y_mb - q_hat_mb
             
@@ -446,7 +901,7 @@ class Q_PCIRNNAlgorithm:
             
             action_embeds_mb = self.action_embedding_for_kernel(a_mb)
             # kernel_feat_z = torch.cat([z_mb, action_embeds_mb], dim=1)
-            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, o_mb], dim=1) # [ADD] x=o_mb
+            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, x_mb], dim=1)
             K_z = self.critic_kernel_z(kernel_feat_z)
 
             reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
@@ -476,9 +931,35 @@ class Q_PCIRNNAlgorithm:
             avg_action_loss += loss_q.item()
             num_updates += 1
 
+        # === 3. Cache top-k w values using full K_z for compute_causal_Q ===
+        with torch.no_grad():
+            k = self.w_pred_n_samples
+            BN = total_samples
+            
+            # Compute kernel features on full data with final embeddings
+            a_embed_full = self.action_embedding_for_kernel(A_super)  # (BN, 8)
+            kernel_feat_full = torch.cat([Z_super, a_embed_full, X_super], dim=1)  # (BN, feat_dim)
+            K_z_full = self.critic_kernel_z(kernel_feat_full)  # (BN, BN)
+            
+            # Agent-wise masking: only same-agent neighbors
+            agent_ids = torch.arange(num_agents, device=device).repeat(batch_size)  # [0,1,...,N-1,0,1,...]
+            agent_mask = (agent_ids.unsqueeze(0) == agent_ids.unsqueeze(1))  # (BN, BN)
+            K_z_full[~agent_mask] = -float('inf')
+            K_z_full.fill_diagonal_(-float('inf'))
+            
+            # Top-k selection
+            effective_k = min(k, batch_size - 1)
+            _, topk_idx = K_z_full.topk(effective_k, dim=1)  # (BN, k)
+            
+            # Cache selected w values
+            self._cached_topk_w = W_super[topk_idx]  # (BN, k, w_dim)
+            self._cached_topk_k = effective_k
+
+
         return_dict = {
             'outcome_bridge_loss': avg_outcome_loss / num_updates,
             'action_bridge_loss': avg_action_loss / num_updates,
+
         }
         # Adaptive lambda update: 
         if self.causal_lambda_adaptive_per_agent:
@@ -510,7 +991,7 @@ class Q_PCIRNNAlgorithm:
                     return_dict[f'adaptive_error_ema_agent_{agent_id}'] = self.adaptive_error_ema_per_agent[agent_id]
         
         return return_dict
-
+    '''
     # for q-bridge function training
     def _compute_kw2_sum_minibatch(self, w_mb, kernel_feat_w, o_mb, batch_agent_ids, M):
         batch_size = w_mb.size(0)
@@ -590,6 +1071,7 @@ class Q_PCIRNNAlgorithm:
         actions = {}
         self.temp_hidden_states = {} # Store current states for store_transition
         self.temp_masks = {} # Store masks used
+        self.temp_log_probs = {} # Store log_probs from rollout
         for agent_id, obs in observations.items():
             # Create mask: 1.0 if not done, 0.0 if done.
             # Using self.last_dones which is updated in store_transition
@@ -607,6 +1089,7 @@ class Q_PCIRNNAlgorithm:
             actions[agent_id] = (action, log_prob)
             self.temp_hidden_states[agent_id] = p_state
             self.temp_masks[agent_id] = mask
+            self.temp_log_probs[agent_id] = log_prob
             
         return actions
     
@@ -702,6 +1185,7 @@ class Q_PCIRNNAlgorithm:
             masks=self.temp_masks,
             hidden_states=self.temp_hidden_states, 
             available_actions=available_actions, # [ADDED]
+            log_probs=self.temp_log_probs, # [ADDED]
             info=info
         )
     
@@ -726,8 +1210,9 @@ class Q_PCIRNNAlgorithm:
             env_idx: Index of the environment (0 to n_envs-1)
             ... (same as store_transition)
         """
-        # Extract actions only (remove log_probs)
+        # Extract actions and log_probs separately
         actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
+        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
         
         # Extract hidden states for this environment
         hidden_states = self.temp_hidden_states_batch[env_idx]
@@ -752,6 +1237,7 @@ class Q_PCIRNNAlgorithm:
             masks=masks,
             hidden_states=hidden_states,
             available_actions=available_actions,
+            log_probs=log_probs_dict, # [ADDED]
             info=info
         )
         
@@ -839,7 +1325,7 @@ class Q_PCIRNNAlgorithm:
     ) -> torch.Tensor:
         """
         Computes Causal Baselines for each agent.
-        Returns Matrix E[h(a', ...)] where diagonal is 0.
+        Returns Matrix E[h(a', ...)]
         
         Returns:
             Baseline_matrix: [B, N, N] tensor
@@ -853,7 +1339,8 @@ class Q_PCIRNNAlgorithm:
         
         # Prepare Output Matrix
         C_matrix = torch.zeros(batch_size, num_agents, num_agents, device=self.device)
-        
+        Q_factual_matrix = torch.zeros(batch_size, num_agents, device=self.device)
+
         infer_chunk_size = 1000 
         
         with torch.no_grad():
@@ -869,18 +1356,7 @@ class Q_PCIRNNAlgorithm:
                 
                 # --- Vectorized Logic ---
                 actions_flat = act_b.view(-1)
-                w_t_flat = w_b.view(-1, w_b.size(-1))
                 
-                # r_pred_flat = self.outcome_bridge_net(actions_flat, w_t_flat) 
-                
-                mask_indices = torch.tensor([
-                    [j for j in range(num_agents) if j != k] 
-                    for k in range(num_agents)
-                ], device=self.device)
-
-                actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
-                w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
-
                 # Expand x for all actions
                 # X construction for inference _inf: inference
                 h_list_inf = []
@@ -899,20 +1375,29 @@ class Q_PCIRNNAlgorithm:
 
                 obs_flat = obs_b.view(-1, self.obs_dim)
                 x_flat = torch.cat([obs_flat, H_others_inf], dim=1)
-
-                x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
-                # Outcome bridge predicts other agents' returns (N dim vector)
-                h_all = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded)  # (curr_bs*N*action_dim, N)
-                h_all = h_all.view(curr_bs * num_agents, action_dim, num_agents)  # (curr_bs*N, action_dim, N)
+                # Use cached top-k w values from update_causal_networks
+                BN_q = curr_bs * num_agents
+                bn_start = i * num_agents
+                bn_end = end * num_agents
+                w_selected = self._cached_topk_w[bn_start:bn_end]  # (BN_q, k, w_dim)
+                effective_k = self._cached_topk_k
                 
-                # Collect h for factual actions: agent i's prediction of other agents' returns
-                h_factual = h_all[torch.arange(h_all.size(0)), actions_flat]  # (curr_bs*N, N)
+                # Batched forward pass: compute h for all actions × k neighbors
+                A = action_dim
+                actions_range_kA = torch.arange(A, device=self.device).repeat(BN_q * effective_k)  # (BN_q*k*A,)
+                w_sel_expanded = w_selected.unsqueeze(2).expand(-1, -1, A, -1).reshape(BN_q * effective_k * A, -1)  # (BN_q*k*A, w_dim)
+                x_expanded_kA = x_flat.unsqueeze(1).expand(-1, effective_k, -1).unsqueeze(2).expand(-1, -1, A, -1).reshape(BN_q * effective_k * A, -1)  # (BN_q*k*A, x_dim)
+                
+                h_all_kA = self.outcome_bridge_net(actions_range_kA, w_sel_expanded, x=x_expanded_kA)  # (BN_q*k*A, N)
+                h_all = h_all_kA.view(BN_q, effective_k, A, num_agents).mean(dim=1)  # (BN_q, A, N)
+                
+                # Extract factual actions' predictions
+                h_factual = h_all[torch.arange(BN_q), actions_flat]  # (BN_q, N)
                 
                 # Sum over other agents to get total return from others: 𝟙ᵀh(a, W, X)
-                Q_hat_all = h_all.sum(dim=2)  # (curr_bs*N, action_dim)
-                Q_hat_factual = Q_hat_all[torch.arange(Q_hat_all.size(0)), actions_flat]  # (curr_bs*N,)
-
+                Q_hat_factual = h_factual.sum(dim=1)  # (curr_bs*N,)
+                
                 probs_list = []
                 if hidden_states_batch is not None and dones_batch is not None:
                     precomputed_states = {}
@@ -950,7 +1435,6 @@ class Q_PCIRNNAlgorithm:
 
                 # Compute baseline for each other agent's return
                 if baseline_type == 'weighted':
-                    # Expand action_probs to match h_all shape
                     action_probs_expanded = action_probs_flat.unsqueeze(2)  # (curr_bs*N, action_dim, 1)
                     
                     # Factual action mask
@@ -965,6 +1449,9 @@ class Q_PCIRNNAlgorithm:
                     # Baseline for each other agent: weighted average over counterfactual actions
                     h_baseline = (renormalized_probs_expanded * h_all).sum(dim=1)  # (curr_bs*N, N)
                     
+                    # if wanna contain factual action
+                    # h_baseline = (action_probs_expanded * h_all).sum(dim=1)  # (curr_bs*N, N)
+                
                 elif baseline_type == 'averaged':
                     # Simple average over counterfactual actions
                     factual_mask_actions = torch.zeros(curr_bs * num_agents, action_dim, device=self.device).scatter_(1, actions_flat.unsqueeze(1), 1.0)
@@ -975,10 +1462,10 @@ class Q_PCIRNNAlgorithm:
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # Reshape to (curr_bs, N, N)
+                Q_factual_matrix[i:end] = Q_hat_factual.view(curr_bs, num_agents)
                 C_matrix[i:end] = h_baseline.view(curr_bs, num_agents, num_agents)
 
-        return C_matrix
+        return C_matrix, Q_factual_matrix
 
     def causal_intrinsic_reward(
         self, 
@@ -1029,7 +1516,7 @@ class Q_PCIRNNAlgorithm:
                     c_unsqueezed = v[1].unsqueeze(0)
                     hidden_states_batch[k] = (h_unsqueezed, c_unsqueezed)
 
-            C_matrix = self.compute_causal_Q(
+            C_matrix, _ = self.compute_causal_Q(
                 w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, 
                 hidden_states_batch=hidden_states_batch,
                 baseline_type='weighted'
@@ -1104,30 +1591,27 @@ class Q_PCIRNNAlgorithm:
             if agent_id not in batch_data[0]['bold_o_t']: continue
             
             # Extract pre-computed values
-            returns_list = [t['returns'][agent_id] for t in batch_data]
-            advantages_list = [t['advantages'][agent_id] for t in batch_data] # t['advantages'] is delta
-            
-            agent_returns[agent_id] = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
+            advantages_list = [t['advantages'][agent_id] for t in batch_data] 
             agent_advantages[agent_id] = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
 
         # Log delta (causal intrinsic rewards) by scenario for StagHunt
         for i in range(self.num_agents):
             for t, transition in enumerate(batch_data):
-                if 'delta' in transition and i in transition['delta']:
+                if 'advantages' in transition and i in transition['advantages']:
                     if self.env.__class__.__name__ == 'StagHuntEnv':
                         scenario = self._classify_delta_scenario(transition, i)
-                        agent_losses[f'delta_agent_{i}_{scenario}_sum'] += transition['delta'][i]
+                        agent_losses[f'delta_agent_{i}_{scenario}_sum'] += transition['advantages'][i]
                         agent_losses[f'delta_agent_{i}_{scenario}_count'] += 1
                     else:
                         # check the accuracy of delta (predicting others' rewards)
                         others_rewards_sum = sum([transition['bold_r_t'][j] for j in range(self.num_agents) if j != i])
                         if others_rewards_sum == 0:
                             # 1st case: no reward
-                            agent_losses[f'delta_agent{i}_no_reward_sum'] += transition['delta'][i]
+                            agent_losses[f'delta_agent{i}_no_reward_sum'] += transition['advantages'][i]
                             agent_losses[f'delta_agent{i}_no_reward_count'] += 1
                         else:
                             # 2nd case: positive reward
-                            agent_losses[f'delta_agent{i}_positive_reward_sum'] += transition['delta'][i]
+                            agent_losses[f'delta_agent{i}_positive_reward_sum'] += transition['advantages'][i]
                             agent_losses[f'delta_agent{i}_positive_reward_count'] += 1
 
         # PPO Update
@@ -1179,24 +1663,20 @@ class Q_PCIRNNAlgorithm:
                 chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
                 
                 # p_states_all is (T, layers, hidden). We want (B, layers, hidden) = (NumChunks, layers, hidden)
-                p_h0_chunked = p_states_all[chunk_indices] 
-                # p_h0_chunked is already (NumChunks, layers, hidden). RNNLayer expects Batch first!
+                p_h0_chunked = p_states_all[chunk_indices]
                 
                 adv_chunked = self._chunk_sequence(adv, chunk_len)
-                ret_chunked = self._chunk_sequence(agent_returns[agent_id], chunk_len)
                 
                 p_h0_batch = p_h0_chunked
                 rnn_obs_batch = rnn_obs_chunked
                 rnn_masks_batch = rnn_masks_chunked
                 my_actions_batch = my_actions_chunked.reshape(-1) # Flatten (L*B)
                 adv_batch = adv_chunked.reshape(-1)
-                ret_batch = ret_chunked.reshape(-1)
                 active_masks_batch = active_masks_chunked.reshape(-1) # (L*B)
                 
                 avail_actions_batch_merged = None
                 if avail_actions_chunked is not None:
                      avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1)) # Flatten (L*B, ActionDim)
-
             else:
                 # Fallback to single batch
                 rnn_obs_batch = agent_obs.unsqueeze(1)
@@ -1208,9 +1688,12 @@ class Q_PCIRNNAlgorithm:
                 active_masks_batch = active_masks.squeeze(1) if 'active_mask' in batch_data[0] else torch.ones(T_total, device=self.device)
                 avail_actions_batch_merged = avail_actions_all
             
-            with torch.no_grad():
-                old_log_probs, _ = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
-                old_log_probs = old_log_probs.detach()
+            # Use stored log_probs from rollout (not recalculated)
+            old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+            if num_chunks > 0:
+                old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
+            else:
+                old_log_probs = old_log_probs_raw
                 
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
@@ -1256,97 +1739,10 @@ class Q_PCIRNNAlgorithm:
         
         return dict(agent_losses)
 
-    def update_global_value(self, batch_data: List[Dict]) -> float:
-        """
-        Update Global Value Network using Joint Observations and Global Returns.
-        """
-        # Prepare Data
-        # Joint Obs: (T, N*D)
-        full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(self.device)
-        T, N, D = full_obs_batch.shape
-        joint_obs_batch = full_obs_batch.view(T, -1)
-        
-        # Global Returns: (T, 1)
-        global_returns = torch.tensor([t['global_return'] for t in batch_data], dtype=torch.float32, device=self.device).unsqueeze(1)
-        
-        # RNN Chunking
-        chunk_len = self.rnn_chunk_length
-        num_chunks = T // chunk_len
-        
-        if num_chunks > 0:
-            obs_chunked = self._chunk_sequence(joint_obs_batch, chunk_len) # (L, B, N*D)
-            ret_chunked = self._chunk_sequence(global_returns, chunk_len) # (L, B, 1)
-            
-            if 'active_mask' in batch_data[0]:
-                active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
-                active_masks_chunked = self._chunk_sequence(active_masks, chunk_len)
-            else:
-                active_masks_chunked = torch.ones(chunk_len, num_chunks, 1, device=self.device)
-            
-            # Use chunks for efficient training
-            rnn_obs_batch = obs_chunked
-            rnn_ret_batch = ret_chunked
-            rnn_masks_batch = active_masks_chunked # Use active masks as RNN masks? No, RNN masks are for done.
-            
-            # RNN Masks (Dones)
-            # Global Done? If any agent done, we reset? Or env done.
-            # Let's use env done approximation (if any done).
-            dones_any = torch.tensor([any(t['dones'].values()) for t in batch_data], dtype=torch.float32, device=self.device).unsqueeze(1)
-            rnn_msg_masks = 1.0 - dones_any
-            
-            # Chunk masks
-            rnn_masks_chunked = self._chunk_sequence(rnn_msg_masks, chunk_len) #(L, B, 1)
-            rnn_masks_batch = rnn_masks_chunked
-            
-            rnn_active_mask_batch = active_masks_chunked.reshape(-1, 1) # (L*B, 1)
-            
-            # Initial Hidden States: Zeros
-            # (Batch, Layers, Hidden) = (num_chunks, L, H)
-            h0_batch = torch.zeros(num_chunks, self.recurrent_N, self.hidden_dim, device=self.device)
-            
-            # Forward
-            # Input to RNNNet: (BatchSequence, Hidden)?? No.
-            # Our RNNValueNetwork forward: (obs, rnn_states, masks)
-            # Obs: (L, B, Dim) -> Flatten -> (L*B, Dim)
-            # Masks: (L*B, 1)
-            # Hidden: (B, Layers, H)
-            
-            # Flatten inputs
-            flat_obs = rnn_obs_batch.reshape(-1, N*D)
-            flat_masks = rnn_masks_batch.reshape(-1, 1)
-            
-            values, _ = self.global_value_net(flat_obs, h0_batch, flat_masks)
-            
-            target_values = rnn_ret_batch.reshape(-1, 1)
-            
-            # MSE Loss
-            loss = (values - target_values).pow(2)
-            # Mask inactive steps (padding)
-            loss = (loss * rnn_active_mask_batch).sum() / (rnn_active_mask_batch.sum() + 1e-8)
-            
-        else:
-            # Fallback for short sequence
-            h0_batch = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device)
-            dones_any = torch.tensor([any(t['dones'].values()) for t in batch_data], dtype=torch.float32, device=self.device).unsqueeze(1)
-            masks = 1.0 - dones_any
-            active_masks = torch.tensor([t.get('active_mask', 1.0) for t in batch_data], device=self.device).unsqueeze(1)
-            
-            values, _ = self.global_value_net(joint_obs_batch, h0_batch, masks)
-            loss = (values - global_returns).pow(2)
-            loss = (loss * active_masks).sum() / (active_masks.sum() + 1e-8)
-            
-        self.global_value_optimizer.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.global_value_net.parameters(), self.max_grad_norm)
-        self.global_value_optimizer.step()
-        
-        return loss.item()
-
     def update(self, **kwargs):
         if self.buffer_manager.is_main_buffer_empty(): return {}
         transitions = self.buffer_manager.get_main_buffer_transitions()
         
-        # [FIX] Compute GAE on full trajectories before chunking
         try:
             # 1. Group by env_id
             env_trajectories = defaultdict(list)
@@ -1354,9 +1750,9 @@ class Q_PCIRNNAlgorithm:
                 env_id = t['info'].get('env_id', 0)
                 env_trajectories[env_id].append(t)
    
-            # 2. Compute causal rewards for each trajectory
+            # 2. Train causal networks and compute causal rewards for each trajectory
+            total_losses = defaultdict(float)
             for env_id, traj in env_trajectories.items():
-                # NOTE: traj is the many episodes of a specific environment, done mask should work
                 if len(traj) == 0:
                     continue
                 # Prepare data for causal reward computation
@@ -1369,13 +1765,13 @@ class Q_PCIRNNAlgorithm:
                 dones_batch = torch.tensor([[t['dones'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
                 
                 # Prepare z_t (proxy variable)
-                # z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device)
-                z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) # prev rewards
+                z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device)
+                # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) # prev rewards
                 
                 # Prepare w_t (other agents' observations)
                 expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
                 mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, self.obs_dim)
-                w_t_all = expanded_obs[mask].view(B, N, (N-1)*self.obs_dim)
+                w_t_batch = expanded_obs[mask].view(B, N, (N-1)*self.obs_dim)
                 
                 # Prepare hidden states
                 hidden_states_batch = {}
@@ -1394,120 +1790,142 @@ class Q_PCIRNNAlgorithm:
                             avail_list = [t['available_actions'][agent_id] for t in traj]
                             available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
                 
-                # [NEW] Bootstrapping with Global Value Network
-                # Input: Joint Observation (B, N * ObsDim)
-                joint_obs_batch = full_obs_batch.view(B, -1) # (B, N*ObsDim)
+                # Train causal networks first (populates K_z cache)
+                if self.get_current_causal_lambda() > 0.0:
+                    causal_losses = self.update_causal_networks(traj, mc_samples_k_w2=16)
+                else:
+                    causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
                 
+                for loss_name, loss_value in causal_losses.items():
+                    total_losses[loss_name] += loss_value
+                
+                # Compute causal Q-values and TD target-based delta
                 with torch.no_grad():
-                    h_0_val = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device) # (1, layers, hidden)
-                    
-                    val_obs_input = joint_obs_batch.unsqueeze(1) # (B, 1, Dim) - Wait, RNNLayer usually takes (Batch, Dim) and handles hidden states step by step?
-                    
-                    next_value = 0.0
-                    if not dones_batch[-1].any(): # If the last step is not done (Truncated)
-                        last_transition = traj[-1]
-                        next_obs_dict = last_transition['next_observations']
-                        next_full_obs = torch.cat([next_obs_dict[i] for i in range(N)]).to(self.device).view(1, -1) # (1, N*D)
-                        
-                        val_h = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device) # (1, L, H)
-                        # Masks for trajectory
-                        val_masks = 1.0 - dones_batch.view(B, N) # (B, N) - Wait, global value mask?
-                        val_masks_global = 1.0 - dones_batch.any(dim=1, keepdim=True).float() # (B, 1)
-                        
-                        # Loop through trajectory to update hidden state
-                        for t_i in range(B):
-                            obs_t = joint_obs_batch[t_i].unsqueeze(0) # (1, Dim)
-                            mask_t = val_masks_global[t_i].unsqueeze(0) # (1, 1)
-                            _, val_h = self.global_value_net(obs_t, val_h, mask_t)
-                        next_mask = torch.ones(1, 1, device=self.device)
-                        pred_next_val, _ = self.global_value_net(next_full_obs, val_h, next_mask)
-                        next_value = pred_next_val.item()
-
-                # Compute causal rewards
-                with torch.no_grad():
-                    # Calculate global returns for this trajectory properly (Discounted Return)
-                    global_rewards = rewards_batch.sum(dim=1)  # (B,)
-                    global_returns_traj = torch.zeros_like(global_rewards)
-                    G = next_value # [Bootstrapping] Initialize G with next_value (0 if done, V(s') if truncated)
-                    
-                    for t_idx in reversed(range(len(traj))):
-                        # Assuming if any agent is done, the episode is effectively done for global return (or check if all done)
-                        # Here using simple logic: reset if dones_batch has any true
-                        if dones_batch[t_idx].any():
-                            G = 0.0
-                        G = global_rewards[t_idx] + self.gamma * G
-                        global_returns_traj[t_idx] = G
-                    
-                    C_matrix = self.compute_causal_Q( # deconfounded Q value of peers only compute baseline
-                        w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
+                    C_matrix, Q_factual_matrix = self.compute_causal_Q(
+                        w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
                         hidden_states_batch=hidden_states_batch,
                         dones_batch=dones_batch,
                         baseline_type='weighted',
                         available_actions_batch=available_actions_batch
-                    ) 
+                    )
 
-                    # merging 1. summation
-                    delta = global_returns_traj.unsqueeze(1) - C_matrix.sum(dim=2)
 
-                    # merging 2. max
-                    # delta = C_matrix.max(dim=2).values
+                    # --- NEW: shift hidden/available_actions for next-state policy evaluation ---
+                    # We evaluate π(a|o_{t+1}) and build X' using the hidden state that would be used at t+1.
+                    hidden_states_next_batch = {}
+                    if hidden_states_batch:
+                        for aid in range(N):
+                            if aid in hidden_states_batch:
+                                hs = hidden_states_batch[aid]  # (B, recurrent_N, hidden_dim)
+
+                                # shift left: next_hidden[t] = hidden[t+1]
+                                if B > 1:
+                                    shifted = torch.cat([hs[1:], torch.zeros_like(hs[:1])], dim=0)
+                                else:
+                                    shifted = hs.clone()
+
+                                # Better tail for truncated rollouts: rnn_state_B = f(o_{B-1}, rnn_state_{B-1})
+                                last_obs = full_obs_batch[-1, aid, :].unsqueeze(0)  # (1, obs_dim)
+                                last_state_in = hs[-1:].clone()
+
+                                last_mask = torch.ones(1, 1, device=self.device)
+                                if 'masks' in traj[-1] and traj[-1]['masks'] is not None and aid in traj[-1]['masks']:
+                                    last_mask = torch.tensor([[traj[-1]['masks'][aid]]], dtype=torch.float32, device=self.device)
+
+                                last_avail = None
+                                if available_actions_batch and aid in available_actions_batch:
+                                    last_avail = available_actions_batch[aid][-1:]
+
+                                _, last_state_out = self.agents[aid].policy_net(
+                                    last_obs, last_state_in, last_mask, available_actions=last_avail
+                                )
+                                shifted[-1:] = last_state_out.detach()
+                                hidden_states_next_batch[aid] = shifted.detach()
+
+                    available_actions_next_batch = {}
+                    if available_actions_batch:
+                        for aid, avail in available_actions_batch.items():
+                            if avail.size(0) > 1:
+                                available_actions_next_batch[aid] = torch.cat([avail[1:], avail[-1:]], dim=0)
+                            else:
+                                available_actions_next_batch[aid] = avail.clone()
+
+                    # Compute V(s') for next states using outcome bridge
+                    # V(s')[j] = Σ_a π(a|o') * h_φ(a, W', X')[j]  (policy-weighted value)
+                    next_V = torch.zeros(B, N, device=self.device)  # (B, N) — per-agent V(s')
+
+                    for t_idx in range(B):
+                        t_data = traj[t_idx]
+                        if not dones_batch[t_idx].any():
+                            # Get next observations
+                            next_obs = torch.stack([t_data['next_observations'][i].to(self.device) for i in range(N)])  # (N, D)
+                            
+                            # W' for next state
+                            next_obs_exp = next_obs.unsqueeze(0).unsqueeze(1).expand(1, N, -1, -1)
+                            mask_eye = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(1, -1, -1, self.obs_dim)
+                            w_next = next_obs_exp[mask_eye].view(N, (N-1)*self.obs_dim)
+                            
+                            # X' = (o_i', h^{-i})  [SHIFTED hidden: use h_{t} -> aligns with o_{t+1}]
+                            h_list_next = []
+                            for k in range(N):
+                                if k in hidden_states_next_batch:
+                                    h_list_next.append(hidden_states_next_batch[k][t_idx].view(-1))
+                                else:
+                                    h_list_next.append(torch.zeros(self.recurrent_N * self.hidden_dim, device=self.device))
+                            H_all_next = torch.stack(h_list_next).unsqueeze(0)  # (1, N, RecN*H)
+                            expanded_H_next = H_all_next.expand(N, -1, -1)  # (N, N, RecN*H)
+                            mask_H_next = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(-1).expand(-1, -1, self.recurrent_N * self.hidden_dim)
+                            H_others_next = expanded_H_next[mask_H_next].view(N, -1)
+                            
+                            x_next = torch.cat([next_obs, H_others_next], dim=1)  # (N, x_dim)
+                            
+                            # Compute h_φ(a, W', X') for ALL actions using observed W'
+                            A = self.action_dim
+                            all_actions = torch.arange(A, device=self.device).repeat(N)  # (N*A,)
+                            w_next_expanded = w_next.repeat_interleave(A, dim=0)  # (N*A, w_dim)
+                            x_next_expanded = x_next.repeat_interleave(A, dim=0)  # (N*A, x_dim)
+                            
+                            h_all_next = self.outcome_bridge_net(all_actions, w_next_expanded, x=x_next_expanded)
+                            h_all_next = h_all_next.view(N, A, N)  # (N, A, N)
+                            
+                            # Compute π(a|o') for each agent
+                            probs_list = []
+                            for aid in range(N):
+                                obs_i = next_obs[aid].unsqueeze(0)
+                                if aid in hidden_states_next_batch:
+                                    p_st = hidden_states_next_batch[aid][t_idx:t_idx+1]
+                                else:
+                                    p_st = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device)
+                                m_i = (1.0 - dones_batch[t_idx, aid]).view(1, 1)
+                                avail_next = None
+                                if available_actions_next_batch and aid in available_actions_next_batch:
+                                    avail_next = available_actions_next_batch[aid][t_idx:t_idx+1]
+                                logits, _ = self.agents[aid].policy_net(obs_i, p_st, m_i, available_actions=avail_next)
+                                probs_list.append(torch.softmax(logits, dim=-1).squeeze(0))  # (A,)
+                            
+                            probs_all = torch.stack(probs_list)  # (N, A)
+                            
+                            # V(s') = Σ_a π(a) * E_w[h_φ(a, w, X')]  → (N, N)
+                            V_next_t = (probs_all.unsqueeze(2) * h_all_next).sum(dim=1)  # (N, N)
+                            # Mean over predicted-agent dim to get global V per agent
+                            next_V[t_idx] = V_next_t.sum(dim=1)  # (N,) — agent i's global V(s') estimate
                     
-                    # delta = torch.clamp(delta, min=0.0) # same as ReLU
-                    delta[torch.abs(delta) < self.clip_delta] = 0.0         # delta clipping
-
-                    # Store delta in transitions (will be used as advantage)
-                    for t_idx, t in enumerate(traj):
-                        if 'delta' not in t:
-                            t['delta'] = {}
+                    # Per-agent TD target: r_global + γ * (1-done) * V_i(s')
+                    global_rewards = rewards_batch.sum(dim=1, keepdim=True)  # (B, 1)
+                    not_done = (1.0 - dones_batch.any(dim=1, keepdim=True).float())  # (B, 1)
+                    td_target = global_rewards + self.gamma * not_done * next_V  # (B, N) per-agent
+                    
+                    # compute delta: per-agent advantage
+                    delta = td_target - C_matrix.sum(dim=2)  # (B, N) — agent i's TD_target - counterfactual baseline
+                    # delta = Q_factual_matrix - C_matrix.sum(dim=2)
+                    
+                    # For policy update: store delta in transitions
+                    for t_idx, t_data in enumerate(traj):
+                        if 'advantages' not in t_data:
+                            t_data['advantages'] = {}
                         for agent_id in range(N):
-                            t['delta'][agent_id] = delta[t_idx, agent_id].item()
-                        
-                        # [NEW] Store global return (bootstrapped) for Global Value Network training
-                        t['global_return'] = global_returns_traj[t_idx].item()
-                    
-                    # [NEW] Compute per-agent returns for outcome bridge
-                    # Each agent has its own return based on its individual rewards
-                    agent_returns = torch.zeros_like(rewards_batch)  # (B, N)
-                    
-                    for agent_id in range(N):
-                        G = 0.0
-                        for t_idx in reversed(range(len(traj))):
-                            # Reset return at episode boundaries
-                            if dones_batch[t_idx, agent_id] > 0:
-                                G = 0.0
-                            G = rewards_batch[t_idx, agent_id] + self.gamma * G
-                            agent_returns[t_idx, agent_id] = G
-                    
-                    # Store per-agent returns in transitions
-                    for t_idx, t in enumerate(traj):
-                        if 'agent_returns' not in t:
-                            t['agent_returns'] = {}
-                        for agent_id in range(N):
-                            t['agent_returns'][agent_id] = agent_returns[t_idx, agent_id].item()
+                            t_data['advantages'][agent_id] = delta[t_idx, agent_id].item()
 
-            # [CHANGED] Use deconfounded Q-values as advantages instead of GAE
-            for env_id, traj in env_trajectories.items():
-                if len(traj) == 0:
-                    continue
-                
-                # For each agent, use deconfounded Q-values as advantages
-                for agent_id in range(self.num_agents):
-                    if agent_id not in traj[0]['bold_o_t']:
-                        continue
-                    
-                    # Extract deconfounded Q-values (already computed as delta)
-                    # and global returns for this agent
-                    for t_idx, t in enumerate(traj):
-                        if 'advantages' not in t:
-                            t['advantages'] = {}
-                            t['returns'] = {}
-                        
-                        # Use deconfounded Q-value as advantage
-                        t['advantages'][agent_id] = t['delta'][agent_id]
-                        
-                        # Use global return as return target (Bootstrapped)
-                        t['returns'][agent_id] = t['global_return']
-            
             # 4. Create chunks from trajectories with Padding
             all_chunks = []
             chunk_len = self.rnn_chunk_length
@@ -1541,7 +1959,7 @@ class Q_PCIRNNAlgorithm:
                     
                     padding_chunk = []
                     for _ in range(padding_len):
-                        pad_t = last_valid_trans.copy() 
+                        pad_t = copy.deepcopy(last_valid_trans)
                         pad_t['active_mask'] = 0.0
                         padding_chunk.append(pad_t)
                     
@@ -1569,25 +1987,13 @@ class Q_PCIRNNAlgorithm:
             # Fallback
             batch_size = max(1, len(transitions) // self.num_batches)
             batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
-            
-        total_losses = defaultdict(float)
+            total_losses = defaultdict(float)
         
         for batch_data in batches:
             if not batch_data: continue
             
-            if self.get_current_causal_lambda() > 0.0:
-                causal_losses = self.update_causal_networks(batch_data, mc_samples_k_w2=16)
-            else:
-                causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
-            
-            # [NEW] Update Global Value Network
-            global_value_loss = self.update_global_value(batch_data)
-            total_losses['global_value_loss'] += global_value_loss
-
             agent_and_value_losses = self.update_agents(batch_data)
 
-            for loss_name, loss_value in causal_losses.items():
-                total_losses[loss_name] += loss_value
             for loss_name, loss_value in agent_and_value_losses.items():
                 total_losses[loss_name] += loss_value
 
@@ -1597,6 +2003,8 @@ class Q_PCIRNNAlgorithm:
         num = len([b for b in batches if b])
         if num == 0: return {}
         final_losses = {}
+        
+        # loss 
         for k, v in total_losses.items():
             if 'delta_agent' in k and '_sum' in k:
                 # [FIX] Recompute global mean for delta

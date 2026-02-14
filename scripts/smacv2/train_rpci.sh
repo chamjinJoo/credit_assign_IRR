@@ -5,8 +5,8 @@ env="SMACv2"
 config="configs/smacv2.yaml" 
 
 # model setting
-model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=0.5
+model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
+causal_lambda=1.0
 clip_delta=0.01
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
@@ -30,7 +30,8 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # headless mode (no rendering)
 xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} \
-    --use-value-parameter-sharing ${use_value_parameter_sharing} --n-rollout-threads ${n_rollout_threads} \
+    --use-value-parameter-sharing ${use_value_parameter_sharing} \
+    --n-rollout-threads ${n_rollout_threads} \
     --max-steps ${max_steps_per_iteration} \
     --max-iterations ${max_iterations} \
     --clip-delta ${clip_delta} \
@@ -39,4 +40,4 @@ xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} \
     --log-interval ${log_interval} \
     --device ${device} --seed ${seed} \
     --use-wandb \
-    --wandb-project pci-marl-smacv2 
+    --wandb-project pci-marl-smacv2

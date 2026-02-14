@@ -207,16 +207,13 @@ class PCIMAPPOAlgorithm:
             action_dim=action_dim,
             num_agents=num_agents,
             w_dim=obs_dim * (num_agents-1),
-            outcome_dim=num_agents-1,
+            outcome_dim=num_agents,
             hidden_dim=hidden_dim,
             action_embedding_dim=8
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            z_dim=obs_dim * num_agents, # Default Z
-            # z_dim=obs_dim * num_agents + num_agents, # [SWITCH] Z = [Joint Obs, Joint Reward]
-            # z_dim=obs_dim * num_agents + action_dim * num_agents, # [SWITCH] Z = [Joint Obs, Joint Action]
-            # z_dim=num_agents, # [SWITCH] previous reward vector as proxy
+            z_dim=num_agents, # Z = prev rewards
             action_dim=action_dim,
             num_agents=num_agents,
             hidden_dim=hidden_dim,
@@ -275,10 +272,11 @@ class PCIMAPPOAlgorithm:
         device = self.device
 
         # === 1. Data Preparation (Vectorized) ===
-        joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
+        # joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
         # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(batch_size, -1).float()
-        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
+        joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
+        
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
         action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         reward_batch = torch.tensor([[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
@@ -289,11 +287,10 @@ class PCIMAPPOAlgorithm:
         W_super = expanded_obs[mask].view(batch_size * num_agents, -1)
         
         expanded_rewards = reward_batch.unsqueeze(1).expand(-1, num_agents, -1)
-        mask_rewards = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).expand(batch_size, -1, -1)
-        Y_super = expanded_rewards[mask_rewards].view(batch_size * num_agents, -1)
+        Y_super = expanded_rewards.view(batch_size * num_agents, -1)
 
-        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
-        # Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
+        # Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
+        Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
         # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
 
@@ -540,7 +537,7 @@ class PCIMAPPOAlgorithm:
         prev_rewards: Dict[int, float],
         prev_actions: Dict[int, int],
         observations: Dict[int, torch.Tensor],
-        actions: Dict[int, int],
+        actions: Dict[int, Tuple[int, float]],  # (action, log_prob)
         rewards: Dict[int, float],
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
@@ -548,6 +545,10 @@ class PCIMAPPOAlgorithm:
         available_actions: Optional[Dict[int, List[int]]] = None
     ):
         """Store transition from a specific parallel environment."""
+        # Extract actions and log_probs separately
+        actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
+        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
+        
         if info is None: info = {}
         info['env_id'] = env_idx
         
@@ -560,13 +561,14 @@ class PCIMAPPOAlgorithm:
             prev_rewards=prev_rewards,
             prev_actions=prev_actions,
             observations=observations,
-            actions=actions,
+            actions=actions_only,
             rewards=rewards,
             next_observations=next_observations,
             dones=dones,
             hidden_states={i: None for i in range(self.num_agents)},
             info=info,
-            available_actions=available_actions
+            available_actions=available_actions,
+            log_probs=log_probs_dict
         )
         
         if self.use_episode_buffer:
@@ -596,26 +598,31 @@ class PCIMAPPOAlgorithm:
         prev_rewards: Dict[int, float],
         prev_actions: Dict[int, int],
         observations: Dict[int, torch.Tensor],
-        actions: Dict[int, int],
+        actions: Dict[int, Tuple[int, float]],  # (action, log_prob)
         rewards: Dict[int, float],
         next_observations: Dict[int, torch.Tensor],
         dones: Dict[int, bool],
         info: Dict = None,
         available_actions: Optional[Dict[int, List[int]]] = None # [ADDED]
     ):
+        # Extract actions and log_probs
+        actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
+        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
+        
         self.buffer_manager.store_transition(
             prev_observations=prev_observations,
             prev_rewards=prev_rewards,
             prev_actions=prev_actions,
             observations=observations,
-            actions=actions,
+            actions=actions_only,
             rewards=rewards,
             next_observations=next_observations,
             dones=dones,
             masks={i: 1.0 for i in range(self.num_agents)},
             hidden_states={i: None for i in range(self.num_agents)},
             info=info,
-            available_actions=available_actions # [ADDED]
+            available_actions=available_actions,
+            log_probs=log_probs_dict
         )
     
     def compute_gae(
@@ -723,27 +730,16 @@ class PCIMAPPOAlgorithm:
                 w_t_flat = w_b.view(-1, w_b.size(-1))
                 z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(-1, z_b.size(-1))
 
-                r_pred_flat = self.outcome_bridge_net(actions_flat, w_t_flat)
+                # r_pred_flat = self.outcome_bridge_net(actions_flat, w_t_flat)
                 # weight_flat = self.action_bridge_net(z_t_repeated, actions_flat)
-
-                mask_indices = torch.tensor([
-                    [j for j in range(num_agents) if j != k] 
-                    for k in range(num_agents)
-                ], device=self.device)
                 
-                others_rewards = r_b.unsqueeze(1).expand(-1, num_agents, -1)
-                others_rewards = torch.gather(others_rewards, 2, mask_indices.unsqueeze(0).expand(curr_bs, -1, -1))
-                others_rewards_flat = others_rewards.view(-1, num_agents - 1)
+                rewards_flat = r_b.unsqueeze(1).expand(-1, num_agents, -1).reshape(-1, num_agents)
                 
-                # error_flat = others_rewards_flat - r_pred_flat
-                # DR_correction_flat = weight_flat * error_flat
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
                 
                 reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded)
-                reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents - 1)
-                
-                # r_hat_all = reg_estimates_cf + DR_correction_flat.unsqueeze(1)
+                reg_estimates_cf = reg_estimates_cf.view(curr_bs * num_agents, action_dim, num_agents)
                 r_hat_all = reg_estimates_cf # no q
                 
                 probs_list = []
@@ -757,55 +753,25 @@ class PCIMAPPOAlgorithm:
                     probs_list.append(probs)
                 action_probs_flat = torch.stack(probs_list, dim=1).view(-1, action_dim)
 
-                #-----Original baseline calculation-----#
-                # factual_indices = actions_flat
-                # r_hat_factual = torch.gather(r_hat_all, 1, factual_indices.unsqueeze(1).unsqueeze(2).expand(-1, -1, num_agents-1)).squeeze(1)
-                # mask = torch.ones(curr_bs * num_agents, action_dim, dtype=torch.bool, device=self.device)
-                # mask.scatter_(1, factual_indices.unsqueeze(1), False)
+                # baseline: exclude factual action (counterfactual only, following r_pci.py)
+                factual_mask = torch.zeros_like(action_probs_flat).scatter_(1, actions_flat.unsqueeze(1), 1.0)
+                non_factual_mask = 1.0 - factual_mask
                 
-                # if baseline_type == 'weighted':
-                #     probs_cf = action_probs_flat.clone()
-                #     probs_cf.scatter_(1, factual_indices.unsqueeze(1), 0.0)
-                #     sum_probs = probs_cf.sum(dim=1, keepdim=True)
-                #     baseline = (probs_cf.unsqueeze(2) * r_hat_all).sum(dim=1) / (sum_probs + 1e-8)
-                # elif baseline_type == 'average':
-                #     r_hat_masked = r_hat_all.clone()
-                #     mask_expanded = mask.unsqueeze(-1).expand_as(r_hat_all)
-                #     r_hat_masked[~mask_expanded] = 0.0
-                #     count = mask.sum(dim=1, keepdim=True).float()
-                #     baseline = r_hat_masked.sum(dim=1) / (count + 1e-8)
-                # else:
-                #     raise ValueError(f"Invalid baseline type: {baseline_type}")
-                # using causal domain information: prediction with factual action
-                # raw_effects = r_hat_factual - baseline
-                ########################################
-
-                # new baseline calculation: contain factual action
                 if baseline_type == 'weighted':
-                    # 모든 action의 확률을 사용 (factual action 포함)
-                    sum_probs = action_probs_flat.sum(dim=1, keepdim=True)
-                    baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1) / sum_probs
+                    probs_counterfactual = action_probs_flat * non_factual_mask
+                    renormalized_probs = probs_counterfactual / (probs_counterfactual.sum(dim=1, keepdim=True) + 1e-10)
+                    baseline = (renormalized_probs.unsqueeze(2) * r_hat_all).sum(dim=1)
                 elif baseline_type == 'average':
-                    # 모든 action을 포함하여 평균 계산 (factual action 포함)
-                    baseline = r_hat_all.mean(dim=1)
+                    # Factual action을 제외한 나머지 action들의 단순 평균 계산
+                    baseline = (r_hat_all * non_factual_mask.unsqueeze(2)).sum(dim=1) / (action_dim - 1)
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # 1. using real rewards
-                raw_effects = others_rewards_flat - baseline
-                # 2. using outcome bridge network
-                # raw_effects = r_hat_factual - baseline
+                # using real rewards
+                r_factual = rewards_flat
+                raw_effects = r_factual - baseline
                 
-                # Reshape to [B, N, N-1]
-                effects_reshaped = raw_effects.view(curr_bs, num_agents, num_agents - 1)
-                
-                # Scatter values into N x N matrix (Diagonal is 0)
-                # target_indices: [B, N, N-1] -> expand for batch
-                batch_target_indices = mask_indices.unsqueeze(0).expand(curr_bs, -1, -1)
-                
-                C_chunk = torch.zeros(curr_bs, num_agents, num_agents, device=self.device)
-                C_chunk.scatter_(2, batch_target_indices, effects_reshaped)
-                
+                C_chunk = raw_effects.view(curr_bs, num_agents, num_agents)
                 C_matrix[i:end] = C_chunk
             
         return C_matrix
@@ -819,16 +785,7 @@ class PCIMAPPOAlgorithm:
         actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
         rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
         
-        # joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device)
-        # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
-        # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(B, -1).float()
-        # joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
-        
-        z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(self.device) # Default Z
-        # z_t_batch = torch.cat([joint_o_prev, joint_r_prev], dim=1)
-        # z_t_batch = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1)
-        # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device) # [SWITCH] prev rewards
-        # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device) # [SWITCH] prev rewards
+        z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
         dones_batch = torch.tensor([[t['dones'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.float32, device=self.device)
 
         # Extract available actions
@@ -865,19 +822,23 @@ class PCIMAPPOAlgorithm:
             
             agent_obs = full_obs_batch[:, agent_id, :]
             my_actions = actions_batch[:, agent_id]
-            adv = (agent_advantages[agent_id] - agent_advantages[agent_id].mean()) / (agent_advantages[agent_id].std() + 1e-8)
             
-            with torch.no_grad():
-                avail_actions_all = None
-                if agent_id in available_actions_batch:
-                    avail_actions_all = available_actions_batch[agent_id]
+            if agent_advantages[agent_id].numel() > 1:
+                adv_std = agent_advantages[agent_id].std() + 1e-8
+                adv = (agent_advantages[agent_id] - agent_advantages[agent_id].mean()) / adv_std
+            else:
+                adv = torch.zeros_like(agent_advantages[agent_id])
+            
+            avail_actions_all = None
+            if agent_id in available_actions_batch:
+                avail_actions_all = available_actions_batch[agent_id]
 
-                logits = self.agents[agent_id].policy_net(agent_obs, available_actions=avail_actions_all)
-                old_log_probs = F.log_softmax(logits, dim=-1).gather(1, my_actions.unsqueeze(1)).squeeze(1)
+            # Use stored log_probs from rollout (not recalculated)
+            old_log_probs = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
 
             for _ in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(agent_obs, my_actions, available_actions=avail_actions_all)
-                ratio = torch.exp(new_log_probs - old_log_probs.detach())
+                ratio = torch.exp(new_log_probs - old_log_probs)
                 
                 surr1 = ratio * adv
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv
@@ -998,14 +959,16 @@ class PCIMAPPOAlgorithm:
                     delta = C_matrix.sum(dim=2)
                     delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
-                    # Apply lambda
+                    # Apply lambda: (1-λ)*r + λ*δ, normalized by N (following r_pci.py)
                     if self.causal_lambda_adaptive_per_agent:
                         causal_lambdas = torch.tensor([
                             self.get_current_causal_lambda(agent_id=i) for i in range(N)
                         ], device=self.device).unsqueeze(0)
-                        shaped_rewards_all = rewards_batch + causal_lambdas * delta
+                        shaped_rewards_all = (1 - causal_lambdas) * rewards_batch + causal_lambdas * delta
                     else:
-                        shaped_rewards_all = rewards_batch + self.get_current_causal_lambda() * delta
+                        lam = self.get_current_causal_lambda()
+                        shaped_rewards_all = (1 - lam) * rewards_batch + lam * delta
+                    shaped_rewards_all = shaped_rewards_all / N  # normalize by num_agents
                     
                     # Store shaped rewards and delta in transitions
                     for t_idx, t in enumerate(traj):

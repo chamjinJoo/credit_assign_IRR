@@ -4,7 +4,7 @@
 network:
   hidden_dim: 64
   lr_actor: 3.0e-4
-  lr_bridge: 1.0e-3
+  lr_bridge: 1.0e-3 # rqpci: 3.0e-4 , rpci: 1.0e-3
   lr_critic: 3.0e-4
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels

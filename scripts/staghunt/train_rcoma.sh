@@ -7,7 +7,7 @@ grid_observation=true
 config="configs/stag_hunt.yaml"
 
 # model setting
-model="coma-rnn" # [pci-mappo, mappo, ippo, coma]
+model="r-coma" # [pci-mappo, mappo, ippo, coma]
 recurrent_N=1
 
 # training and logging

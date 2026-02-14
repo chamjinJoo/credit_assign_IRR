@@ -5,7 +5,7 @@ env="SMACv2"
 config="configs/smacv2.yaml"
 
 # model setting
-model="ippo-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
+model="r-ippo" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
 recurrent_N=1
 global_reward=true

@@ -13,7 +13,7 @@ import torch
 from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
 from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
 from envs import create_environment, get_available_environments
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, COMARNNAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm
 from runner import Trainer
 
 
@@ -27,7 +27,8 @@ def create_algorithm(env, config):
     if hasattr(env, 'required_agents'):
         env_required_agents = env.required_agents
     
-    algorithm_type = getattr(algorithm_config, 'type', 'pci_mappo')
+    # Normalize algorithm type string (hyphen to underscore, lower case)
+    algorithm_type = getattr(algorithm_config, 'type', 'pci_mappo').lower().replace('-', '_')
     
     if algorithm_type == 'pci_mappo':
         algorithm = PCIMAPPOAlgorithm(
@@ -74,8 +75,8 @@ def create_algorithm(env, config):
             # Value network parameter sharing
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
         )
-    elif algorithm_type == 'pci_rnn':
-        algorithm = PCIRNNAlgorithm(
+    elif algorithm_type in ['pci_rnn', 'r_pci']:
+        algorithm = rPCIAlgorithm(
             env=env,
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
@@ -211,8 +212,8 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
-    elif algorithm_type == 'coma_rnn':
-        algorithm = COMARNNAlgorithm(
+    elif algorithm_type in ['coma_rnn', 'r_coma']:
+        algorithm = rCOMAAlgorithm(
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
             action_dim=env.get_action_dim(),
@@ -228,8 +229,8 @@ def create_algorithm(env, config):
             device=config.training.device,
             use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', True),
         )
-    elif algorithm_type == 'mappo_rnn':
-        algorithm = MAPPORNNAlgorithm(
+    elif algorithm_type in ['mappo_rnn', 'r_mappo']:
+        algorithm = rMAPPOAlgorithm(
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
             action_dim=env.get_action_dim(),
@@ -250,8 +251,8 @@ def create_algorithm(env, config):
             device=config.training.device,
             global_reward=getattr(algorithm_config, 'global_reward', True),
         )
-    elif algorithm_type == 'ippo_rnn':
-        algorithm = IPPORNNAlgorithm(
+    elif algorithm_type in ['ippo_rnn', 'r_ippo']:
+        algorithm = rIPPOAlgorithm(
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
             action_dim=env.get_action_dim(),
@@ -272,8 +273,8 @@ def create_algorithm(env, config):
             device=config.training.device,
             global_reward=getattr(algorithm_config, 'global_reward', True),
         )
-    elif algorithm_type == 'q_pci_rnn':
-        algorithm = Q_PCIRNNAlgorithm(
+    elif algorithm_type in ['q_pci_rnn', 'rqpci']:
+        algorithm = rQPCIAlgorithm(
             env=env,
             num_agents=env.num_agents,
             obs_dim=env.get_obs_dim(),
@@ -311,7 +312,7 @@ def create_algorithm(env, config):
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 50),
         )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'pci_rnn', 'q_pci_rnn', 'mappo', 'mappo_rnn', 'ippo', 'ippo_rnn', 'x_pci', 'coma', or 'coma_rnn'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'rqpci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'x_pci', 'coma', or 'r_coma'")
     
     return algorithm
 

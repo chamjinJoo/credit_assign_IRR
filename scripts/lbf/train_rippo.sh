@@ -1,6 +1,6 @@
 #!/bin/bash
 env="LBForaging"
-model="ippo" # [pci-mappo, mappo, ippo]
+model="r-ippo" # [pci-mappo, mappo, ippo]
 numagents=3
 seed=42
 max_iterations=1500

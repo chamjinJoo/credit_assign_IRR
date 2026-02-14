@@ -18,7 +18,7 @@ class NetworkConfig:
 @dataclass
 class AlgorithmConfig:
     """Algorithm configuration."""
-    type: str = "pci_mappo"  # Algorithm type: pci_mappo, mappo, or ippo
+    type: str = "r_pci" 
     gamma: float = 0.99
     gae_lambda: float = 0.95
     rnn_chunk_length: int = 50

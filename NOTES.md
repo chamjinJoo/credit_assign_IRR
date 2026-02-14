@@ -150,5 +150,15 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 * Cleanup the config for different envs.
 
 # 26.02.10
-* **Correction**: `PPO`-related algorithms re-compute old policy prob. when policy updates -> fix it by storing old_policy_probs while collecting rollout data.
+* **Correct Defect**: `PPO`-related algorithms re-compute old policy prob. when policy updates -> fix it by storing old_policy_probs while collecting rollout data.
     * `rMAPPO` shows reasonable performance in `StagHunt`, but `rPCI` still outperforms.
+* **Refactoring**:
+    * Rename RNN-based algorithms to `r_` prefix convention (e.g., `pci_rnn` -> `r_pci`, `mappo_rnn` -> `r_mappo`).
+    * Update scripts and `main.py` to use new names.
+
+# 26.02.11
+* In `SMACv2`, `max_grad_norm` 0.5 vs. 10 does not matter.
+* Test `clip_epsilon` 0.2 in `SMACv2` -> hmm... a litte better?
+
+# 26.02.12
+* Critical theoretic defect: when utilizing outcome bridge function, we should calculate the conditional expectattion $\mathbb{E}_{w\sim p(w|z,a,x)}[h(a,w,x)|Z,A,X]$. But we did not.

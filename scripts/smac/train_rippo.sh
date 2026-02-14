@@ -7,7 +7,7 @@ map_name="2s3z"
 config="configs/smac.yaml" # using basic config as template
 
 # model setting
-model="ippo-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
+model="r-ippo" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
 recurrent_N=1
 

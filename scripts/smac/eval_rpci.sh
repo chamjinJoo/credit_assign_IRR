@@ -6,7 +6,7 @@ config="configs/smac.yaml"
 
 # model setting
 checkpoint="./save_checkpoints/20260202_145519/smacwrapper/checkpoints/checkpoint_300.pt"
-model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
+model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
 recurrent_N=1
 device="cpu"  # recommended to use cuda if available

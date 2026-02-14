@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, MAPPORNNAlgorithm, IPPOAlgorithm, IPPORNNAlgorithm, X_PCIAlgorithm, COMAAlgorithm, COMARNNAlgorithm, PCIRNNAlgorithm, Q_PCIRNNAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -54,7 +54,7 @@ class Trainer:
         self,
         config: Dict,
         env: MultiAgentEnv,
-        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, COMARNNAlgorithm, PCIRNNAlgorithm, MAPPORNNAlgorithm, IPPORNNAlgorithm, Q_PCIRNNAlgorithm],
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, rQPCIAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -499,7 +499,7 @@ class Trainer:
             # For COMA, finish the episode in the buffer only if episode actually completed
             # If episode was cut short due to max_steps_per_iteration, keep it in current_episode
             # for the next iteration to continue collecting
-            if isinstance(self.algorithm, (COMAAlgorithm, COMARNNAlgorithm)):
+            if isinstance(self.algorithm, (COMAAlgorithm, rCOMAAlgorithm)):
                 if done:  # Episode actually completed
                     self.algorithm.finish_episode()
                 # else: Incomplete episode remains in current_episode for next iteration
@@ -687,9 +687,20 @@ class Trainer:
                         env_dones[env_idx] = False
             
             # Update states
-            prev_observations_batch = observations_batch
-            prev_rewards_batch = rewards_batch
-            prev_actions_batch = env_actions_batch
+            for env_idx in range(self.n_rollout_threads):
+                episode_done = any(dones_batch[env_idx].values())
+                if episode_done:
+                    prev_observations_batch[env_idx] = {
+                        agent_id: torch.zeros_like(next_observations_batch[env_idx][agent_id])
+                        for agent_id in next_observations_batch[env_idx].keys()
+                    }
+                    prev_rewards_batch[env_idx] = {agent_id: 0.0 for agent_id in next_observations_batch[env_idx].keys()}
+                    prev_actions_batch[env_idx] = {agent_id: 0 for agent_id in next_observations_batch[env_idx].keys()}
+                else:
+                    prev_observations_batch[env_idx] = observations_batch[env_idx]
+                    prev_rewards_batch[env_idx] = rewards_batch[env_idx]
+                    prev_actions_batch[env_idx] = env_actions_batch[env_idx]
+
             observations_batch = next_observations_batch
         
         # Compile rollout data
@@ -1011,7 +1022,7 @@ class Trainer:
         }
         
         # Save agent states
-        if isinstance(self.algorithm, COMARNNAlgorithm):
+        if isinstance(self.algorithm, rCOMAAlgorithm):
             # COMA RNN uses shared policy — save once, no per-agent optimizer
             state['shared_policy'] = self.algorithm.shared_policy.state_dict()
             state['policy_optimizer'] = self.algorithm.policy_optimizer.state_dict()
@@ -1027,7 +1038,7 @@ class Trainer:
                 }
         
         # Save algorithm-specific states
-        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, PCIRNNAlgorithm)):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, rQPCIAlgorithm)):
             # PCI-MAPPO specific states
             state['outcome_bridge_net'] = self.algorithm.outcome_bridge_net.state_dict()
             state['action_bridge_net'] = self.algorithm.action_bridge_net.state_dict()
@@ -1037,25 +1048,30 @@ class Trainer:
             state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
             state['action_bridge_optimizer'] = self.algorithm.action_bridge_optimizer.state_dict()
             state['kernel_action_embed_optimizer'] = self.algorithm.kernel_action_embed_optimizer.state_dict()
+            # W Predictor (rQPCI only)
+            if hasattr(self.algorithm, 'w_predictor'):
+                state['w_predictor'] = self.algorithm.w_predictor.state_dict()
+                state['w_predictor_optimizer'] = self.algorithm.w_predictor_optimizer.state_dict()
             
-            # Save value networks and optimizers (support both individual and parameter sharing)
-            from utils.value_network_utils import is_value_network_shared
-            
-            if not is_value_network_shared(self.algorithm):
-                # Individual value networks
-                state['value_nets'] = {}
-                state['value_optimizers'] = {}
-                for agent_id, value_net in self.algorithm.value_nets.items():
-                    state['value_nets'][agent_id] = value_net.state_dict()
+            # Save value networks and optimizers (only for algorithms with value networks)
+            if hasattr(self.algorithm, 'value_nets') or hasattr(self.algorithm, 'value_net'):
+                from utils.value_network_utils import is_value_network_shared
                 
-                for agent_id, value_optimizer in self.algorithm.value_optimizers.items():
-                    state['value_optimizers'][agent_id] = value_optimizer.state_dict()
-            else:
-                # Parameter sharing: save single value_net
-                if hasattr(self.algorithm, 'value_net'):
-                    state['value_net'] = self.algorithm.value_net.state_dict()
-                if hasattr(self.algorithm, 'value_optimizer'):
-                    state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
+                if not is_value_network_shared(self.algorithm):
+                    # Individual value networks
+                    state['value_nets'] = {}
+                    state['value_optimizers'] = {}
+                    for agent_id, value_net in self.algorithm.value_nets.items():
+                        state['value_nets'][agent_id] = value_net.state_dict()
+                    
+                    for agent_id, value_optimizer in self.algorithm.value_optimizers.items():
+                        state['value_optimizers'][agent_id] = value_optimizer.state_dict()
+                else:
+                    # Parameter sharing: save single value_net
+                    if hasattr(self.algorithm, 'value_net'):
+                        state['value_net'] = self.algorithm.value_net.state_dict()
+                    if hasattr(self.algorithm, 'value_optimizer'):
+                        state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
                     
         elif isinstance(self.algorithm, X_PCIAlgorithm):
             # X-PCI specific states
@@ -1080,7 +1096,7 @@ class Trainer:
                 if hasattr(self.algorithm, 'value_optimizer'):
                     state['value_optimizer'] = self.algorithm.value_optimizer.state_dict()
         
-        elif isinstance(self.algorithm, (COMAAlgorithm, COMARNNAlgorithm)):
+        elif isinstance(self.algorithm, (COMAAlgorithm, rCOMAAlgorithm)):
             # COMA specific states
             state['critic'] = self.algorithm.critic.state_dict()
             state['target_critic'] = self.algorithm.target_critic.state_dict()
@@ -1106,7 +1122,7 @@ class Trainer:
         algorithm_state = checkpoint['algorithm_state']
     
         # Load agent states
-        if isinstance(self.algorithm, COMARNNAlgorithm):
+        if isinstance(self.algorithm, rCOMAAlgorithm):
             # COMA RNN: load shared policy and optimizer
             if 'shared_policy' in algorithm_state:
                 self.algorithm.shared_policy.load_state_dict(algorithm_state['shared_policy'])
@@ -1119,7 +1135,7 @@ class Trainer:
                 agent.optimizer.load_state_dict(agent_state['optimizer'])
         
         # Load algorithm-specific states
-        if isinstance(self.algorithm, PCIMAPPOAlgorithm):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, rQPCIAlgorithm)):
             # PCI-MAPPO specific states
             if 'outcome_bridge_net' in algorithm_state:
                 self.algorithm.outcome_bridge_net.load_state_dict(algorithm_state['outcome_bridge_net'])
@@ -1137,6 +1153,11 @@ class Trainer:
                 self.algorithm.action_bridge_optimizer.load_state_dict(algorithm_state['action_bridge_optimizer'])
             if 'kernel_action_embed_optimizer' in algorithm_state:
                 self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
+            # W Predictor (rQPCI only)
+            if 'w_predictor' in algorithm_state and hasattr(self.algorithm, 'w_predictor'):
+                self.algorithm.w_predictor.load_state_dict(algorithm_state['w_predictor'])
+            if 'w_predictor_optimizer' in algorithm_state and hasattr(self.algorithm, 'w_predictor_optimizer'):
+                self.algorithm.w_predictor_optimizer.load_state_dict(algorithm_state['w_predictor_optimizer'])
 
         elif isinstance(self.algorithm, X_PCIAlgorithm):
             # X-PCI specific states

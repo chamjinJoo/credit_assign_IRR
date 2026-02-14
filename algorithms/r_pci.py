@@ -41,7 +41,7 @@ class RBFKernel(nn.Module):
         dists_sq = torch.sum((x1 - x2)**2, dim=-1) 
         return torch.exp(-gamma * dists_sq)
 
-class PCIRNNAgent:
+class rPCIAgent:
     def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, recurrent_N: int = 1, lr_actor: float = 3e-4, lr_critic: float = 3e-4):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
@@ -197,7 +197,7 @@ class PCIRNNAgent:
             
         return values.squeeze(-1), prev_states
 
-class PCIRNNAlgorithm:
+class rPCIAlgorithm:
     def __init__(
         self,
         env,
@@ -297,7 +297,7 @@ class PCIRNNAlgorithm:
         
         self.agents = {}
         for i in range(num_agents):
-            self.agents[i] = PCIRNNAgent(
+            self.agents[i] = rPCIAgent(
                 agent_id=i,
                 obs_dim=obs_dim,
                 action_dim=action_dim,
@@ -328,15 +328,13 @@ class PCIRNNAlgorithm:
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
-            # [edit] outcome bridge function predicts all reward vector \in \mathbb{R}^N
             action_dim=action_dim,
             num_agents=num_agents,
             w_dim=obs_dim * (num_agents-1),
             outcome_dim=num_agents,
             hidden_dim=hidden_dim,
             action_embedding_dim=8,
-            # x_dim=obs_dim # x = o^i_t
-            x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # [SWITCH] x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+            x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
@@ -354,7 +352,7 @@ class PCIRNNAlgorithm:
         self.action_embedding_for_kernel = nn.Embedding(action_dim, 8)
 
         self.feature_projector = nn.Sequential(
-            nn.Linear((num_agents-1) + 8 + obs_dim, hidden_dim),
+            nn.Linear(num_agents + 8 + obs_dim + hidden_dim * recurrent_N * (num_agents-1), hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
@@ -442,10 +440,9 @@ class PCIRNNAlgorithm:
         mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
         W_super = expanded_obs[mask].view(batch_size * num_agents, -1)
         
-        # [EDIT] Y = r_t
         Y_super = reward_batch.repeat_interleave(num_agents, dim=0)  # (batch_size * num_agents, num_agents)
 
-        # [SWITCH] Constructing X_super = {o^i_t, h^{-i}_{t-1}}
+        # Constructing X_super = {o^i_t, h^{-i}_{t-1}}
         # 1. Gather all hidden states: (B, N, RecN*H)
         h_list = []
         for i in range(num_agents):
@@ -534,7 +531,7 @@ class PCIRNNAlgorithm:
             # --- Update Outcome Bridge h_φ ---
             # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
             # r_hat_mb = self.outcome_bridge_net(a_mb, w_mb), x=None)
-            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # [SWITCH] x=(o_mb, h_others)
+            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
             residuals_mb = y_mb - r_hat_mb
             
             if self.causal_lambda_adaptive_per_agent:
@@ -543,13 +540,12 @@ class PCIRNNAlgorithm:
                     agent_residual_errors[agent_id.item()].append(residual_error)
             
             action_embeds_mb = self.action_embedding_for_kernel(a_mb)
-            # kernel_feat_z = torch.cat([z_mb, action_embeds_mb], dim=1)
-            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, o_mb], dim=1) # [ADD] x=o_mb
+            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, x_mb], dim=1) # x=(o_mb, h_others)
 
             # use feature projector MLP
             # with torch.no_grad():
             #     kernel_feat_z = self.feature_projector(
-            #         torch.cat([z_mb, action_embeds_mb, o_mb], dim=1)
+            #         torch.cat([z_mb, action_embeds_mb, x_mb], dim=1)
             #     )
                 
             K_z = self.critic_kernel_z(kernel_feat_z)
@@ -1420,205 +1416,197 @@ class PCIRNNAlgorithm:
             trajectories = list(env_trajectories.values())
   
         # Compute GAE on full trajectories before chunking
-        try:
-            # 2. Compute causal rewards for each trajectory
-            for traj in trajectories:
-                if len(traj) == 0:
+        # 2. Compute causal rewards for each trajectory
+        for traj in trajectories:
+            if len(traj) == 0:
+                continue
+            # Prepare data for causal reward computation
+            B = len(traj)
+            N = self.num_agents
+            
+            full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in traj]).to(self.device)
+            actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(N)] for t in traj], dtype=torch.long, device=self.device)
+            rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
+            dones_batch = torch.tensor([[t['dones'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
+            
+            # Prepare z_t (proxy variable)
+            # z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device)
+            z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) # prev rewards
+            
+            # Prepare w_t (other agents' observations)
+            expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
+            mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, self.obs_dim)
+            w_t_all = expanded_obs[mask].view(B, N, (N-1)*self.obs_dim)
+            
+            # Prepare hidden states
+            hidden_states_batch = {}
+            if 'hidden_states' in traj[0] and traj[0]['hidden_states'] is not None:
+                # Check if any agent has hidden states
+                for agent_id in range(N):
+                    if agent_id in traj[0]['hidden_states']:
+                        p_states = torch.stack([t['hidden_states'][agent_id][0] for t in traj]).to(self.device) # actor hidden state
+                        v_states = torch.stack([t['hidden_states'][agent_id][1] for t in traj]).to(self.device) # critic hidden state
+                        hidden_states_batch[agent_id] = (p_states, v_states)
+            
+            # Extract available actions
+            available_actions_batch = {}
+            if 'available_actions' in traj[0] and traj[0]['available_actions'] is not None:
+                for agent_id in range(N):
+                    if agent_id in traj[0]['available_actions']:
+                        avail_list = [t['available_actions'][agent_id] for t in traj]
+                        available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
+            
+            # Compute causal rewards
+            with torch.no_grad():
+                C_matrix = self.compute_causal_rewards(
+                    w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
+                    hidden_states_batch=hidden_states_batch,
+                    dones_batch=dones_batch,
+                    baseline_type='weighted',
+                    available_actions_batch=available_actions_batch
+                )
+                # merging 1. summation
+                delta = C_matrix.sum(dim=2)
+                # merging 2. max
+                # delta = C_matrix.max(dim=2).values
+            
+                # delta = torch.clamp(delta, min=0.0) # same as ReLU
+                delta[torch.abs(delta) < self.clip_delta] = 0.0
+                
+                # compute shaped rewards
+                # (1-causal_lambda) * r^i + causal_lambda * causal_margin( = r - h^{\pi^i}(a', a^{-i}) )
+                if self.causal_lambda_adaptive_per_agent:
+                    causal_lambdas = torch.tensor([
+                        self.get_current_causal_lambda(agent_id=i) for i in range(N)
+                    ], device=self.device).unsqueeze(0)
+                    shaped_rewards_all = (1-causal_lambdas) * rewards_batch + causal_lambdas * delta
+                else:
+                    shaped_rewards_all = (1-self.get_current_causal_lambda()) * rewards_batch + self.get_current_causal_lambda() * delta
+                shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
+
+                # Store shaped rewards and delta in transitions
+                for t_idx, t in enumerate(traj):
+                    t['shaped_rewards'] = {agent_id: shaped_rewards_all[t_idx, agent_id].item() for agent_id in range(N)}
+                    # Store delta for logging
+                    if 'delta' not in t:
+                        t['delta'] = {}
+                    for agent_id in range(N):
+                        t['delta'][agent_id] = delta[t_idx, agent_id].item()
+
+        # 3. Compute GAE for each trajectory using shaped rewards
+        for traj in trajectories:
+            if len(traj) == 0:
+                continue
+            
+            # For each agent, compute GAE
+            for agent_id in range(self.num_agents):
+                if agent_id not in traj[0]['bold_o_t']:
                     continue
-                # Prepare data for causal reward computation
-                B = len(traj)
-                N = self.num_agents
                 
-                full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in traj]).to(self.device)
-                actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(N)] for t in traj], dtype=torch.long, device=self.device)
-                rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
-                dones_batch = torch.tensor([[t['dones'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
+                # Extract agent observations
+                agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
+                agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
+                agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
                 
-                # Prepare z_t (proxy variable)
-                # z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device)
-                z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) # prev rewards
+                # Initial hidden state for value network
+                _, v_h0 = traj[0]['hidden_states'][agent_id]
+                v_h0 = v_h0.to(self.device).unsqueeze(0)
                 
-                # Prepare w_t (other agents' observations)
-                expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
-                mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, self.obs_dim)
-                w_t_all = expanded_obs[mask].view(B, N, (N-1)*self.obs_dim)
-                
-                # Prepare hidden states
-                hidden_states_batch = {}
-                if 'hidden_states' in traj[0] and traj[0]['hidden_states'] is not None:
-                    # Check if any agent has hidden states
-                    for agent_id in range(N):
-                        if agent_id in traj[0]['hidden_states']:
-                            p_states = torch.stack([t['hidden_states'][agent_id][0] for t in traj]).to(self.device) # actor hidden state
-                            v_states = torch.stack([t['hidden_states'][agent_id][1] for t in traj]).to(self.device) # critic hidden state
-                            hidden_states_batch[agent_id] = (p_states, v_states)
-                
-                # Extract available actions
-                available_actions_batch = {}
-                if 'available_actions' in traj[0] and traj[0]['available_actions'] is not None:
-                    for agent_id in range(N):
-                        if agent_id in traj[0]['available_actions']:
-                            avail_list = [t['available_actions'][agent_id] for t in traj]
-                            available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
-                
-                # Compute causal rewards
+                # Compute values for entire trajectory
                 with torch.no_grad():
-                    C_matrix = self.compute_causal_rewards(
-                        w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
-                        hidden_states_batch=hidden_states_batch,
-                        dones_batch=dones_batch,
-                        baseline_type='weighted',
-                        available_actions_batch=available_actions_batch
+                    last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device)
+                    last_mask = 1.0 - traj[-1]['dones'][agent_id]
+
+                    # Extended sequence: (T+1, 1, D)
+                    extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
+                                            last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
+                    extended_masks = torch.cat([agent_masks_seq,
+                                                torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
+                    
+                    all_values, _ = self.agents[agent_id].value_net(extended_obs, v_h0, extended_masks)
+                    values = all_values[:-1].view(-1) # value of agent_id
+                    next_val = all_values[-1].item() * last_mask # next value
+                    
+                    # Compute GAE
+                    advantages, returns = self.compute_gae(
+                        agent_rewards_seq.tolist(),
+                        values.tolist(),
+                        next_val,
+                        agent_dones_seq.tolist()
                     )
-                    # merging 1. summation
-                    delta = C_matrix.sum(dim=2)
-                    # merging 2. max
-                    # delta = C_matrix.max(dim=2).values
-                
-                    # delta = torch.clamp(delta, min=0.0) # same as ReLU
-                    delta[torch.abs(delta) < self.clip_delta] = 0.0
                     
-                    # compute shaped rewards
-                    # (1-causal_lambda) * r^i + causal_lambda * causal_margin( = r - h^{\pi^i}(a', a^{-i}) )
-                    if self.causal_lambda_adaptive_per_agent:
-                        causal_lambdas = torch.tensor([
-                            self.get_current_causal_lambda(agent_id=i) for i in range(N)
-                        ], device=self.device).unsqueeze(0)
-                        shaped_rewards_all = (1-causal_lambdas) * rewards_batch + causal_lambdas * delta
-                    else:
-                        shaped_rewards_all = (1-self.get_current_causal_lambda()) * rewards_batch + self.get_current_causal_lambda() * delta
-                    shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
-
-                    # Store shaped rewards and delta in transitions
+                    # Store in transitions
                     for t_idx, t in enumerate(traj):
-                        t['shaped_rewards'] = {agent_id: shaped_rewards_all[t_idx, agent_id].item() for agent_id in range(N)}
-                        # Store delta for logging
-                        if 'delta' not in t:
-                            t['delta'] = {}
-                        for agent_id in range(N):
-                            t['delta'][agent_id] = delta[t_idx, agent_id].item()
+                        if 'advantages' not in t:
+                            t['advantages'] = {}
+                            t['returns'] = {}
+                        t['advantages'][agent_id] = advantages[t_idx]
+                        t['returns'][agent_id] = returns[t_idx]
+        
+        # 4. Create chunks from trajectories with Padding
+        all_chunks = []
+        chunk_len = self.rnn_chunk_length
+        
+        for traj in trajectories:
+            if len(traj) == 0: continue
+            
+            # Add active_mask to existing transitions
+            for t in traj:
+                t['active_mask'] = 1.0
+            
+            T_traj = len(traj)
+            num_full_chunks = T_traj // chunk_len
+            remainder = T_traj % chunk_len
+            
+            # Full chunks
+            for i in range(num_full_chunks):
+                start = i * chunk_len
+                end = start + chunk_len
+                chunk = traj[start:end]
+                all_chunks.append(chunk)
+            
+            # Handling remainder with padding
+            if remainder > 0:
+                last_chunk = traj[num_full_chunks * chunk_len:]
+                
+                # Create dummy padding transitions
+                # We copy the last transition but set active_mask to 0
+                padding_len = chunk_len - remainder
+                last_valid_trans = last_chunk[-1]
+                
+                padding_chunk = []
+                for _ in range(padding_len):
+                    # Deep copy for safety, though only active_mask matters
+                    # Ideally, we just need structure. 
+                    # To save memory, we can use reference but must be careful not to mutate shared objects.
+                    # Since we only read in update_agents, we can create a shallow copy dict 
+                    # and just overwrite active_mask.
+                    pad_t = last_valid_trans.copy() 
+                    pad_t['active_mask'] = 0.0
+                    # Ensure nested dicts (actions, rewards) are safe if we modified them, 
+                    # but we only read.
+                    padding_chunk.append(pad_t)
+                
+                full_last_chunk = last_chunk + padding_chunk
+                all_chunks.append(full_last_chunk)
 
-            # 3. Compute GAE for each trajectory using shaped rewards
-            for traj in trajectories:
-                if len(traj) == 0:
-                    continue
-                
-                # For each agent, compute GAE
-                for agent_id in range(self.num_agents):
-                    if agent_id not in traj[0]['bold_o_t']:
-                        continue
-                    
-                    # Extract agent observations
-                    agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
-                    agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
-                    agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
-                    agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
-                    
-                    # Initial hidden state for value network
-                    _, v_h0 = traj[0]['hidden_states'][agent_id]
-                    v_h0 = v_h0.to(self.device).unsqueeze(0)
-                    
-                    # Compute values for entire trajectory
-                    with torch.no_grad():
-                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device)
-                        last_mask = 1.0 - traj[-1]['dones'][agent_id]
-
-                        # Extended sequence: (T+1, 1, D)
-                        extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
-                                                last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
-                        extended_masks = torch.cat([agent_masks_seq,
-                                                   torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
-                        
-                        all_values, _ = self.agents[agent_id].value_net(extended_obs, v_h0, extended_masks)
-                        values = all_values[:-1].view(-1) # value of agent_id
-                        next_val = all_values[-1].item() * last_mask # next value
-                        
-                        # Compute GAE
-                        advantages, returns = self.compute_gae(
-                            agent_rewards_seq.tolist(),
-                            values.tolist(),
-                            next_val,
-                            agent_dones_seq.tolist()
-                        )
-                        
-                        # Store in transitions
-                        for t_idx, t in enumerate(traj):
-                            if 'advantages' not in t:
-                                t['advantages'] = {}
-                                t['returns'] = {}
-                            t['advantages'][agent_id] = advantages[t_idx]
-                            t['returns'][agent_id] = returns[t_idx]
-            
-            # 4. Create chunks from trajectories with Padding
-            all_chunks = []
-            chunk_len = self.rnn_chunk_length
-            
-            for traj in trajectories:
-                if len(traj) == 0: continue
-                
-                # Add active_mask to existing transitions
-                for t in traj:
-                    t['active_mask'] = 1.0
-                
-                T_traj = len(traj)
-                num_full_chunks = T_traj // chunk_len
-                remainder = T_traj % chunk_len
-                
-                # Full chunks
-                for i in range(num_full_chunks):
-                    start = i * chunk_len
-                    end = start + chunk_len
-                    chunk = traj[start:end]
-                    all_chunks.append(chunk)
-                
-                # Handling remainder with padding
-                if remainder > 0:
-                    last_chunk = traj[num_full_chunks * chunk_len:]
-                    
-                    # Create dummy padding transitions
-                    # We copy the last transition but set active_mask to 0
-                    padding_len = chunk_len - remainder
-                    last_valid_trans = last_chunk[-1]
-                    
-                    padding_chunk = []
-                    for _ in range(padding_len):
-                        # Deep copy for safety, though only active_mask matters
-                        # Ideally, we just need structure. 
-                        # To save memory, we can use reference but must be careful not to mutate shared objects.
-                        # Since we only read in update_agents, we can create a shallow copy dict 
-                        # and just overwrite active_mask.
-                        pad_t = last_valid_trans.copy() 
-                        pad_t['active_mask'] = 0.0
-                        # Ensure nested dicts (actions, rewards) are safe if we modified them, 
-                        # but we only read.
-                        padding_chunk.append(pad_t)
-                    
-                    full_last_chunk = last_chunk + padding_chunk
-                    all_chunks.append(full_last_chunk)
-
-            # 5. Shuffle chunks for IID 
-            # random.shuffle(all_chunks)
-            
-            # 5. Create batches
-            n_chunks_per_batch = max(1, len(all_chunks) // self.num_batches)
-            chunk_batches = [all_chunks[i:i + n_chunks_per_batch] 
-                           for i in range(0, len(all_chunks), n_chunks_per_batch)]
-            
-            # 6. Flatten chunks back to transitions
-            batches = []
-            for b in chunk_batches:
-                flat_batch = []
-                for chunk in b:
-                    flat_batch.extend(chunk)
-                if flat_batch:
-                    batches.append(flat_batch)
-                    
-        except Exception as e:
-            print(f"[ERROR] Failed to restructure rollout data: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fallback - just use raw transitions/episodes as batches if possible, but structure likely mismatch
-            return {} 
+        # 5. Shuffle chunks for IID 
+        # random.shuffle(all_chunks)
+        
+        # 5. Create batches
+        n_chunks_per_batch = max(1, len(all_chunks) // self.num_batches)
+        chunk_batches = [all_chunks[i:i + n_chunks_per_batch] 
+                        for i in range(0, len(all_chunks), n_chunks_per_batch)]
+        
+        # 6. Flatten chunks back to transitions
+        batches = []
+        for b in chunk_batches:
+            flat_batch = []
+            for chunk in b:
+                flat_batch.extend(chunk)
+            if flat_batch:
+                batches.append(flat_batch)
             
         # Clear buffers
         if self.use_episode_buffer:

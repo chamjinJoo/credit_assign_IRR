@@ -14,7 +14,7 @@ algorithm:
   gamma: 0.99
   gae_lambda: 0.95
   rnn_chunk_length: 50
-  clip_epsilon: 0.1 # clip_range 0.1 as the SMACv2 paper
+  clip_epsilon: 0.2 # clip_range 0.1 as the SMACv2 paper
   entropy_coef: 0.01
   value_coef: 0.5
   max_grad_norm: 0.5

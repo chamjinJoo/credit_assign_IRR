@@ -7,7 +7,7 @@ map_name="3s_vs_5z"
 config="configs/smac.yaml" # using basic config as template
 
 # model setting
-model="mappo-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
+model="r-mappo" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
 recurrent_N=1
 global_reward=true

@@ -12,7 +12,7 @@ from algorithms.networks.coma_rnn_critic import COMARNNCritic
 from utils.buffer import EpisodeBuffer
 
 
-class COMARNNAgent:
+class rCOMAAgent:
     """
     Single agent for COMA-RNN algorithm.
     Uses shared RNN-based policy network (pymarl-style parameter sharing).
@@ -122,7 +122,7 @@ class COMARNNAgent:
         return action, log_prob, prev_states
 
 
-class COMARNNAlgorithm:
+class rCOMAAlgorithm:
     """
     COMA (Counterfactual Multi-Agent Policy Gradients) Algorithm with RNN support.
     
@@ -185,7 +185,7 @@ class COMARNNAlgorithm:
         # Create agents with shared policy
         self.agents = {}
         for i in range(num_agents):
-            self.agents[i] = COMARNNAgent(
+            self.agents[i] = rCOMAAgent(
                 agent_id=i,
                 obs_dim=obs_dim,
                 action_dim=action_dim,

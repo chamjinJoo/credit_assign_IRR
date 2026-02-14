@@ -4,11 +4,8 @@ env="LBForaging"
 config="configs/lbforaging.yaml"
 
 # model setting
-model="pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=1.0
-clip_delta=0.01
+model="r-mappo" # [pci-rnn, pci-mappo, mappo, ippo]
 use_value_parameter_sharing=true
-causal_lambda_adaptive_per_agent=false
 recurrent_N=1
 
 # training and logging 
@@ -25,5 +22,4 @@ conda activate pcimarl
 
 python main.py --env ${env} --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --recurrent-N ${recurrent_N} --n-rollout-threads ${n_rollout_threads} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --clip-delta ${clip_delta} --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-lbf

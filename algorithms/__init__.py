@@ -4,21 +4,23 @@ from .non_rnn.mappo import MAPPOAlgorithm
 from .non_rnn.ippo import IPPOAlgorithm
 from .non_rnn.coma import COMAAlgorithm
 
-from .pci_rnn import PCIRNNAlgorithm
-from .mappo_rnn import MAPPORNNAlgorithm
-from .ippo_rnn import IPPORNNAlgorithm
-from .q_pci_rnn import Q_PCIRNNAlgorithm
-from .coma_rnn import COMARNNAlgorithm
+from .r_pci import rPCIAlgorithm
+from .r_mappo import rMAPPOAlgorithm
+from .r_ippo import rIPPOAlgorithm
+from .r_q_pci import rQPCIAlgorithm
+from .r_coma import rCOMAAlgorithm
 
 __all__ = [
     "PCIMAPPOAlgorithm",
-    "PCIRNNAlgorithm",
     "MAPPOAlgorithm", 
-    "MAPPORNNAlgorithm",
-    "IPPOAlgorithm",
-    "IPPORNNAlgorithm",
     "X_PCIAlgorithm",
     "COMAAlgorithm",
-    "COMARNNAlgorithm",
-    "Q_PCIRNNAlgorithm"
+
+    "rPCIAlgorithm",
+    "rMAPPOAlgorithm",
+    "rIPPOAlgorithm",
+    "IPPOAlgorithm",
+    "rCOMAAlgorithm",
+    
+    "rQPCIAlgorithm"
 ]

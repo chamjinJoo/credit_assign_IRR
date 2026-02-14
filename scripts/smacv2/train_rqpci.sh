@@ -5,7 +5,7 @@ env="SMACv2"
 config="configs/smacv2.yaml" 
 
 # model setting
-model="q_pci-rnn" # [pci-rnn, pci-mappo, mappo, ippo]
+model="rqpci" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=1.0
 clip_delta=0.01
 causal_lambda_adaptive_per_agent=false
@@ -28,4 +28,4 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 python main.py --env ${env} --config ${config} --model ${model} --n-rollout-threads ${n_rollout_threads} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
     --clip-delta ${clip_delta} --causal-lambda ${causal_lambda} --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} # --use-wandb --wandb-project pci-marl-smacv2 
+    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smacv2 
