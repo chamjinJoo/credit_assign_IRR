@@ -41,6 +41,22 @@ class RBFKernel(nn.Module):
         dists_sq = torch.sum((x1 - x2)**2, dim=-1) 
         return torch.exp(-gamma * dists_sq)
 
+class ConditionalMeanNet(nn.Module):
+    def __init__(self, z_dim, x_dim, action_dim, emb_dim=8, hidden=64):
+        super().__init__()
+        self.a_emb = nn.Embedding(action_dim, emb_dim)
+        self.net = nn.Sequential(
+            nn.Linear(z_dim + x_dim + emb_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1),
+        )
+    def forward(self, z, a, x):
+        ea = self.a_emb(a)          # (B, emb_dim)
+        inp = torch.cat([z, x, ea], dim=-1)
+        return self.net(inp).squeeze(-1)  # (B,)
+
 class rPCIAgent:
     def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, recurrent_N: int = 1, lr_actor: float = 3e-4, lr_critic: float = 3e-4):
         self.agent_id = agent_id
@@ -206,7 +222,7 @@ class rPCIAlgorithm:
         action_dim: int,
         w_dim: int, 
         hidden_dim: int = 64,
-        recurrent_N: int = 1, # [ADDED] RNN layers
+        recurrent_N: int = 1, # RNN layers
         lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
@@ -240,7 +256,7 @@ class rPCIAlgorithm:
         # Value network parameter sharing
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
-        use_episode_buffer: bool = False, # [ADDED] Use EpisodeBuffer instead of TransitionBuffer
+        use_episode_buffer: bool = False, # Use EpisodeBuffer instead of TransitionBuffer
     ):
         self.env = env
         self.num_agents = num_agents
@@ -327,14 +343,17 @@ class rPCIAlgorithm:
             self.value_nets = {agent_id: agent.value_net for agent_id, agent in self.agents.items()}
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
+        x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N # x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
             action_dim=action_dim,
             num_agents=num_agents,
             w_dim=obs_dim * (num_agents-1),
             outcome_dim=num_agents,
-            hidden_dim=hidden_dim,
+            # hidden_dim=hidden_dim, 
+            hidden_dim=hidden_dim*2, # 128 for SMAC
             action_embedding_dim=8,
-            x_dim=obs_dim + (num_agents-1) * hidden_dim * recurrent_N # x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+            x_dim=x_dim
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
@@ -356,6 +375,7 @@ class rPCIAlgorithm:
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
+
         # freeze the feature_projector
         for parmam in self.feature_projector.parameters():
             parmam.requires_grad = False
@@ -551,7 +571,12 @@ class rPCIAlgorithm:
             K_z = self.critic_kernel_z(kernel_feat_z)
 
             reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
-            solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
+            try:
+                solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
+            except RuntimeError:
+                # Fallback for singular matrix
+                reg_K_z = reg_K_z + 1e-3 * torch.eye(current_batch_size, device=device)
+                solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
             
             # Compute per-sample loss
             per_sample_loss_h = (residuals_mb * (K_z @ solved_residuals)).sum(dim=1) # [B]
@@ -1577,15 +1602,8 @@ class rPCIAlgorithm:
                 
                 padding_chunk = []
                 for _ in range(padding_len):
-                    # Deep copy for safety, though only active_mask matters
-                    # Ideally, we just need structure. 
-                    # To save memory, we can use reference but must be careful not to mutate shared objects.
-                    # Since we only read in update_agents, we can create a shallow copy dict 
-                    # and just overwrite active_mask.
                     pad_t = last_valid_trans.copy() 
                     pad_t['active_mask'] = 0.0
-                    # Ensure nested dicts (actions, rewards) are safe if we modified them, 
-                    # but we only read.
                     padding_chunk.append(pad_t)
                 
                 full_last_chunk = last_chunk + padding_chunk

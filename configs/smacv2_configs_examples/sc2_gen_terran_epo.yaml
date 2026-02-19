@@ -60,5 +60,5 @@ heuristic_ai: False
 debug: False
 
 # Most severe partial obs setting:
-prob_obs_enemy: 0.0
+prob_obs_enemy: 0.5
 action_mask: False

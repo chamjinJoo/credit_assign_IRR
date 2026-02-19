@@ -162,3 +162,4 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 # 26.02.12
 * Critical theoretic defect: when utilizing outcome bridge function, we should calculate the conditional expectattion $\mathbb{E}_{w\sim p(w|z,a,x)}[h(a,w,x)|Z,A,X]$. But we did not.
+    * justifying  as a single-sample MonteCarlo?

@@ -6,7 +6,7 @@ config="configs/smacv2.yaml"
 
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=1.0
+causal_lambda=0.1
 clip_delta=0.01
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
@@ -14,8 +14,9 @@ recurrent_N=1
 
 # training and logging 
 n_rollout_threads=8
-max_iterations=3000
-max_steps_per_iteration=3200 # 8 episode for 10gen scenarios (episode limit is 200 steps)
+max_iterations=1500
+max_steps_per_iteration=6400 # 8 episode for 10gen scenarios (episode limit is 200 steps)
+episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically 
 log_interval=2
 device="cpu"  # recommended to use cuda if available
 seed=42
@@ -33,6 +34,7 @@ xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --n-rollout-threads ${n_rollout_threads} \
     --max-steps ${max_steps_per_iteration} \
+    --episodes-per-iteration ${episodes_per_iteration} \
     --max-iterations ${max_iterations} \
     --clip-delta ${clip_delta} \
     --causal-lambda ${causal_lambda} \
