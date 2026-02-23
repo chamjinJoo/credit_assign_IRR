@@ -257,6 +257,7 @@ class rPCIAlgorithm:
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
         use_episode_buffer: bool = False, # Use EpisodeBuffer instead of TransitionBuffer
+        use_centralized_critic: bool = False, # MAPPO-style centralized critic
     ):
         self.env = env
         self.num_agents = num_agents
@@ -271,6 +272,7 @@ class rPCIAlgorithm:
         self.causal_mini_batch_size = causal_mini_batch_size 
         self.use_value_parameter_sharing = use_value_parameter_sharing
         self.use_episode_buffer = use_episode_buffer
+        self.use_centralized_critic = use_centralized_critic
 
         # for causal intrinsic reward
         self.clip_delta = clip_delta
@@ -323,9 +325,24 @@ class rPCIAlgorithm:
                 lr_critic=lr_critic
             )
         
-        # Value network parameter sharing 설정
-        if self.use_value_parameter_sharing:
-            # 하나의 shared value network 생성
+        # Value network 설정
+        if self.use_centralized_critic:
+            # MAPPO-style centralized critic: 전체 에이전트 관측값 결합 입력, 에이전트별 value 출력
+            self.value_net = RNNValueNetwork(
+                obs_dim=obs_dim * num_agents,
+                hidden_dim=hidden_dim,
+                recurrent_N=recurrent_N,
+                out_dim=num_agents  # 에이전트별 value 출력 (value-return 일관성 보장)
+            )
+            self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
+            self.rnn_state_value = None  # 초기화는 reset_agents에서
+            # 에이전트별 value_net은 사용하지 않지만, 호환성을 위해 딕셔너리 유지
+            self.value_nets = {agent_id: self.value_net for agent_id in range(num_agents)}
+            self.value_optimizers = {agent_id: self.value_optimizer for agent_id in range(num_agents)}
+            print(f'[R-PCI] Using MAPPO-style centralized critic (input_dim={obs_dim * num_agents}, out_dim={num_agents})')
+
+        elif self.use_value_parameter_sharing:
+            # 하나의 shared value network 생성 (IPPO-style, 개별 관측값 입력)
             self.shared_value_net = RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N)
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
@@ -343,7 +360,10 @@ class rPCIAlgorithm:
             self.value_nets = {agent_id: agent.value_net for agent_id, agent in self.agents.items()}
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
-        x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N # x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+        ## option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+        x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N 
+        ## option 2. x = (o^i_t, \mathbf{h}_{t-1})
+        # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N 
 
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
             action_dim=action_dim,
@@ -351,7 +371,7 @@ class rPCIAlgorithm:
             w_dim=obs_dim * (num_agents-1),
             outcome_dim=num_agents,
             # hidden_dim=hidden_dim, 
-            hidden_dim=hidden_dim*2, # 128 for SMAC
+            hidden_dim=hidden_dim, # 128 for SMAC -> 64 is enough?
             action_embedding_dim=8,
             x_dim=x_dim
         )
@@ -380,8 +400,8 @@ class rPCIAlgorithm:
         for parmam in self.feature_projector.parameters():
             parmam.requires_grad = False
 
-        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)
-        self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device)
+        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
+        self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
         
         self.stabilizer_lambda = 1.0
         self.tikhonov_gamma = 1e-4
@@ -398,9 +418,11 @@ class rPCIAlgorithm:
     def _move_networks_to_device(self):
         for agent in self.agents.values():
             agent.policy_net.to(self.device)
-            if not self.use_value_parameter_sharing:
+            if not self.use_value_parameter_sharing and not self.use_centralized_critic:
                 agent.value_net.to(self.device)
-        if self.use_value_parameter_sharing:
+        if self.use_centralized_critic:
+            self.value_net.to(self.device)
+        elif self.use_value_parameter_sharing:
             self.shared_value_net.to(self.device)
         self.outcome_bridge_net.to(self.device)
         self.action_bridge_net.to(self.device)
@@ -438,7 +460,6 @@ class rPCIAlgorithm:
         # joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
         joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
         # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
-        # joint_a_prev_onehot = F.one_hot(joint_a_prev, num_classes=self.action_dim).view(batch_size, -1).float()
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
         action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         reward_batch = torch.tensor([[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
@@ -472,15 +493,22 @@ class rPCIAlgorithm:
                 h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
         H_all = torch.stack(h_list, dim=1) # (B, N, RecN*H)
 
-        # 2. Get others' hidden states for each agent i
+        # 2. Concat obs and hidden states
+        ########################################################################################
+        ## Option 1. x = {o^i_t, h^{-i}_{t-1}}
         expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1) # (B, N, N, RecN*H)
         mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
         H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1) # (B*N, (N-1)*RecN*H)
-
-        # 3. Concatenate with ego observation (obs_super is already B*N, ObsDim)
         obs_super = obs_batch.view(-1, self.obs_dim)
         X_super = torch.cat([obs_super, H_others_super], dim=1)
 
+        ## Option 2. x = {o^i_t, \mathbf{h}_{t-1}}
+        # H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
+        # H_all_super = H_all_expanded.reshape(batch_size * num_agents, -1)   # (B*N, N*RecN*H)
+        # obs_super = obs_batch.view(-1, self.obs_dim)
+        # X_super = torch.cat([obs_super, H_all_super], dim=1)
+        ########################################################################################
+        
         # Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
         Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
@@ -703,12 +731,18 @@ class rPCIAlgorithm:
         """Reset agent hidden states."""
         for agent in self.agents.values():
             agent.reset_rnn_state(device=self.device)
+        if self.use_centralized_critic:
+            self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
         self.last_dones = {i: False for i in range(self.num_agents)}
     
     def reset_agents_batch(self, n_envs: int):
         """Reset agent hidden states for batch mode (parallel environments)."""
         for agent in self.agents.values():
             agent.reset_rnn_states_batch(n_envs, device=self.device)
+        if self.use_centralized_critic:
+            self.rnn_states_value_batch = torch.zeros(
+                n_envs, self.recurrent_N, self.hidden_dim, device=self.device
+            )
         # Track done status for each agent in each environment
         self.last_dones_batch = {i: [False] * n_envs for i in range(self.num_agents)}
    
@@ -717,6 +751,22 @@ class rPCIAlgorithm:
         self.temp_hidden_states = {} # Store current states for store_transition
         self.temp_masks = {} # Store masks used
         self.temp_log_probs = {} # Store log_probs from rollout
+        
+        # Centralized critic: compute central value once
+        if self.use_centralized_critic:
+            mask0 = 1.0 if not self.last_dones.get(0, False) else 0.0
+            mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
+            global_obs = self._concatenate_observations(observations)
+            with torch.no_grad():
+                curr_rnn_state = self.rnn_state_value.unsqueeze(0)
+                _, next_rnn_state = self.value_net(
+                    global_obs.unsqueeze(0),
+                    curr_rnn_state,
+                    mask_tensor0.unsqueeze(0)
+                )
+                self.rnn_state_value = next_rnn_state.squeeze(0)
+                central_v_state = curr_rnn_state.squeeze(0).clone()
+        
         for agent_id, obs in observations.items():
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
             mask_tensor = torch.tensor([mask], dtype=torch.float32, device=self.device)
@@ -728,8 +778,11 @@ class rPCIAlgorithm:
             # Policy
             action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
-            # Value (Update state)
-            _, v_state = self.agents[agent_id].get_value(obs, mask_tensor)
+            if self.use_centralized_critic:
+                v_state = central_v_state
+            else:
+                # Value (Update state) - IPPO style
+                _, v_state = self.agents[agent_id].get_value(obs, mask_tensor)
             
             actions[agent_id] = (action, log_prob)
             self.temp_hidden_states[agent_id] = (p_state, v_state)
@@ -762,6 +815,28 @@ class rPCIAlgorithm:
         self.temp_hidden_states_batch = [{} for _ in range(n_envs)]
         self.temp_masks_batch = [{} for _ in range(n_envs)]
         
+        # Centralized critic: compute central values in batch
+        if self.use_centralized_critic:
+            global_obs_list = []
+            for i in range(n_envs):
+                global_obs_list.append(self._concatenate_observations(observations_batch[i]))
+            global_obs_batch_tensor = torch.stack(global_obs_list).to(self.device)
+            
+            # Masks for central critic (use agent 0's done status)
+            central_masks = torch.tensor([
+                [1.0 if not self.last_dones_batch[0][env_idx] else 0.0]
+                for env_idx in range(n_envs)
+            ], dtype=torch.float32, device=self.device)
+            
+            with torch.no_grad():
+                curr_states_value = self.rnn_states_value_batch.clone()
+                _, next_states_value = self.value_net(
+                    global_obs_batch_tensor,
+                    self.rnn_states_value_batch,
+                    central_masks
+                )
+                self.rnn_states_value_batch = next_states_value
+        
         # Process each agent
         for agent_id in range(self.num_agents):
             # Stack observations from all environments
@@ -791,11 +866,12 @@ class rPCIAlgorithm:
                 avail_actions_stacked
             )
             
-            # Get values in batch
-            _, v_states = self.agents[agent_id].get_value_batch(
-                obs_stacked,
-                masks_stacked
-            )
+            if not self.use_centralized_critic:
+                # Get values in batch (IPPO style)
+                _, v_states = self.agents[agent_id].get_value_batch(
+                    obs_stacked,
+                    masks_stacked
+                )
             
             # Distribute results to each environment
             for env_idx in range(n_envs):
@@ -803,9 +879,13 @@ class rPCIAlgorithm:
                     actions[env_idx].item(),
                     log_probs[env_idx].item()
                 )
+                if self.use_centralized_critic:
+                    v_state_for_env = curr_states_value[env_idx]
+                else:
+                    v_state_for_env = v_states[env_idx].clone()
                 self.temp_hidden_states_batch[env_idx][agent_id] = (
                     p_states[env_idx].clone(),
-                    v_states[env_idx].clone()
+                    v_state_for_env
                 )
                 self.temp_masks_batch[env_idx][agent_id] = masks_stacked[env_idx, 0].item()
         
@@ -921,9 +1001,16 @@ class rPCIAlgorithm:
                 self.agents[agent_id].rnn_states_policy_batch[env_idx] = torch.zeros(
                     self.recurrent_N, self.hidden_dim, device=self.device
                 )
-                self.agents[agent_id].rnn_states_value_batch[env_idx] = torch.zeros(
-                    self.recurrent_N, self.hidden_dim, device=self.device
-                )
+                if not self.use_centralized_critic:
+                    self.agents[agent_id].rnn_states_value_batch[env_idx] = torch.zeros(
+                        self.recurrent_N, self.hidden_dim, device=self.device
+                    )
+        
+        # Central Value RNN Reset (if global done)
+        if self.use_centralized_critic and any(dones.values()):
+            self.rnn_states_value_batch[env_idx] = torch.zeros(
+                self.recurrent_N, self.hidden_dim, device=self.device
+            )
 
     def finish_episode(self, env_id: int = 0):
         """Finish current episode if using EpisodeBuffer."""
@@ -1054,12 +1141,20 @@ class rPCIAlgorithm:
                 H_all_inf = torch.stack(h_list_inf, dim=1) # (curr_bs, N, RecN*H)
 
                 # get others hiddens
+                ########################################################################
+                ## Option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
                 expanded_H_inf = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
                 mask_H_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, self.recurrent_N * self.hidden_dim)
                 H_others_inf = expanded_H_inf[mask_H_inf].view(curr_bs * num_agents, -1)
-
                 obs_flat = obs_b.view(-1, self.obs_dim)
                 x_flat = torch.cat([obs_flat, H_others_inf], dim=1)
+
+                ## Option 2. x = (o^i_t, \mathbf{h}_{t-1})
+                # H_all_inf_expanded = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                # H_all_inf_flat = H_all_inf_expanded.reshape(curr_bs * num_agents, -1)  # (curr_bs*N, N*RecN*H)
+                # obs_flat = obs_b.view(-1, self.obs_dim)
+                # x_flat = torch.cat([obs_flat, H_all_inf_flat], dim=1)
+                #######################################################################
 
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
@@ -1111,6 +1206,12 @@ class rPCIAlgorithm:
                     baseline = (r_hat_all * non_factual_mask.unsqueeze(2)).sum(dim=1) / (action_dim - 1)
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
+
+                # 개선: available_actions 마스크를 r_hat_all에도 적용
+                # 불가능한 action의 r_hat을 0으로 만들어 baseline에 기여하지 않도록 함
+                if available_actions_batch:
+                    avail_mask_flat = torch.stack([available_actions_batch[k][i:end] for k in range(num_agents)], dim=1).view(-1, action_dim)
+                    r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
 
                 # Opt 1) using real rewards
                 r_factual = rewards_flat
@@ -1386,28 +1487,84 @@ class rPCIAlgorithm:
                 agent_losses[f'agent_{agent_id}_policy_loss'] += policy_loss.item()
                 agent_losses[f'agent_{agent_id}_entropy_loss'] += entropy_loss.item()
                 
-                # [최적화] Value loss - v_h0는 이미 준비되어 있으므로 재사용
-                # Value forward는 gradient 계산을 위해 각 epoch마다 필요하지만,
-                # initial state는 동일하므로 재사용 가능
-                new_vals, _ = self.agents[agent_id].value_net(rnn_obs_batch, v_h0_batch, rnn_masks_batch)
+                if not self.use_centralized_critic:
+                    # IPPO-style per-agent value update
+                    new_vals, _ = self.agents[agent_id].value_net(rnn_obs_batch, v_h0_batch, rnn_masks_batch)
+                    
+                    # Masked Value Loss
+                    val_error = (new_vals.squeeze(1) - ret_batch) ** 2
+                    val_loss = (val_error * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                    
+                    self.agents[agent_id].value_optimizer.zero_grad()
+                    (self.value_coef * val_loss).backward()
+                    torch.nn.utils.clip_grad_norm_(self.agents[agent_id].value_net.parameters(), self.max_grad_norm)
+                    self.agents[agent_id].value_optimizer.step()
+                    
+                    agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
+
+        # === Central Value Update (only if centralized critic) ===
+        if self.use_centralized_critic:
+            # Prepare global observation data for central value network
+            global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data]).to(self.device)
+            global_masks_seq = torch.tensor([t['masks'][0] for t in batch_data], device=self.device).unsqueeze(1)
+            
+            # Central Value Hidden States (use agent 0's v_state)
+            v_states_all_central = torch.stack([t['hidden_states'][0][1] for t in batch_data]).to(self.device)
+            
+            # Per-agent returns for N-output centralized critic (no averaging)
+            all_returns_list = [[t['returns'][i] for i in range(self.num_agents)] for t in batch_data]
+            all_returns = torch.tensor(all_returns_list, dtype=torch.float32, device=self.device)  # (T, N)
+
+            T_total = global_obs_seq.size(0)
+            chunk_len = self.rnn_chunk_length
+            num_chunks = T_total // chunk_len
+            
+            if num_chunks > 0:
+                global_obs_batch = self._chunk_sequence(global_obs_seq, chunk_len)
+                global_masks_batch = self._chunk_sequence(global_masks_seq, chunk_len)
                 
-                # Masked Value Loss
-                # val_loss = F.mse_loss(new_vals.squeeze(1), ret_batch) # Old mean
-                val_error = (new_vals.squeeze(1) - ret_batch) ** 2
-                val_loss = (val_error * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                if 'active_mask' in batch_data[0]:
+                    active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
+                    active_masks_chunked = self._chunk_sequence(active_masks, chunk_len)
+                    active_masks_batch = active_masks_chunked.reshape(-1)
+                else:
+                    active_masks_batch = torch.ones(num_chunks * chunk_len, device=self.device)
                 
-                self.agents[agent_id].value_optimizer.zero_grad()
+                chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
+                v_h0_batch = v_states_all_central[chunk_indices]
+                # Per-agent returns: (L*B, N)
+                global_ret_batch = self._chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
+            else:
+                global_obs_batch = global_obs_seq.unsqueeze(1)
+                global_masks_batch = global_masks_seq
+                active_masks_batch = torch.ones(T_total, device=self.device)
+                v_h0_batch = v_states_all_central[0].unsqueeze(0)
+                global_ret_batch = all_returns  # (T, N)
+            
+            for _ in range(self.ppo_epochs):
+                # new_vals: (..., num_agents)
+                new_vals, _ = self.value_net(global_obs_batch, v_h0_batch, global_masks_batch)
+                # val_error: (L*B, N) — 에이전트별 value와 해당 에이전트의 return 비교
+                val_error = (new_vals.squeeze(1) - global_ret_batch) ** 2
+                # active_masks_batch를 N차원으로 확장하여 마스킹
+                val_loss = (val_error * active_masks_batch.unsqueeze(1)).sum() / (active_masks_batch.sum() * self.num_agents + 1e-8)
+                
+                self.value_optimizer.zero_grad()
                 (self.value_coef * val_loss).backward()
-                torch.nn.utils.clip_grad_norm_(self.agents[agent_id].value_net.parameters(), self.max_grad_norm)
-                self.agents[agent_id].value_optimizer.step()
+                torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), self.max_grad_norm)
+                self.value_optimizer.step()
                 
-                agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
+                agent_losses['value_loss'] += val_loss.item()
 
         for k in list(agent_losses.keys()):
             if 'delta' not in k:
                 if k == 'value_loss':
-                    total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
-                    agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
+                    if self.use_centralized_critic:
+                        # Centralized critic: value_loss is already summed over ppo_epochs
+                        agent_losses['value_loss'] /= self.ppo_epochs
+                    else:
+                        total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
+                        agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
                 else:
                     agent_losses[k] /= self.ppo_epochs
             elif 'sum' in k:
@@ -1507,6 +1664,7 @@ class rPCIAlgorithm:
                     shaped_rewards_all = (1-causal_lambdas) * rewards_batch + causal_lambdas * delta
                 else:
                     shaped_rewards_all = (1-self.get_current_causal_lambda()) * rewards_batch + self.get_current_causal_lambda() * delta
+                
                 shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
 
                 # Store shaped rewards and delta in transitions
@@ -1523,51 +1681,105 @@ class rPCIAlgorithm:
             if len(traj) == 0:
                 continue
             
-            # For each agent, compute GAE
-            for agent_id in range(self.num_agents):
-                if agent_id not in traj[0]['bold_o_t']:
-                    continue
+            if self.use_centralized_critic:
+                # === Centralized critic GAE (N-output) ===
+                T = len(traj)
+                global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in traj]).to(self.device)
+                global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
                 
-                # Extract agent observations
-                agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
-                agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
-                agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
-                agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                # Initial hidden state for central value network (agent 0's v_state)
+                v_h0 = traj[0]['hidden_states'][0][1].to(self.device).unsqueeze(0)
                 
-                # Initial hidden state for value network
-                _, v_h0 = traj[0]['hidden_states'][agent_id]
-                v_h0 = v_h0.to(self.device).unsqueeze(0)
-                
-                # Compute values for entire trajectory
                 with torch.no_grad():
-                    last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device)
-                    last_mask = 1.0 - traj[-1]['dones'][agent_id]
-
-                    # Extended sequence: (T+1, 1, D)
-                    extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
-                                            last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
-                    extended_masks = torch.cat([agent_masks_seq,
-                                                torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
+                    last_next_obs = self._concatenate_observations(traj[-1]['next_observations']).to(self.device)
+                    last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
                     
-                    all_values, _ = self.agents[agent_id].value_net(extended_obs, v_h0, extended_masks)
-                    values = all_values[:-1].view(-1) # value of agent_id
-                    next_val = all_values[-1].item() * last_mask # next value
+                    extended_obs = torch.cat([global_obs_seq.unsqueeze(1),
+                                             last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
+                    extended_masks = torch.cat([global_masks_seq,
+                                               torch.tensor([[last_mask]], device=self.device)], dim=0)
                     
-                    # Compute GAE
+                    # all_values: (T+1, 1, num_agents)
+                    all_values, _ = self.value_net(extended_obs, v_h0, extended_masks)
+                    # values: (T, num_agents)
+                    values = all_values[:-1].view(-1, self.num_agents)
+                    # next_val: (num_agents,)
+                    next_val = all_values[-1].view(self.num_agents) * last_mask
+                
+                # Compute per-agent GAE using agent-specific centralized values
+                for agent_id in range(self.num_agents):
+                    if agent_id not in traj[0]['bold_o_t']:
+                        continue
+                    
+                    agent_rewards_seq = torch.tensor(
+                        [t['shaped_rewards'][agent_id] for t in traj],
+                        dtype=torch.float32, device=self.device
+                    )
+                    agent_dones_seq = torch.tensor(
+                        [t['dones'][agent_id] for t in traj],
+                        dtype=torch.float32, device=self.device
+                    )
+                    
+                    # 에이전트별 value를 사용하여 GAE 계산 (value-return 일관성)
                     advantages, returns = self.compute_gae(
                         agent_rewards_seq.tolist(),
-                        values.tolist(),
-                        next_val,
+                        values[:, agent_id].tolist(),
+                        next_val[agent_id].item(),
                         agent_dones_seq.tolist()
                     )
                     
-                    # Store in transitions
                     for t_idx, t in enumerate(traj):
                         if 'advantages' not in t:
                             t['advantages'] = {}
                             t['returns'] = {}
                         t['advantages'][agent_id] = advantages[t_idx]
                         t['returns'][agent_id] = returns[t_idx]
+            else:
+                # === IPPO-style per-agent GAE ===
+                for agent_id in range(self.num_agents):
+                    if agent_id not in traj[0]['bold_o_t']:
+                        continue
+                    
+                    # Extract agent observations
+                    agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
+                    agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
+                    agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                    agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                    
+                    # Initial hidden state for value network
+                    _, v_h0 = traj[0]['hidden_states'][agent_id]
+                    v_h0 = v_h0.to(self.device).unsqueeze(0)
+                    
+                    # Compute values for entire trajectory
+                    with torch.no_grad():
+                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device)
+                        last_mask = 1.0 - traj[-1]['dones'][agent_id]
+
+                        # Extended sequence: (T+1, 1, D)
+                        extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
+                                                last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
+                        extended_masks = torch.cat([agent_masks_seq,
+                                                    torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
+                        
+                        all_values, _ = self.agents[agent_id].value_net(extended_obs, v_h0, extended_masks)
+                        values = all_values[:-1].view(-1) # value of agent_id
+                        next_val = all_values[-1].item() * last_mask # next value
+                        
+                        # Compute GAE
+                        advantages, returns = self.compute_gae(
+                            agent_rewards_seq.tolist(),
+                            values.tolist(),
+                            next_val,
+                            agent_dones_seq.tolist()
+                        )
+                        
+                        # Store in transitions
+                        for t_idx, t in enumerate(traj):
+                            if 'advantages' not in t:
+                                t['advantages'] = {}
+                                t['returns'] = {}
+                            t['advantages'][agent_id] = advantages[t_idx]
+                            t['returns'][agent_id] = returns[t_idx]
         
         # 4. Create chunks from trajectories with Padding
         all_chunks = []

@@ -44,6 +44,7 @@ class AlgorithmConfig:
     num_batches: int = 4  # Number of batches K for training
     causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
+    use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
@@ -327,6 +328,8 @@ def parse_args() -> argparse.Namespace:
                         help='Enable adaptive causal lambda per agent (true/false)')
     parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
                         help='Use shared value network for all agents (true/false)')
+    parser.add_argument('--use-centralized-critic', type=str, default=None,
+                        help='Use MAPPO-style centralized critic with global observations (true/false)')
     parser.add_argument('--lr-actor', type=float, default=None,
                         help='Learning rate for actor/policy')
     parser.add_argument('--lr-bridge', type=float, default=None,
@@ -434,6 +437,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         # Convert string to boolean
         use_sharing = args.use_value_parameter_sharing.lower() in ('true', '1', 'yes', 'on')
         config.algorithm.use_value_parameter_sharing = use_sharing
+    if hasattr(args, 'use_centralized_critic') and args.use_centralized_critic is not None:
+        # Convert string to boolean
+        use_central = args.use_centralized_critic.lower() in ('true', '1', 'yes', 'on')
+        config.algorithm.use_centralized_critic = use_central
     if hasattr(args, 'causal_lambda_adaptive_per_agent') and args.causal_lambda_adaptive_per_agent is not None:
         # Convert string to boolean
         use_adaptive = args.causal_lambda_adaptive_per_agent.lower() in ('true', '1', 'yes', 'on')

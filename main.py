@@ -116,6 +116,7 @@ def create_algorithm(env, config):
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
             use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', False),
+            use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
         )
     elif algorithm_type == 'x_pci':
         algorithm = X_PCIAlgorithm(
@@ -386,9 +387,17 @@ def main():
     # Get algorithm type for logger name
     algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo').upper()
     
+    # R-PCI: display name based on centralized critic setting
+    display_algorithm_type = algorithm_type
+    if algorithm_type in ['R_PCI', 'PCI_RNN']:
+        if getattr(config.algorithm, 'use_centralized_critic', False):
+            display_algorithm_type = 'PCI_rMAPPO'
+        else:
+            display_algorithm_type = 'PCI_rIPPO'
+    
     # Create logger
-    logger = Logger(name=algorithm_type)
-    logger.info(f"Start {algorithm_type} training")
+    logger = Logger(name=display_algorithm_type)
+    logger.info(f"Start {display_algorithm_type} training")
     
     # Log reproducibility information
     log_reproducibility_info(actual_seed, logger)
@@ -462,13 +471,20 @@ def main():
         
         # wandb run name에 알고리즘 타입 추가
         algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
+        # R-PCI: use display name for wandb
+        wandb_algo_name = algorithm_type
+        if algorithm_type.lower().replace('-', '_') in ['r_pci', 'pci_rnn']:
+            if getattr(config.algorithm, 'use_centralized_critic', False):
+                wandb_algo_name = 'PCI_rMAPPO'
+            else:
+                wandb_algo_name = 'PCI_rIPPO'
         wandb_run_name = config.wandb.run_name
         if wandb_run_name:
             # run_name이 있으면 앞에 알고리즘 타입 추가
-            wandb_run_name = f"{algorithm_type}_{wandb_run_name}_seed{actual_seed}"
+            wandb_run_name = f"{wandb_algo_name}_{wandb_run_name}_seed{actual_seed}"
         else:
             # run_name이 없으면 알고리즘 타입만 사용
-            wandb_run_name = algorithm_type
+            wandb_run_name = wandb_algo_name
         
         # Create env_fn for parallel environments
         n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)

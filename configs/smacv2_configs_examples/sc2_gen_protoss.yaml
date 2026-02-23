@@ -56,5 +56,5 @@ heuristic_ai: False
 
 # heuristic_rest: False
 debug: False
-prob_obs_enemy: 0.5 # 0.0 for EPO
+prob_obs_enemy: 1.0 # 0.0 for EPO
 action_mask: True # False for EPO

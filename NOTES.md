@@ -157,9 +157,23 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
     * Update scripts and `main.py` to use new names.
 
 # 26.02.11
-* In `SMACv2`, `max_grad_norm` 0.5 vs. 10 does not matter.
-* Test `clip_epsilon` 0.2 in `SMACv2` -> hmm... a litte better?
+* In `SMACv2`
+    * `max_grad_norm` 0.5 -> 10: does not matter.
+    * `clip_epsilon` 0.2 ->: does not matter.
+    * **Batch size 3200 -> 6400**: makes differences. the performance is closed to benchmarking results.
+* Note that the reproductability in SMACv2 requires more corrections, need to deliever the seed to `Distribution` class for SMACv2.
 
 # 26.02.12
 * Critical theoretic defect: when utilizing outcome bridge function, we should calculate the conditional expectattion $\mathbb{E}_{w\sim p(w|z,a,x)}[h(a,w,x)|Z,A,X]$. But we did not.
     * justifying  as a single-sample MonteCarlo?
+
+# 26.02.20
+* `SMACv2` test 
+    * $x=(o^i_t, \mathbf{h}^_{t-1})$ with EPO setting: not significant
+    * RBFKernel gamma: 1.0 -> 0.5: not significant, unstable
+    * clipping negative delta like ReLU: not significant
+    * PCI-rMAPPO (with centralized critic taking joint info.): not significant
+
+# 26.02.23
+* Problems in `SMACv2` with PCI-MARL
+    * shaped reward: Attack aciton과 Non-attack action에 대한 shaped reward가 부정확함. (e.g., 타 agent의 attack으로 내가 +1.0 reward를 받으면 non-attack action에 대한 prediction은 +1.0에 가깝게 나와야 하는데, 지금은 +2.0로 나오는 상황)
