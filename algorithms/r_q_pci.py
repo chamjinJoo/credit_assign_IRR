@@ -106,6 +106,9 @@ class r_Q_PCIAgent:
         
         # Internal hidden state maintenance
         self.rnn_state_policy = None
+        # Previous action tracking for (obs, action) history encoding
+        self.prev_action = None
+        self.prev_actions_batch = None
         self.reset_rnn_state()
         
         # Batch processing support (for parallel environments)
@@ -116,12 +119,14 @@ class r_Q_PCIAgent:
         """Reset RNN state for single environment (backward compatibility)"""
         if device is None: device = self.policy_net.output_layer.weight.device
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
+        self.prev_action = torch.zeros(self.action_dim, device=device)
     
     def reset_rnn_states_batch(self, n_envs: int, device=None):
         """Reset RNN states for multiple environments (batch mode)"""
         if device is None: device = self.policy_net.output_layer.weight.device
         self.n_envs = n_envs
         self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
+        self.prev_actions_batch = torch.zeros(n_envs, self.action_dim, device=device)
 
     def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None) -> Tuple[int, float, Optional[torch.Tensor]]:
         with torch.no_grad():
@@ -145,15 +150,21 @@ class r_Q_PCIAgent:
             if available_actions is not None:
                 available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
 
+            # Prepare prev_action one-hot for RNN input
+            prev_action_onehot = self.prev_action.unsqueeze(0)  # (1, action_dim)
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
                 masks_in,
-                available_actions
+                available_actions,
+                prev_actions=prev_action_onehot
             )
             
             # Update internal state
             self.rnn_state_policy = next_rnn_state.squeeze(0)
+            # Update prev_action for next timestep
+            self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
             
         if return_rnn_state:
             return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone() # Return PREVIOUS state used for this action
@@ -183,16 +194,22 @@ class r_Q_PCIAgent:
             # Save current states (these will be returned as prev_states)
             prev_states = self.rnn_states_policy_batch.clone()
             
+            # Prepare prev_actions one-hot for RNN input
+            prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
+            
             # Get actions
             actions, log_probs, next_states = self.policy_net.get_action_and_log_prob(
                 obs_batch,
                 self.rnn_states_policy_batch,
                 masks_batch,
-                available_actions_batch
+                available_actions_batch,
+                prev_actions=prev_actions_onehot
             )
             
             # Update internal states
             self.rnn_states_policy_batch = next_states
+            # Update prev_actions for next timestep
+            self.prev_actions_batch = F.one_hot(actions, self.action_dim).float()
             
         return actions, log_probs, prev_states
     
@@ -322,7 +339,7 @@ class rQPCIAlgorithm:
         self.stabilizer_lambda = 1.0
         self.tikhonov_gamma = 1e-4
 
-        self.action_embedding_for_kernel = nn.Embedding(action_dim, 8)
+        self.action_embedding_for_kernel = nn.Embedding(action_dim, action_dim)  # Will be replaced by F.one_hot
         
         self.outcome_bridge_optimizer = optim.Adam(self.outcome_bridge_net.parameters(), lr=lr_bridge)
         self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_bridge)
@@ -1250,6 +1267,9 @@ class rQPCIAlgorithm:
                 self.agents[agent_id].rnn_states_policy_batch[env_idx] = torch.zeros(
                     self.recurrent_N, self.hidden_dim, device=self.device
                 )
+                self.agents[agent_id].prev_actions_batch[env_idx] = torch.zeros(
+                    self.action_dim, device=self.device
+                )
     
     def compute_gae(
         self,
@@ -1659,17 +1679,22 @@ class rQPCIAlgorithm:
                     avail_actions_chunked = self._chunk_sequence(avail_actions_all, chunk_len) # (L, B, ActionDim)
                 
                 # Hidden States
-                # We need hidden states at indices: 0, chunk_len, 2*chunk_len, ...
                 chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
-                
-                # p_states_all is (T, layers, hidden). We want (B, layers, hidden) = (NumChunks, layers, hidden)
                 p_h0_chunked = p_states_all[chunk_indices]
+                
+                # Construct prev_actions one-hot sequence from buffer
+                prev_actions_raw = torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data[:num_chunks * chunk_len]],
+                    dtype=torch.long, device=self.device
+                )
+                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
+                prev_actions_chunked = self._chunk_sequence(prev_actions_onehot_seq, chunk_len)
                 
                 adv_chunked = self._chunk_sequence(adv, chunk_len)
                 
                 p_h0_batch = p_h0_chunked
                 rnn_obs_batch = rnn_obs_chunked
-                rnn_masks_batch = rnn_masks_chunked
+                rnn_masks_batch_agent = rnn_masks_chunked
                 my_actions_batch = my_actions_chunked.reshape(-1) # Flatten (L*B)
                 adv_batch = adv_chunked.reshape(-1)
                 active_masks_batch = active_masks_chunked.reshape(-1) # (L*B)
@@ -1680,13 +1705,21 @@ class rQPCIAlgorithm:
             else:
                 # Fallback to single batch
                 rnn_obs_batch = agent_obs.unsqueeze(1)
-                rnn_masks_batch = masks_batch[agent_id]
+                rnn_masks_batch_agent = masks_batch[agent_id]
                 p_h0_batch = init_hidden_states[agent_id]
                 p_h0_batch = p_h0_batch.to(self.device).unsqueeze(0) # Batch first (1, L, H)
                 my_actions_batch = my_actions
                 adv_batch = adv
                 active_masks_batch = active_masks.squeeze(1) if 'active_mask' in batch_data[0] else torch.ones(T_total, device=self.device)
                 avail_actions_batch_merged = avail_actions_all
+                
+                # Construct prev_actions for single batch
+                prev_actions_raw = torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
+                    dtype=torch.long, device=self.device
+                )
+                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
+                prev_actions_chunked = prev_actions_onehot_seq.unsqueeze(1)
             
             # Use stored log_probs from rollout (not recalculated)
             old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
@@ -1696,7 +1729,10 @@ class rQPCIAlgorithm:
                 old_log_probs = old_log_probs_raw
                 
             for epoch in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
+                    rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch_agent,
+                    available_actions=avail_actions_batch_merged, prev_actions=prev_actions_chunked
+                )
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 
                 surr1 = ratio * adv_batch

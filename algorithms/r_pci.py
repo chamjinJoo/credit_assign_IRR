@@ -44,16 +44,16 @@ class RBFKernel(nn.Module):
 class ConditionalMeanNet(nn.Module):
     def __init__(self, z_dim, x_dim, action_dim, emb_dim=8, hidden=64):
         super().__init__()
-        self.a_emb = nn.Embedding(action_dim, emb_dim)
+        self.action_dim = action_dim
         self.net = nn.Sequential(
-            nn.Linear(z_dim + x_dim + emb_dim, hidden),
+            nn.Linear(z_dim + x_dim + action_dim, hidden),
             nn.ReLU(),
             nn.Linear(hidden, hidden),
             nn.ReLU(),
             nn.Linear(hidden, 1),
         )
     def forward(self, z, a, x):
-        ea = self.a_emb(a)          # (B, emb_dim)
+        ea = F.one_hot(a.long(), self.action_dim).float()  # (B, action_dim)
         inp = torch.cat([z, x, ea], dim=-1)
         return self.net(inp).squeeze(-1)  # (B,)
 
@@ -66,7 +66,7 @@ class rPCIAgent:
         self.recurrent_N = recurrent_N
         
         self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
-        self.value_net = RNNValueNetwork(obs_dim, hidden_dim, recurrent_N)
+        self.value_net = RNNValueNetwork(obs_dim, hidden_dim, recurrent_N, action_dim=action_dim, num_agents=1)
         
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
@@ -74,6 +74,11 @@ class rPCIAgent:
         # Internal hidden state maintenance
         self.rnn_state_policy = None
         self.rnn_state_value = None
+        
+        # Previous action tracking for (obs, action) history encoding
+        self.prev_action = None  # single env: (action_dim,) one-hot
+        self.prev_actions_batch = None  # batch: (n_envs, action_dim) one-hot
+        
         self.reset_rnn_state()
         
         # Batch processing support (for parallel environments)
@@ -86,6 +91,7 @@ class rPCIAgent:
         if device is None: device = self.policy_net.output_layer.weight.device
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
         self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
+        self.prev_action = torch.zeros(self.action_dim, device=device)
     
     def reset_rnn_states_batch(self, n_envs: int, device=None):
         """Reset RNN states for multiple environments (batch mode)"""
@@ -93,6 +99,7 @@ class rPCIAgent:
         self.n_envs = n_envs
         self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
         self.rnn_states_value_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
+        self.prev_actions_batch = torch.zeros(n_envs, self.action_dim, device=device)
 
 
     def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None) -> Tuple[int, float, Optional[torch.Tensor]]:
@@ -111,36 +118,44 @@ class rPCIAgent:
                 masks_in = masks.unsqueeze(0) if masks.dim() == 1 else masks
                 return_rnn_state = True
 
-            # rnn_state needs (layers, batch, dim)? No, RNNLayer expects (Batch, Layers, Dim)
-            # self.rnn_state_policy is (layers, dim) -> unsqueeze(0) -> (1, layers, dim)
             curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
             
             # Handle available actions
             if available_actions is not None:
                 available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
 
+            # Prepare prev_action one-hot for RNN input
+            prev_action_onehot = self.prev_action.unsqueeze(0)  # (1, action_dim)
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
                 masks_in,
-                available_actions
+                available_actions,
+                prev_actions=prev_action_onehot
             )
             
             # Update internal state
             self.rnn_state_policy = next_rnn_state.squeeze(0)
+            # Update prev_action for next timestep
+            self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
             
         if return_rnn_state:
-            return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone() # Return PREVIOUS state used for this action
+            return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone()
         else:
             return action.item(), log_prob.item()
 
-    def get_value(self, obs: torch.Tensor, masks: torch.Tensor) -> Tuple[float, torch.Tensor]:
+    def get_value(self, obs: torch.Tensor, masks: torch.Tensor, prev_action_onehot: torch.Tensor = None) -> Tuple[float, torch.Tensor]:
         with torch.no_grad():
             curr_rnn_state = self.rnn_state_value.unsqueeze(0)
+            # prev_action for value net (single agent's own prev_action)
+            if prev_action_onehot is None:
+                prev_action_onehot = self.prev_action.unsqueeze(0)  # (1, action_dim)
             value, next_rnn_state = self.value_net(
                 obs.unsqueeze(0),
                 curr_rnn_state,
-                masks.unsqueeze(0)
+                masks.unsqueeze(0),
+                prev_actions=prev_action_onehot
             )
             self.rnn_state_value = next_rnn_state.squeeze(0)
         return value.item(), curr_rnn_state.squeeze(0).clone()
@@ -153,59 +168,48 @@ class rPCIAgent:
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get actions for a batch of observations (for parallel environments).
-        
-        Args:
-            obs_batch: Batch of observations (n_envs, obs_dim)
-            masks_batch: Batch of masks (n_envs, 1)
-            available_actions_batch: Batch of available actions (n_envs, action_dim) or None
-        
-        Returns:
-            actions: (n_envs,)
-            log_probs: (n_envs,)
-            prev_states: (n_envs, recurrent_N, hidden_dim) - states used for action selection
         """
         with torch.no_grad():
-            # Save current states (these will be returned as prev_states)
             prev_states = self.rnn_states_policy_batch.clone()
             
-            # Get actions
+            # Prepare prev_actions one-hot for RNN input
+            prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
+            
             actions, log_probs, next_states = self.policy_net.get_action_and_log_prob(
                 obs_batch,
                 self.rnn_states_policy_batch,
                 masks_batch,
-                available_actions_batch
+                available_actions_batch,
+                prev_actions=prev_actions_onehot
             )
             
             # Update internal states
             self.rnn_states_policy_batch = next_states
+            # Update prev_actions for next timestep
+            self.prev_actions_batch = F.one_hot(actions, self.action_dim).float()
             
         return actions, log_probs, prev_states
     
     def get_value_batch(
         self,
         obs_batch: torch.Tensor,  # (n_envs, obs_dim)
-        masks_batch: torch.Tensor  # (n_envs, 1)
+        masks_batch: torch.Tensor,  # (n_envs, 1)
+        prev_actions_onehot: Optional[torch.Tensor] = None  # (n_envs, action_dim)
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         Get values for a batch of observations (for parallel environments).
-        
-        Args:
-            obs_batch: Batch of observations (n_envs, obs_dim)
-            masks_batch: Batch of masks (n_envs, 1)
-        
-        Returns:
-            values: (n_envs,)
-            prev_states: (n_envs, recurrent_N, hidden_dim) - states used for value calculation
         """
         with torch.no_grad():
-            # Save current states
             prev_states = self.rnn_states_value_batch.clone()
             
-            # Get values
+            if prev_actions_onehot is None:
+                prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
+            
             values, next_states = self.value_net(
                 obs_batch,
                 self.rnn_states_value_batch,
-                masks_batch
+                masks_batch,
+                prev_actions=prev_actions_onehot
             )
             
             # Update internal states
@@ -332,7 +336,9 @@ class rPCIAlgorithm:
                 obs_dim=obs_dim * num_agents,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                out_dim=num_agents 
+                out_dim=num_agents,
+                action_dim=action_dim,
+                num_agents=num_agents
             )
             self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
             self.rnn_state_value = None  # 초기화는 reset_agents에서
@@ -342,7 +348,7 @@ class rPCIAlgorithm:
 
         elif self.use_value_parameter_sharing:
             # one shared value network (IPPO-style)
-            self.shared_value_net = RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N)
+            self.shared_value_net = RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, action_dim=action_dim, num_agents=1)
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
             # parameter sharing
@@ -386,10 +392,10 @@ class rPCIAlgorithm:
             action_embedding_dim=8
         )
 
-        self.action_embedding_for_kernel = nn.Embedding(action_dim, 8)
+        # One-hot encoding for kernel features (no nn.Embedding needed)
 
         self.feature_projector = nn.Sequential(
-            nn.Linear(num_agents + 8 + obs_dim + hidden_dim * recurrent_N * (num_agents-1), hidden_dim),
+            nn.Linear(num_agents + action_dim + obs_dim + hidden_dim * recurrent_N * (num_agents-1), hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
@@ -406,7 +412,6 @@ class rPCIAlgorithm:
 
         self.outcome_bridge_optimizer = optim.Adam(self.outcome_bridge_net.parameters(), lr=lr_bridge)
         self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_critic)
-        self.kernel_action_embed_optimizer = optim.Adam(self.action_embedding_for_kernel.parameters(), lr=lr_critic)
         
         # Keep track of done status for masks
         self.last_dones = {i: False for i in range(num_agents)}
@@ -426,7 +431,6 @@ class rPCIAlgorithm:
         self.action_bridge_net.to(self.device)
         self.critic_kernel_z.to(self.device)
         self.critic_kernel_w.to(self.device)
-        self.action_embedding_for_kernel.to(self.device)
         self.feature_projector.to(self.device)
     
     def get_current_causal_lambda(self, agent_id: Optional[int] = None) -> float:
@@ -571,8 +575,8 @@ class rPCIAlgorithm:
                     residual_error = torch.norm(residuals_mb[j], p=2).item()
                     agent_residual_errors[agent_id.item()].append(residual_error)
             
-            action_embeds_mb = self.action_embedding_for_kernel(a_mb)
-            kernel_feat_z = torch.cat([z_mb, action_embeds_mb, x_mb], dim=1) # x=(o_mb, h_others)
+            action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
+            kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1) # x=(o_mb, h_others)
 
             # use feature projector MLP
             # with torch.no_grad():
@@ -602,13 +606,9 @@ class rPCIAlgorithm:
             
             self.outcome_bridge_optimizer.zero_grad()
             self.action_bridge_optimizer.zero_grad()
-            self.kernel_action_embed_optimizer.zero_grad()
             total_loss.backward()
-            # torch.nn.utils.clip_grad_norm_(self.outcome_bridge_net.parameters(), self.max_grad_norm)
-            # torch.nn.utils.clip_grad_norm_(self.action_embedding_for_kernel.parameters(), self.max_grad_norm)
             self.outcome_bridge_optimizer.step()
             # self.action_bridge_optimizer.step()
-            self.kernel_action_embed_optimizer.step()
 
             avg_outcome_loss += loss_h.item()
             avg_action_loss += loss_q.item()
@@ -655,16 +655,11 @@ class rPCIAlgorithm:
         
         w_expanded = w_mb.repeat_interleave(M, dim=0)
         
-        sampled_action_embeds = torch.zeros(
+        sampled_action_onehots = torch.zeros(
             batch_size * M, 
-            self.action_embedding_for_kernel.embedding_dim, 
+            self.action_dim, 
             device=self.device
         )
-        
-        # We need hidden states here too, but they are not passed to this function in current signature.
-        # Since Action Bridge is disabled and this function is likely unused, we provide a basic implementation 
-        # that uses ZERO hidden states. 
-        # TODO: If Action Bridge is enabled, this needs to receive hidden states corresponding to the batch.
         
         with torch.no_grad():
             unique_agents = torch.unique(batch_agent_ids)
@@ -686,12 +681,12 @@ class rPCIAlgorithm:
                 
                 dist = torch.distributions.Categorical(logits=logits)
                 actions_sampled = dist.sample()
-                embeds = self.action_embedding_for_kernel(actions_sampled)
+                onehots = F.one_hot(actions_sampled, self.action_dim).float()
                 
                 mask_expanded = mask.unsqueeze(1).expand(-1, M).reshape(-1)
-                sampled_action_embeds[mask_expanded] = embeds
+                sampled_action_onehots[mask_expanded] = onehots
 
-        features_w_sampled = torch.cat([w_expanded, sampled_action_embeds], dim=1)
+        features_w_sampled = torch.cat([w_expanded, sampled_action_onehots], dim=1)
         
         # kernel_feat_w is passed from caller!
         K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_feat_w, features_w_sampled)
@@ -985,6 +980,9 @@ class rPCIAlgorithm:
                 self.agents[agent_id].rnn_states_policy_batch[env_idx] = torch.zeros(
                     self.recurrent_N, self.hidden_dim, device=self.device
                 )
+                self.agents[agent_id].prev_actions_batch[env_idx] = torch.zeros(
+                    self.action_dim, device=self.device
+                )
                 if not self.use_centralized_critic:
                     self.agents[agent_id].rnn_states_value_batch[env_idx] = torch.zeros(
                         self.recurrent_N, self.hidden_dim, device=self.device
@@ -1071,7 +1069,8 @@ class rPCIAlgorithm:
         hidden_states_batch: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None,
         dones_batch: Optional[torch.Tensor] = None,
         baseline_type: str = 'weighted',
-        available_actions_batch: Optional[Dict[int, torch.Tensor]] = None # [ADDED]
+        available_actions_batch: Optional[Dict[int, torch.Tensor]] = None, # [ADDED]
+        prev_actions_batch: Optional[torch.Tensor] = None  # (B, N) previous actions for RNN input
     ) -> torch.Tensor:
         """
         Computes the pairwise Causal Effect Matrix C.
@@ -1169,7 +1168,12 @@ class rPCIAlgorithm:
 
                     p_state_b = precomputed_states[k]
                     masks_b = precomputed_masks[k]
-                    logits, _ = self.agents[k].policy_net(obs_b[:, k, :], p_state_b, masks_b, available_actions=avail_actions_b)
+                    # Construct prev_actions one-hot for agent k
+                    prev_actions_k = None
+                    if prev_actions_batch is not None:
+                        prev_act_k = prev_actions_batch[i:end, k]  # (curr_bs,)
+                        prev_actions_k = F.one_hot(prev_act_k.long(), self.action_dim).float()
+                    logits, _ = self.agents[k].policy_net(obs_b[:, k, :], p_state_b, masks_b, available_actions=avail_actions_b, prev_actions=prev_actions_k)
                     probs = torch.softmax(logits, dim=-1)
                     probs_list.append(probs)
                     
@@ -1191,11 +1195,11 @@ class rPCIAlgorithm:
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-            # available_actions 마스크를 r_hat_all에도 적용
-            # 불가능한 action의 r_hat을 0으로 만들어 baseline에 기여하지 않도록 함
-            if available_actions_batch:
-                avail_mask_flat = torch.stack([available_actions_batch[k][i:end] for k in range(num_agents)], dim=1).view(-1, action_dim)
-                r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
+                # available_actions 마스크를 r_hat_all에도 적용
+                # 불가능한 action의 r_hat을 0으로 만들어 baseline에 기여하지 않도록 함
+                if available_actions_batch:
+                    avail_mask_flat = torch.stack([available_actions_batch[k][i:end] for k in range(num_agents)], dim=1).view(-1, action_dim)
+                    r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
 
                 # Opt 1) using real rewards
                 r_factual = rewards_flat
@@ -1388,6 +1392,14 @@ class rPCIAlgorithm:
                 rnn_masks_main = masks_batch[agent_id] # (T, 1)
                 rnn_masks_chunked = self._chunk_sequence(rnn_masks_main, chunk_len) # (L, B, 1)
                 
+                # Construct prev_actions one-hot sequence from buffer
+                prev_actions_raw = torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data[:num_chunks * chunk_len]], 
+                    dtype=torch.long, device=self.device
+                )  # (T_used,)
+                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()  # (T_used, action_dim)
+                prev_actions_chunked = self._chunk_sequence(prev_actions_onehot_seq, chunk_len)  # (L, B, action_dim)
+                
                 # Active Masks (Padding Mask)
                 if 'active_mask' in batch_data[0]:
                     active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1) # (T, 1)
@@ -1421,6 +1433,8 @@ class rPCIAlgorithm:
                 adv_batch = adv_chunked.reshape(-1)
                 ret_batch = ret_chunked.reshape(-1)
                 active_masks_batch = active_masks_chunked.reshape(-1) # (L*B)
+                prev_actions_batch = prev_actions_chunked  # (L, B, action_dim) - for RNN sequence input
+                prev_actions_batch_merged = prev_actions_chunked.reshape(-1, self.action_dim)  # (L*B, action_dim) - for flat input
                 
                 avail_actions_batch_merged = None
                 if avail_actions_chunked is not None:
@@ -1438,6 +1452,14 @@ class rPCIAlgorithm:
                 ret_batch = agent_returns[agent_id]
                 active_masks_batch = active_masks.squeeze(1) if 'active_mask' in batch_data[0] else torch.ones(T_total, device=self.device)
                 avail_actions_batch_merged = avail_actions_all
+                # Construct prev_actions for single batch
+                prev_actions_raw = torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data], 
+                    dtype=torch.long, device=self.device
+                )
+                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()  # (T, action_dim)
+                prev_actions_batch = prev_actions_onehot_seq.unsqueeze(1)  # (T, 1, action_dim)
+                prev_actions_batch_merged = prev_actions_onehot_seq  # (T, action_dim)
             
             # Use stored log_probs from rollout (not recalculated)
             old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
@@ -1447,7 +1469,10 @@ class rPCIAlgorithm:
                 old_log_probs = old_log_probs_raw
                 
             for epoch in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
+                    rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, 
+                    available_actions=avail_actions_batch_merged, prev_actions=prev_actions_batch
+                )
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 
                 surr1 = ratio * adv_batch
@@ -1473,7 +1498,10 @@ class rPCIAlgorithm:
                 
                 if not self.use_centralized_critic:
                     # IPPO-style per-agent value update
-                    new_vals, _ = self.agents[agent_id].value_net(rnn_obs_batch, v_h0_batch, rnn_masks_batch)
+                    new_vals, _ = self.agents[agent_id].value_net(
+                        rnn_obs_batch, v_h0_batch, rnn_masks_batch, 
+                        prev_actions=prev_actions_batch
+                    )
                     
                     # Masked Value Loss
                     val_error = (new_vals.squeeze(1) - ret_batch) ** 2
@@ -1622,6 +1650,12 @@ class rPCIAlgorithm:
                         avail_list = [t['available_actions'][agent_id] for t in traj]
                         available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
             
+            # Prepare prev_actions for compute_causal_rewards
+            prev_actions_batch_cr = torch.tensor(
+                [[t['bold_a_t_minus_1'][i] for i in range(N)] for t in traj],
+                dtype=torch.long, device=self.device
+            )  # (B, N)
+
             # Compute causal rewards
             with torch.no_grad():
                 C_matrix = self.compute_causal_rewards(
@@ -1629,7 +1663,8 @@ class rPCIAlgorithm:
                     hidden_states_batch=hidden_states_batch,
                     dones_batch=dones_batch,
                     baseline_type='weighted',
-                    available_actions_batch=available_actions_batch
+                    available_actions_batch=available_actions_batch,
+                    prev_actions_batch=prev_actions_batch_cr
                 )
                 # merging 1. summation
                 delta = C_matrix.sum(dim=2)

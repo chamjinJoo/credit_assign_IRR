@@ -85,7 +85,7 @@ class StagHuntEnv(MultiAgentEnv):
         seed: int = None,
         grid_observation: bool = False,
         vision: int = 2,
-        obs_noise_std: float = 0.0
+        obs_noise_std: float = 0.0,
         **kwargs):
         """
         Stag-Hunt 환경 초기화 (원본 게임 로직 기반)

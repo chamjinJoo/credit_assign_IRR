@@ -43,6 +43,9 @@ class rCOMAAgent:
         
         # RNN hidden state
         self.rnn_state_policy = None
+        # Previous action tracking for (obs, action) history encoding
+        self.prev_action = None
+        self.prev_actions_batch = None
         self.reset_rnn_state()
     
     def _add_agent_id(self, obs: torch.Tensor) -> torch.Tensor:
@@ -55,11 +58,13 @@ class rCOMAAgent:
     def reset_rnn_state(self):
         """Reset RNN hidden state (single environment)."""
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
+        self.prev_action = torch.zeros(self.action_dim).to(self.device)
         
     def reset_rnn_states_batch(self, n_envs: int):
         """Reset RNN states for multiple environments (batch mode)."""
         self.n_envs = n_envs
         self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim).to(self.device)
+        self.prev_actions_batch = torch.zeros(n_envs, self.action_dim).to(self.device)
 
     def get_action(
         self, 
@@ -85,14 +90,20 @@ class rCOMAAgent:
             if available_actions is not None:
                 available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
 
+            # Prepare prev_action one-hot for RNN input
+            prev_action_onehot = self.prev_action.unsqueeze(0)  # (1, action_dim)
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
                 masks_in,
-                available_actions
+                available_actions,
+                prev_actions=prev_action_onehot
             )
             
             self.rnn_state_policy = next_rnn_state.squeeze(0)
+            # Update prev_action for next timestep
+            self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
         
         if return_rnn_state:
             return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone()
@@ -110,14 +121,20 @@ class rCOMAAgent:
             obs_with_id = self._add_agent_id(obs_batch)
             prev_states = self.rnn_states_policy_batch.clone()
             
+            # Prepare prev_actions one-hot for RNN input
+            prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
+            
             action, log_prob, next_states = self.policy_net.get_action_and_log_prob(
                 obs_with_id, 
                 self.rnn_states_policy_batch, 
                 masks_batch, 
-                available_actions_batch
+                available_actions_batch,
+                prev_actions=prev_actions_onehot
             )
             
             self.rnn_states_policy_batch = next_states
+            # Update prev_actions for next timestep
+            self.prev_actions_batch = F.one_hot(action, self.action_dim).float()
             
         return action, log_prob, prev_states
 
@@ -415,6 +432,9 @@ class rCOMAAlgorithm:
                 self.agents[agent_id].rnn_states_policy_batch[env_idx] = torch.zeros(
                    self.recurrent_N, self.hidden_dim, device=self.device
                 )
+                self.agents[agent_id].prev_actions_batch[env_idx] = torch.zeros(
+                   self.action_dim, device=self.device
+                )
         
         if any(dones.values()):
              env_done = True
@@ -630,8 +650,16 @@ class rCOMAAlgorithm:
             agent_id_onehot[:, :, i] = 1.0
             obs_with_id = torch.cat([agent_obs_i, agent_id_onehot], dim=-1)  # [B, T, Obs+N]
 
+            # Construct prev_actions for this agent from the stored actions
+            # prev_action at t=0 is zero, prev_action at t>0 is action at t-1
+            zero_action = torch.zeros(B, 1, self.action_dim, device=self.device)
+            actions_onehot_i = self._to_one_hot(actions[:, :, i])  # [B, T, A]
+            prev_actions_i = torch.cat([zero_action, actions_onehot_i[:, :-1]], dim=1)  # [B, T, A]
+
             # 2. Batch RNN forward
-            obs_flat = obs_with_id.transpose(0, 1).contiguous().reshape(T * B, -1)
+            # Concatenate obs_with_id and prev_actions for feature_extractor input
+            rnn_input = torch.cat([obs_with_id, prev_actions_i], dim=-1)  # [B, T, Obs+N+A]
+            obs_flat = rnn_input.transpose(0, 1).contiguous().reshape(T * B, -1)
             masks_rnn = masks.transpose(0, 1).contiguous().reshape(T * B, 1)
             h0 = torch.zeros(B, self.recurrent_N, self.hidden_dim, device=self.device)
             

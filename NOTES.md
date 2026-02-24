@@ -177,3 +177,7 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 # 26.02.23
 * Problems in `SMACv2` with PCI-MARL
     * shaped reward: Attack aciton과 Non-attack action에 대한 shaped reward가 부정확함. (e.g., 타 agent의 attack으로 내가 +1.0 reward를 받으면 non-attack action에 대한 prediction은 +1.0에 가깝게 나와야 하는데, 지금은 +2.0로 나오는 상황)
+
+# 26.02.24
+* RNN change: obs history -> (obs, action) history, $h^i_t = (o^i_0, a^i_0, ..., a^i_{t-1}, o^i_t)$
+* action expression change: embedding -> one-hot. Embedding is more fit to compress high-dimensional data.

@@ -18,7 +18,7 @@ max_steps_per_iteration=2000
 n_rollout_threads=8
 log_interval=2
 device="cpu"
-seed=2
+seed=1
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

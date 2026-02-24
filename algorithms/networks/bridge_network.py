@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Tuple, Optional
 from .mlp import MLPBase
 
@@ -7,6 +8,7 @@ class OutcomeBridgeNetwork(nn.Module):
     """
     Bridge network h_φ for causal inference.
     Maps full action vector and confounding variable (w) to outcome.
+    Uses one-hot encoding for actions (standard RL practice).
     """
     def __init__(
         self, 
@@ -15,7 +17,7 @@ class OutcomeBridgeNetwork(nn.Module):
         w_dim: int,
         outcome_dim: int,
         hidden_dim: int = 64,
-        action_embedding_dim: int = 8,
+        action_embedding_dim: int = 8,  # kept for API compat but unused
         x_dim: int = 0 # [ADDED] Covariates X: o^i_t
     ):
         super(OutcomeBridgeNetwork, self).__init__()
@@ -24,14 +26,11 @@ class OutcomeBridgeNetwork(nn.Module):
         self.w_dim = w_dim
         self.outcome_dim = outcome_dim
         self.hidden_dim = hidden_dim
-        self.action_embedding_dim = action_embedding_dim
         self.x_dim = x_dim
         
-        # Action embedding layer
-        self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
-        
-        # Input is an agent's action embedding and confounder
-        input_dim = action_embedding_dim + w_dim + x_dim
+        # Use one-hot encoding instead of nn.Embedding
+        # Input is action one-hot and confounder
+        input_dim = action_dim + w_dim + x_dim
         
         # Bridge network with 3 hidden layers
         self.mlp = MLPBase(
@@ -59,14 +58,14 @@ class OutcomeBridgeNetwork(nn.Module):
         """
         Forward pass of bridge network.
         """
-        batch_size = actions.shape[0]
-        action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
+        # One-hot encode actions
+        action_onehot = F.one_hot(actions.long(), self.action_dim).float()  # [batch_size, action_dim]
   
-        # Concatenate all action embeddings and confounder
+        # Concatenate action one-hot and confounder
         if x is not None:
-             bridge_input = torch.cat([action_embeds, w, x], dim=-1)
+             bridge_input = torch.cat([action_onehot, w, x], dim=-1)
         else:
-             bridge_input = torch.cat([action_embeds, w], dim=-1)
+             bridge_input = torch.cat([action_onehot, w], dim=-1)
         
         # Forward through network
         outcome = self.bridge_network(bridge_input)
@@ -94,22 +93,23 @@ class OutcomeBridgeNetwork(nn.Module):
         """
         batch_size = actions.shape[0] # actions shape: [batch_size, num_agents]
 
-        action_embeds = self.action_embedding(actions)  # [batch_size, num_agents, action_embedding_dim]
-        action_embeds_flat = action_embeds.view(batch_size, -1) # [batch_size, num_agents * action_embedding_dim]
-        action_embeds_expanded = action_embeds_flat.unsqueeze(1).expand(-1, M, -1) # [batch_size, M, num_agents * action_embedding_dim]
+        # One-hot encode actions: [batch_size, num_agents, action_dim]
+        action_onehot = F.one_hot(actions.long(), self.action_dim).float()
+        action_onehot_flat = action_onehot.view(batch_size, -1)  # [batch_size, num_agents * action_dim]
+        action_onehot_expanded = action_onehot_flat.unsqueeze(1).expand(-1, M, -1) # [batch_size, M, num_agents * action_dim]
         
         # Prepare bridge input: batch_size * (a', w^(m))
         if x is not None:
-            bridge_input = torch.cat([action_embeds_expanded, w, x], dim=-1) 
+            bridge_input = torch.cat([action_onehot_expanded, w, x], dim=-1) 
         else:
-            bridge_input = torch.cat([action_embeds_expanded, w], dim=-1) 
+            bridge_input = torch.cat([action_onehot_expanded, w], dim=-1) 
             
-        bridge_input_reshaped = bridge_input.view(batch_size * M, -1) # [batch_size * M, num_agents * action_embedding_dim + w_dim]
+        bridge_input_reshaped = bridge_input.view(batch_size * M, -1) # [batch_size * M, num_agents * action_dim + w_dim]
         
         # Forward through network: [batch_size * M, outcome_dim]
         outcomes = self.bridge_network(bridge_input_reshaped)
         outcomes = outcomes.view(batch_size, M, self.outcome_dim) # shape: [batch_size, M, outcome_dim]     
-        expected_outcome = outcomes.mean(dim=1) # Copmute \hat r^(i,k)_t = (1/M) Σ^M_{m=1} h_φ(a', w^(m))
+        expected_outcome = outcomes.mean(dim=1) # Compute \hat r^(i,k)_t = (1/M) Σ^M_{m=1} h_φ(a', w^(m))
         
         return expected_outcome # shape: [batch_size, outcome_dim]
 
@@ -119,6 +119,7 @@ class ActionBridgeNetwork(nn.Module):
     Action Bridge Network q_θ(z, a) for Doubly Robust causal inference.
     Provides IPW-like weights for the doubly robust correction term.
     Maps context variables (z) and full action vector to scalar output.
+    Uses one-hot encoding for actions (standard RL practice).
     """
     
     def __init__(
@@ -127,7 +128,7 @@ class ActionBridgeNetwork(nn.Module):
         action_dim: int,   # single agent action dimension
         num_agents: int,   # number of agents
         hidden_dim: int = 64,
-        action_embedding_dim: int = 8  # Action embedding dimension
+        action_embedding_dim: int = 8  # kept for API compat but unused
     ):
         super(ActionBridgeNetwork, self).__init__()
         
@@ -135,13 +136,10 @@ class ActionBridgeNetwork(nn.Module):
         self.action_dim = action_dim
         self.num_agents = num_agents
         self.hidden_dim = hidden_dim
-        self.action_embedding_dim = action_embedding_dim
         
-        # Action embedding for better action representation
-        self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
-
-        # Input is concatenation of context and all agents' action embeddings
-        input_dim = z_dim + action_embedding_dim
+        # Use one-hot encoding instead of nn.Embedding
+        # Input is concatenation of context and action one-hot
+        input_dim = z_dim + action_dim
 
         # Action bridge network using MLPBase
         self.action_bridge_network = MLPBase(
@@ -171,14 +169,11 @@ class ActionBridgeNetwork(nn.Module):
         Returns:
             action_bridge_output: Scalar action bridge values [batch_size, 1]
         """
-        batch_size = z.shape[0]
+        # One-hot encode actions
+        action_onehot = F.one_hot(actions.long(), self.action_dim).float()  # [batch_size, action_dim]
         
-        # Get action embeddings for all agents
-        # actions: [batch_size, num_agents] -> action_embeds: [batch_size, action_embedding_dim]
-        action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
-        
-        # Concatenate z and action embeddings
-        action_bridge_input = torch.cat([z, action_embeds], dim=-1)
+        # Concatenate z and action one-hot
+        action_bridge_input = torch.cat([z, action_onehot], dim=-1)
         
         # Forward through action bridge network
         encoded = self.action_bridge_network(action_bridge_input)  # [batch_size, hidden_dim]
@@ -191,7 +186,8 @@ class RewardPredictor(nn.Module):
     """
     Simple Neural Network predicting the reward of complements 
     Using current the concat of complements observation \mathbf{o}^{-i]_t and 
-    the action of the agent i
+    the action of the agent i.
+    Uses one-hot encoding for actions (standard RL practice).
     """
     def __init__(
         self,
@@ -200,20 +196,17 @@ class RewardPredictor(nn.Module):
         num_agents: int,
         output_dim: int,
         hidden_dim: int = 64,
-        action_embedding_dim: int = 8
+        action_embedding_dim: int = 8  # kept for API compat but unused
     ):
         super(RewardPredictor, self).__init__()
         self.action_dim = action_dim
         self.num_agents = num_agents
         self.hidden_dim = hidden_dim
-        self.action_embedding_dim = action_embedding_dim
         self.output_dim = output_dim
         
-        # Action embedding layer
-        self.action_embedding = nn.Embedding(action_dim, action_embedding_dim)
-        
-        # Input is an agent's action embedding and confounder
-        input_dim = action_embedding_dim + obs_dim
+        # Use one-hot encoding instead of nn.Embedding
+        # Input is action one-hot and observation
+        input_dim = action_dim + obs_dim
         
         # Bridge network with 3 hidden layers
         self.mlp = MLPBase(
@@ -240,11 +233,11 @@ class RewardPredictor(nn.Module):
         """
         Forward pass of bridge network.
         """
-        batch_size = actions.shape[0]
-        action_embeds = self.action_embedding(actions)  # [batch_size, action_embedding_dim]
+        # One-hot encode actions
+        action_onehot = F.one_hot(actions.long(), self.action_dim).float()  # [batch_size, action_dim]
   
-        # Concatenate all action embeddings and confounder
-        x = torch.cat([action_embeds, obs], dim=-1)
+        # Concatenate action one-hot and observation
+        x = torch.cat([action_onehot, obs], dim=-1)
         
         # Forward through network
         output = self.bridge_network(x)

@@ -1044,10 +1044,12 @@ class Trainer:
             state['action_bridge_net'] = self.algorithm.action_bridge_net.state_dict()
             state['critic_kernel_z'] = self.algorithm.critic_kernel_z.state_dict()
             state['critic_kernel_w'] = self.algorithm.critic_kernel_w.state_dict()
-            state['action_embedding_for_kernel'] = self.algorithm.action_embedding_for_kernel.state_dict()
+            if hasattr(self.algorithm, 'action_embedding_for_kernel'):
+                state['action_embedding_for_kernel'] = self.algorithm.action_embedding_for_kernel.state_dict()
             state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
             state['action_bridge_optimizer'] = self.algorithm.action_bridge_optimizer.state_dict()
-            state['kernel_action_embed_optimizer'] = self.algorithm.kernel_action_embed_optimizer.state_dict()
+            if hasattr(self.algorithm, 'kernel_action_embed_optimizer'):
+                state['kernel_action_embed_optimizer'] = self.algorithm.kernel_action_embed_optimizer.state_dict()
             # W Predictor (rQPCI only)
             if hasattr(self.algorithm, 'w_predictor'):
                 state['w_predictor'] = self.algorithm.w_predictor.state_dict()
@@ -1145,7 +1147,7 @@ class Trainer:
                 self.algorithm.critic_kernel_z.load_state_dict(algorithm_state['critic_kernel_z'])
             if 'critic_kernel_w' in algorithm_state:
                 self.algorithm.critic_kernel_w.load_state_dict(algorithm_state['critic_kernel_w'])
-            if 'action_embedding_for_kernel' in algorithm_state:
+            if 'action_embedding_for_kernel' in algorithm_state and hasattr(self.algorithm, 'action_embedding_for_kernel'):
                 self.algorithm.action_embedding_for_kernel.load_state_dict(algorithm_state['action_embedding_for_kernel'])
             if 'outcome_bridge_optimizer' in algorithm_state:
                 self.algorithm.outcome_bridge_optimizer.load_state_dict(algorithm_state['outcome_bridge_optimizer'])

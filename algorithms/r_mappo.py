@@ -36,15 +36,20 @@ class rMAPPOAgent:
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         
         self.rnn_state_policy = None
+        # Previous action tracking for (obs, action) history encoding
+        self.prev_action = None
+        self.prev_actions_batch = None
         self.reset_rnn_state()
         
     def reset_rnn_state(self):
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
+        self.prev_action = torch.zeros(self.action_dim).to(self.device)
         
     def reset_rnn_states_batch(self, n_envs: int):
         """Reset RNN states for multiple environments (batch mode)"""
         self.n_envs = n_envs
         self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim).to(self.device)
+        self.prev_actions_batch = torch.zeros(n_envs, self.action_dim).to(self.device)
 
     def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None, return_rnn_state=True) -> Tuple[int, float, Optional[torch.Tensor]]:
         with torch.no_grad():
@@ -64,14 +69,20 @@ class rMAPPOAgent:
             if available_actions is not None:
                 available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
 
+            # Prepare prev_action one-hot for RNN input
+            prev_action_onehot = self.prev_action.unsqueeze(0)  # (1, action_dim)
+
             action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
                 obs_in, 
                 curr_rnn_state, 
                 masks_in,
-                available_actions
+                available_actions,
+                prev_actions=prev_action_onehot
             )
             
             self.rnn_state_policy = next_rnn_state.squeeze(0)
+            # Update prev_action for next timestep
+            self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
         
         if return_rnn_state:
             return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone()
@@ -91,14 +102,20 @@ class rMAPPOAgent:
             # Save current states (these will be returned as prev_states)
             prev_states = self.rnn_states_policy_batch.clone()
             
+            # Prepare prev_actions one-hot for RNN input
+            prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
+            
             action, log_prob, next_states = self.policy_net.get_action_and_log_prob(
                 obs_batch, 
                 self.rnn_states_policy_batch, 
                 masks_batch, 
-                available_actions_batch
+                available_actions_batch,
+                prev_actions=prev_actions_onehot
             )
             
             self.rnn_states_policy_batch = next_states
+            # Update prev_actions for next timestep
+            self.prev_actions_batch = F.one_hot(action, self.action_dim).float()
             
         return action, log_prob, prev_states
 
@@ -174,7 +191,9 @@ class rMAPPOAlgorithm:
             obs_dim=obs_dim * num_agents,
             hidden_dim=hidden_dim,
             recurrent_N=recurrent_N,
-            out_dim=1 if global_reward else num_agents
+            out_dim=1 if global_reward else num_agents,
+            action_dim=action_dim,
+            num_agents=num_agents
         )
 
         self.value_net.to(self.device)
@@ -384,6 +403,9 @@ class rMAPPOAlgorithm:
                 self.agents[agent_id].rnn_states_policy_batch[env_idx] = torch.zeros(
                    self.recurrent_N, self.hidden_dim, device=self.device
                 )
+                self.agents[agent_id].prev_actions_batch[env_idx] = torch.zeros(
+                   self.action_dim, device=self.device
+                )
                 
         # Central Value RNN Reset (if global done)
         if any(dones.values()):
@@ -565,6 +587,14 @@ class rMAPPOAlgorithm:
                 my_actions_batch = self._chunk_sequence(my_actions, chunk_len).reshape(-1)
                 p_h0_batch = p_states_all[chunk_indices]
                 
+                # Construct prev_actions one-hot sequence from buffer
+                prev_actions_raw = torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data[:num_chunks * chunk_len]], 
+                    dtype=torch.long, device=self.device
+                )
+                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
+                prev_actions_chunked = self._chunk_sequence(prev_actions_onehot_seq, chunk_len)
+                
                 avail_actions_batch_merged = None
                 if agent_id in available_actions_batch:
                     avail_actions_chunked = self._chunk_sequence(available_actions_batch[agent_id], chunk_len)
@@ -574,6 +604,14 @@ class rMAPPOAlgorithm:
                 rnn_masks_batch = masks_batch
                 my_actions_batch = my_actions
                 p_h0_batch = p_states_all[0].unsqueeze(0)
+                
+                # Construct prev_actions for single batch
+                prev_actions_raw = torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data], 
+                    dtype=torch.long, device=self.device
+                )
+                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
+                prev_actions_chunked = prev_actions_onehot_seq.unsqueeze(1)
                 
                 avail_actions_batch_merged = None
                 if agent_id in available_actions_batch:
@@ -587,7 +625,10 @@ class rMAPPOAlgorithm:
                 old_log_probs = old_log_probs_raw
         
             for _ in range(self.ppo_epochs):
-                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, available_actions=avail_actions_batch_merged)
+                new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
+                    rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, 
+                    available_actions=avail_actions_batch_merged, prev_actions=prev_actions_chunked
+                )
                 if self.global_reward:
                     adv_target = global_adv_batch
                 else:

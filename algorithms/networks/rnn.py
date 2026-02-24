@@ -1,8 +1,11 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 ###########################################################################
 ## From https://github.com/marlbenchmark/on-policy, edited for our usage.
+## Modified: prev_action (one-hot) is concatenated to obs before feature extraction
+##           so that the RNN hidden state encodes (obs, action) pair history.
 ###########################################################################
 
 class RNNLayer(nn.Module):
@@ -86,16 +89,22 @@ class RNNPolicyNetwork(nn.Module):
         super(RNNPolicyNetwork, self).__init__()
         self._hidden_dim = hidden_dim
         self._recurrent_N = recurrent_N
+        self._action_dim = action_dim
+        # Input: [obs || one_hot(prev_action)]
         self.feature_extractor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
+            nn.Linear(obs_dim + action_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim)
         )
         self.rnn = RNNLayer(hidden_dim, hidden_dim, recurrent_N, use_orthogonal=True)
         self.output_layer = nn.Linear(hidden_dim, action_dim)
 
-    def forward(self, obs, rnn_states, masks, available_actions=None):
-        x = self.feature_extractor(obs)
+    def forward(self, obs, rnn_states, masks, available_actions=None, prev_actions=None):
+        # prev_actions: one-hot (B, action_dim) or (T*N, action_dim)
+        if prev_actions is None:
+            prev_actions = torch.zeros(*obs.shape[:-1], self._action_dim, device=obs.device)
+        x = torch.cat([obs, prev_actions], dim=-1)
+        x = self.feature_extractor(x)
         if x.dim() == 3:
             x = x.reshape(-1, x.size(-1))
         x, rnn_states = self.rnn(x, rnn_states, masks)
@@ -104,15 +113,15 @@ class RNNPolicyNetwork(nn.Module):
             logits[available_actions == 0] = -1e10
         return logits, rnn_states
 
-    def get_action_and_log_prob(self, obs, rnn_states, masks, available_actions=None):
-        logits, rnn_states = self.forward(obs, rnn_states, masks, available_actions)
+    def get_action_and_log_prob(self, obs, rnn_states, masks, available_actions=None, prev_actions=None):
+        logits, rnn_states = self.forward(obs, rnn_states, masks, available_actions, prev_actions=prev_actions)
         dist = torch.distributions.Categorical(logits=logits)
         action = dist.sample()
         log_prob = dist.log_prob(action)
         return action, log_prob, rnn_states
 
-    def evaluate_actions(self, obs, rnn_states, action, masks, available_actions=None):
-        logits, _ = self.forward(obs, rnn_states, masks, available_actions)
+    def evaluate_actions(self, obs, rnn_states, action, masks, available_actions=None, prev_actions=None):
+        logits, _ = self.forward(obs, rnn_states, masks, available_actions, prev_actions=prev_actions)
         dist = torch.distributions.Categorical(logits=logits)
         log_prob = dist.log_prob(action)
         entropy = dist.entropy()
@@ -120,20 +129,31 @@ class RNNPolicyNetwork(nn.Module):
 
 
 class RNNValueNetwork(nn.Module):
-    def __init__(self, obs_dim, hidden_dim=64, recurrent_N=1, out_dim=1):
+    def __init__(self, obs_dim, hidden_dim=64, recurrent_N=1, out_dim=1, action_dim=0, num_agents=1):
         super(RNNValueNetwork, self).__init__()
         self._hidden_dim = hidden_dim
         self._recurrent_N = recurrent_N
+        self._action_dim = action_dim
+        self._num_agents = num_agents
+        # Input: [obs || one_hot(joint_prev_actions)]
+        # For centralized critic: joint_prev_actions is (action_dim * num_agents)
+        # For independent critic: joint_prev_actions is (action_dim)
+        prev_action_input_dim = action_dim * num_agents
         self.feature_extractor = nn.Sequential(
-            nn.Linear(obs_dim, hidden_dim),
+            nn.Linear(obs_dim + prev_action_input_dim, hidden_dim),
             nn.ReLU(),
             nn.LayerNorm(hidden_dim)
         )
         self.rnn = RNNLayer(hidden_dim, hidden_dim, recurrent_N, use_orthogonal=True)
         self.output_layer = nn.Linear(hidden_dim, out_dim)
 
-    def forward(self, obs, rnn_states, masks):
-        x = self.feature_extractor(obs)
+    def forward(self, obs, rnn_states, masks, prev_actions=None):
+        # prev_actions: one-hot (B, action_dim * num_agents) or (T*N, action_dim * num_agents)
+        expected_dim = self._action_dim * self._num_agents
+        if prev_actions is None:
+            prev_actions = torch.zeros(*obs.shape[:-1], expected_dim, device=obs.device)
+        x = torch.cat([obs, prev_actions], dim=-1)
+        x = self.feature_extractor(x)
         if x.dim() == 3:
             x = x.reshape(-1, x.size(-1))
         x, rnn_states = self.rnn(x, rnn_states, masks)
