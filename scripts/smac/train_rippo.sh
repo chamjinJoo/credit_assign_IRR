@@ -13,7 +13,7 @@ recurrent_N=1
 
 # training and logging 
 max_iterations=1500
-max_steps_per_iteration=2000
+max_steps_per_iteration=6400
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 seed=42

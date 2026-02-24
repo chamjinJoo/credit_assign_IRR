@@ -327,22 +327,21 @@ class rPCIAlgorithm:
         
         # Value network 설정
         if self.use_centralized_critic:
-            # MAPPO-style centralized critic: 전체 에이전트 관측값 결합 입력, 에이전트별 value 출력
+            # MAPPO-style centralized critic
             self.value_net = RNNValueNetwork(
                 obs_dim=obs_dim * num_agents,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                out_dim=num_agents  # 에이전트별 value 출력 (value-return 일관성 보장)
+                out_dim=num_agents 
             )
             self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
             self.rnn_state_value = None  # 초기화는 reset_agents에서
-            # 에이전트별 value_net은 사용하지 않지만, 호환성을 위해 딕셔너리 유지
             self.value_nets = {agent_id: self.value_net for agent_id in range(num_agents)}
             self.value_optimizers = {agent_id: self.value_optimizer for agent_id in range(num_agents)}
             print(f'[R-PCI] Using MAPPO-style centralized critic (input_dim={obs_dim * num_agents}, out_dim={num_agents})')
 
         elif self.use_value_parameter_sharing:
-            # 하나의 shared value network 생성 (IPPO-style, 개별 관측값 입력)
+            # one shared value network (IPPO-style)
             self.shared_value_net = RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N)
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
@@ -351,12 +350,11 @@ class rPCIAlgorithm:
                 self.agents[agent_id].value_net = self.shared_value_net
                 self.agents[agent_id].value_optimizer = self.shared_value_optimizer 
 
-            # for checkpointing and loading (호환성을 위해 딕셔너리 유지)
+            # for checkpointing and loading
             self.value_nets = {agent_id: self.shared_value_net for agent_id in range(num_agents)}
             self.value_optimizers = {agent_id: self.shared_value_optimizer for agent_id in range(num_agents)}
 
-        else:
-            # 각 agent별로 별도의 value network 사용
+        else: # individual value network for each agent
             self.value_nets = {agent_id: agent.value_net for agent_id, agent in self.agents.items()}
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
@@ -447,7 +445,6 @@ class rPCIAlgorithm:
             progress = effective_steps / self.causal_lambda_warmup_steps
             return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
     
-    
     def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 16) -> Dict[str, float]:
         if self.get_current_causal_lambda() == 0.0:
             return {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
@@ -513,19 +510,6 @@ class rPCIAlgorithm:
         Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
         # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
-        
-        ''' [SWITCH] Z=own hidden state 
-        z_list = [] 
-        for i in range(num_agents):
-            if i in hidden_states_batch:
-                # hidden_states_batch[i] is (Batch, RecN, H)
-                z_list.append(hidden_states_batch[i].view(batch_size, -1))
-            else:
-                z_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
-                # default self.recurrent_N is 1, but for generality.
-        Stack (B, N, RecN*H) then flatten -> (B*N, RecN*H)
-        Z_super = torch.stack(z_list, dim=1).view(-1, self.recurrent_N * self.hidden_dim)
-        '''
         
         with torch.no_grad():
             log_probs_list = []
@@ -1207,11 +1191,11 @@ class rPCIAlgorithm:
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
-                # 개선: available_actions 마스크를 r_hat_all에도 적용
-                # 불가능한 action의 r_hat을 0으로 만들어 baseline에 기여하지 않도록 함
-                if available_actions_batch:
-                    avail_mask_flat = torch.stack([available_actions_batch[k][i:end] for k in range(num_agents)], dim=1).view(-1, action_dim)
-                    r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
+            # available_actions 마스크를 r_hat_all에도 적용
+            # 불가능한 action의 r_hat을 0으로 만들어 baseline에 기여하지 않도록 함
+            if available_actions_batch:
+                avail_mask_flat = torch.stack([available_actions_batch[k][i:end] for k in range(num_agents)], dim=1).view(-1, action_dim)
+                r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
 
                 # Opt 1) using real rewards
                 r_factual = rewards_flat

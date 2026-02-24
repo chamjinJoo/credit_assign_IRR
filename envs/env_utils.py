@@ -57,7 +57,8 @@ def create_environment(env_config) -> MultiAgentEnv:
             mauling_punishment=config_dict.get('mauling_punishment', -1.0),
             coop_bonus=config_dict.get('coop_bonus', 1.0),
             seed=config_dict.get('seed', 0),
-            grid_observation=config_dict.get('grid_observation', False)
+            grid_observation=config_dict.get('grid_observation', False),
+            obs_noise_std=config_dict.get('obs_noise_std', 0.0)
         )
         
     elif env_name == 'LBForaging' or env_name == 'LBF' or env_name == 'lbforaging':

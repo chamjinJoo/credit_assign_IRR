@@ -64,7 +64,8 @@ environment:
   forage_reward: 3.0
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
-  grid_observation: false
+  grid_observation: true
+  obs_noise_std: 0.0
   
 # Weights & Biases Configuration
 wandb:

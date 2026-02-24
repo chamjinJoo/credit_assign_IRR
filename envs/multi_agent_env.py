@@ -85,6 +85,7 @@ class StagHuntEnv(MultiAgentEnv):
         seed: int = None,
         grid_observation: bool = False,
         vision: int = 2,
+        obs_noise_std: float = 0.0
         **kwargs):
         """
         Stag-Hunt 환경 초기화 (원본 게임 로직 기반)
@@ -130,7 +131,10 @@ class StagHuntEnv(MultiAgentEnv):
         else:
             # num_agents + num_stags + num_hares. All have (x, y) coordinates
             self.obs_dim = (num_agents + num_agents + self.forage_quantity) * 3
-        
+            
+        # add noise to observation
+        self.obs_noise_std = obs_noise_std
+
         # Environment state
         self.agent_positions = {}  # {agent_id: (x, y)}
         self.stag_positions = {}  # {stag_id: (x, y)} - stag 1과 stag 2
@@ -645,15 +649,10 @@ class StagHuntEnv(MultiAgentEnv):
                             if hare_pos == check_pos and self.hare_alive.get(hare_id, False):
                                 cell_info[self.num_agents + self.num_agents] = 1.0
                                 break
-                    
                     grid_obs.extend(cell_info)
      
             observations[agent_id] = np.array(grid_obs, dtype=np.float32)
 
-            # add stochasticity to obs
-            # self.obs_noise = 0.01
-            # observations[agent_id] = observations[agent_id] + np.random.normal(0, self.obs_noise, size=observations[agent_id].shape)
-            
         return observations
     
     def _get_observations_coordinate(self) -> Dict[int, np.ndarray]:
@@ -704,10 +703,17 @@ class StagHuntEnv(MultiAgentEnv):
 
     def _get_observations(self) -> Dict[int, np.ndarray]:
         if self.grid_observation:
-            return self._get_grid_observations()
+            observations = self._get_grid_observations()
             # return self._get_bitmask_grid_observations()
         else:
-            return self._get_observations_coordinate()
+            observations = self._get_observations_coordinate()
+        
+        # add noise to observations if std > 0
+        if self.obs_noise_std > 0:
+            for agent_id in observations:
+                observations[agent_id] = observations[agent_id] + np.random.normal(0, self.obs_noise_std, size=observations[agent_id].shape)
+                
+        return observations
     
     def get_obs_dim(self) -> int:
         """관찰 차원을 반환합니다."""
@@ -1040,6 +1046,11 @@ class LBForagingWrapper(MultiAgentEnv):
     def reset(self) -> Dict[int, np.ndarray]:
         obs_array, _ = self.env.reset() # (observation_array, info_dict)
         observations = {i: obs_array[i].astype(np.float32).flatten() for i in range(self.num_agents)}
+        
+        # add noise to observations if std > 0
+        if self.obs_noise_std > 0:
+            for agent_id in observations:
+                observations[agent_id] = observations[agent_id] + np.random.normal(0, self.obs_noise_std, size=observations[agent_id].shape)
         return observations
 
     def step(self, actions: Dict[int, int]) -> Tuple[
@@ -1059,6 +1070,9 @@ class LBForagingWrapper(MultiAgentEnv):
         
         for i in range(self.num_agents):
             observations[i] = obs_array[i].astype(np.float32).flatten()
+            # add noise to observations if std > 0
+            if self.obs_noise_std > 0:
+                observations[i] = observations[i] + np.random.normal(0, self.obs_noise_std, size=observations[i].shape)
             # reward: each agent's maximum reward in one episode is 1.0
             rewards[i] = float(reward_array[i])
      

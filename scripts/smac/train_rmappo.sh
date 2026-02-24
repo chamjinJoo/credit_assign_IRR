@@ -1,7 +1,7 @@
 #!/bin/bash
 # env setting
 env="SMAC"
-map_name="3s_vs_5z"
+map_name="5m_vs_6m"
 # easy: 3m, 2s3z, 10m_vs_11m (for scalability)
 # hard: corridor, 5m_vs_6m, 3s_vs_5z
 config="configs/smac.yaml" # using basic config as template
@@ -14,7 +14,7 @@ global_reward=true
 
 # training and logging 
 max_iterations=1500
-max_steps_per_iteration=2000
+max_steps_per_iteration=6400
 n_rollout_threads=8
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety

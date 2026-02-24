@@ -1,22 +1,22 @@
 #!/bin/bash
 # env setting
 env="SMAC"
-map_name="2s3z" 
+map_name="5m_vs_6m" 
 # easy: 3m, 2s3z, 10m_vs_11m (for scalability)
 # hard: corridor, 5m_vs_6m, 3s_vs_5z
 config="configs/smac.yaml" # using basic config as template
 
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=1.0
-clip_delta=0.005
+causal_lambda=0.1
+clip_delta=0.01
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
 recurrent_N=1
 
 # training and logging 
 max_iterations=1500
-max_steps_per_iteration=2000
+max_steps_per_iteration=6400
 n_rollout_threads=8
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety

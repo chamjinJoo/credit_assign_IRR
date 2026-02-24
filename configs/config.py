@@ -92,7 +92,8 @@ class EnvironmentConfig:
     mauling_punishment: float = -1.0
     grid_observation: bool = False
     forage_quantity: Optional[int] = None
-    
+    obs_noise_std: float = 0.0
+
     # For MPE Simple Spread environment
     local_ratio: float = 0.5
     max_cycles: int = 25
