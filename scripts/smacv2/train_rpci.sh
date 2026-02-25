@@ -16,7 +16,7 @@ causal_lambda_adaptive_per_agent=false
 # training and logging 
 n_rollout_threads=8
 max_iterations=1500
-max_steps_per_iteration=6400 # 8 episode for 10gen scenarios (episode limit is 200 steps)
+max_steps_per_iteration=6400 # 200 steps = 1 episode limit for 10gen scenarios
 episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically 
 log_interval=2
 device="cpu"
