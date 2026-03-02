@@ -23,7 +23,7 @@ device="cpu"
 seed=42
 
 # load model if necessary
-# checkpoint="save_checkpoints/20260222_210018/smacv2wrapper/checkpoints/checkpoint_900.pt"
+# checkpoint="save_checkpoints/20260301_111141/smacv2wrapper/checkpoints/checkpoint_1000.pt"
 
 export SC2PATH="$HOME/StarCraftII"
 # Conda 초기화 및 환경 활성화

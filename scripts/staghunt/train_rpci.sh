@@ -20,7 +20,7 @@ episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically
 n_rollout_threads=8
 log_interval=2
 device="cpu"
-seed=31
+seed=42
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

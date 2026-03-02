@@ -169,7 +169,7 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 
 # 26.02.20
 * `SMACv2` test 
-    * $x=(o^i_t, \mathbf{h}^_{t-1})$ with EPO setting: not significant
+    * $x=(o^i_t, \mathbf{h}_{t-1})$ with EPO setting: not significant
     * RBFKernel gamma: 1.0 -> 0.5: not significant, unstable
     * clipping negative delta like ReLU: not significant
     * PCI-rMAPPO (with centralized critic taking joint info.): not significant
@@ -181,3 +181,6 @@ We checked that it works in Stag-Hunt environment without mauling punishment.
 # 26.02.24
 * RNN change: obs history -> (obs, action) history, $h^i_t = (o^i_0, a^i_0, ..., a^i_{t-1}, o^i_t)$
 * action expression change: embedding -> one-hot. Embedding is more fit to compress high-dimensional data.
+
+# 26.02.28
+* SMACv2 - `set_gamma()` and `baseline_type='averaged'` have no effect.
