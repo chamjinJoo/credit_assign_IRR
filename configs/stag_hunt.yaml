@@ -65,11 +65,11 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
   grid_observation: true
-  obs_noise_std: 0.1
+  obs_noise_std: 0.0
   
 # Weights & Biases Configuration
 wandb:
   use_wandb: false
-  project: "pci-mappo-stag-hunt"
+  project: "pci-marl-stag-hunt"
   run_name: "stag-hunt"
-  tags: ["pci", "mappo", "multi-agent", "stag-hunt"]
+  tags: ["pci", "marl", "multi-agent", "stag-hunt"]

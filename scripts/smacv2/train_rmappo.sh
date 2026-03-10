@@ -25,8 +25,7 @@ conda activate pcimarl
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-xvfb-run -a -s "-screen 0 64x64x8" \
-    python main.py --env ${env} --config ${config} --model ${model} \
+python main.py --env ${env} --config ${config} --model ${model} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --n-rollout-threads ${n_rollout_threads} \
     --recurrent-N ${recurrent_N} \

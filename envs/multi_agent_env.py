@@ -1278,3 +1278,93 @@ class SMACv2Wrapper(MultiAgentEnv):
 
     def close(self):
         self._env.close()
+
+class MPESimpleSpreadEnv(MultiAgentEnv):
+    """
+    Wrapper for MPE Simple Spread environment using PettingZoo.
+    """
+    def __init__(self, n_agents: int = 3, local_ratio: float = 0.5, max_cycles: int = 25, continuous_actions: bool = False, seed: int = None, **kwargs):
+        try:
+            from pettingzoo.mpe import simple_spread_v3
+        except ImportError:
+            raise ImportError("PettingZoo MPE is not installed. Please install it using `pip install pettingzoo[mpe]`")
+        
+        self.num_agents = n_agents
+        self.max_cycles = max_cycles
+        self.local_ratio = local_ratio
+        
+        # Initialize the environment
+        self._env = simple_spread_v3.parallel_env(
+            N=n_agents, 
+            local_ratio=local_ratio, 
+            max_cycles=max_cycles, 
+            continuous_actions=continuous_actions
+        )
+        self._env.reset(seed=seed)
+        
+        # agents are 'agent_0', 'agent_1', etc.
+        self._agent_names = self._env.agents
+        
+        self.agents = list(range(self.num_agents))
+        self.obs_dim = self._env.observation_space(self._agent_names[0]).shape[0]
+        
+        # For discrete actions, action_space is Discrete(5)
+        self.action_dim = self._env.action_space(self._agent_names[0]).n
+        
+        super().__init__(num_agents=self.num_agents, seed=seed)
+        self.step_count = 0
+
+    def reset(self) -> Dict[int, np.ndarray]:
+        obs_dict, info = self._env.reset()
+        self.step_count = 0
+        return {i: np.array(obs_dict[name], dtype=np.float32) for i, name in enumerate(self._agent_names)}
+        
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],
+        Dict[int, float],
+        Dict[int, bool],
+        Dict[str, Any]
+    ]:
+        action_dict = {name: actions[i] for i, name in enumerate(self._agent_names)}
+        
+        obs_dict, reward_dict, terminated_dict, truncated_dict, info_dict = self._env.step(action_dict)
+        self.step_count += 1
+        
+        observations = {i: np.array(obs_dict[name], dtype=np.float32) for i, name in enumerate(self._agent_names)}
+        rewards = {i: float(reward_dict[name]) for i, name in enumerate(self._agent_names)}
+        
+        # MPE simple spread uses terminations (done) and truncations (horizon limit)
+        dones = {i: bool(terminated_dict[name] or truncated_dict[name]) for i, name in enumerate(self._agent_names)}
+        
+        info = { 'step_count': self.step_count }
+        
+        return observations, rewards, dones, info
+
+    def get_state(self) -> np.ndarray:
+        # PettingZoo MPE provides a state() method
+        return np.array(self._env.state(), dtype=np.float32)
+
+    def get_avail_actions(self) -> List[List[int]]:
+        # All actions available at all times for MPE
+        return [[1] * self.action_dim for _ in range(self.num_agents)]
+
+    def get_avail_agent_actions(self, agent_id: int) -> List[int]:
+        return [1] * self.action_dim
+
+    def get_env_info(self) -> Dict[str, Any]:
+        return {
+            "state_shape": self.get_state().shape[0],
+            "obs_shape": self.obs_dim,
+            "n_actions": self.action_dim,
+            "n_agents": self.num_agents,
+            "episode_limit": self.max_cycles,
+        }
+
+    def get_obs_dim(self) -> int:
+        return self.obs_dim
+        
+    def get_action_dim(self) -> int:
+        return self.action_dim
+
+    def close(self):
+        self._env.close()

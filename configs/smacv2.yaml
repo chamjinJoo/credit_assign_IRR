@@ -61,6 +61,6 @@ environment:
 # Weights & Biases Configuration
 wandb:
   use_wandb: true
-  project: "pci-mappo-smacv2"
+  project: "pci-marl-smacv2"
   # run_name: "smac-3m" # Removed to allow dynamic run name generation based on map name
   tags: ["pci", "mappo", "multi-agent", "smac"]

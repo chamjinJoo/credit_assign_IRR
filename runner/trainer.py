@@ -596,7 +596,6 @@ class Trainer:
         while (episode_count < self.episodes_per_iteration if use_ep_limit else step_count < self.max_steps_per_iteration):
             # Get available actions
             available_actions_batch = self.env.get_avail_actions_batch()
-            
             # Get actions for all environments
             actions_batch = self.algorithm.get_actions_batch(
                 observations_batch,

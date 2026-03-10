@@ -26,8 +26,7 @@ conda activate pcimarl
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-xvfb-run -a -s "-screen 0 64x64x8" \
-    python main.py --env ${env} --config ${config} --model ${model} --global-reward ${global_reward} \
+python main.py --env ${env} --config ${config} --model ${model} --global-reward ${global_reward} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --recurrent-N ${recurrent_N} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
     --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-smacv2 \

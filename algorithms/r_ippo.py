@@ -155,7 +155,7 @@ class rIPPOAlgorithm:
         num_batches: int = 1, 
         device: str = "cpu",
         rnn_chunk_length: int = 16,
-        global_reward: bool = False,
+        global_reward: bool = True,
         use_episode_buffer: bool = False,
     ):
         self.global_reward = global_reward
@@ -245,30 +245,38 @@ class rIPPOAlgorithm:
         # Track done status for each agent in each environment
         self.last_dones_batch = [{i: False for i in range(self.num_agents)} for _ in range(n_envs)]
 
-    def _get_value(self, agent_id: int, obs: torch.Tensor, mask: torch.Tensor) -> Tuple[float, torch.Tensor]:
+    def _get_value(self, agent_id: int, obs: torch.Tensor, mask: torch.Tensor, prev_action_onehot: Optional[torch.Tensor] = None) -> Tuple[float, torch.Tensor]:
         """Helper to get value and update hidden state for an agent."""
         with torch.no_grad():
             curr_rnn_state = self.rnn_states_value[agent_id].unsqueeze(0) # (1, L, D)
             
+            if prev_action_onehot is None:
+                prev_action_onehot = self.agents[agent_id].prev_action.unsqueeze(0)  # (1, action_dim)
+            
             value, next_rnn_state = self.value_net(
                 obs.unsqueeze(0),
                 curr_rnn_state,
-                mask.unsqueeze(0)
+                mask.unsqueeze(0),
+                prev_actions=prev_action_onehot
             )
             
             self.rnn_states_value[agent_id] = next_rnn_state.squeeze(0)
         return value.item(), curr_rnn_state.squeeze(0).clone()
         
-    def _get_value_batch(self, agent_id: int, obs_batch: torch.Tensor, masks_batch: torch.Tensor):
+    def _get_value_batch(self, agent_id: int, obs_batch: torch.Tensor, masks_batch: torch.Tensor, prev_actions_onehot: Optional[torch.Tensor] = None):
         """Helper to get batch values for an agent."""
         with torch.no_grad():
             # Get current value states for this agent across batch
             curr_rnn_state = self.rnn_states_value_batch[agent_id].clone()
             
+            if prev_actions_onehot is None:
+                prev_actions_onehot = self.agents[agent_id].prev_actions_batch  # (n_envs, action_dim)
+            
             values, next_rnn_state = self.value_net(
                 obs_batch,
                 curr_rnn_state,
-                masks_batch
+                masks_batch,
+                prev_actions=prev_actions_onehot
             )
             
             # Update state
@@ -320,6 +328,9 @@ class rIPPOAlgorithm:
             if any(x is not None for x in agent_avail_list):
                  agent_avail_tensor = torch.tensor(agent_avail_list, dtype=torch.float32, device=self.device)
 
+            # Cache a_{t-1} before get_action_batch updates it to a_t
+            agent_prev_actions_onehot = self.agents[agent_id].prev_actions_batch.clone()
+
             # 1. Policy Step
             actions, log_probs, prev_p_states = self.agents[agent_id].get_action_batch(
                 agent_obs_batch,
@@ -329,7 +340,12 @@ class rIPPOAlgorithm:
             
             # 2. Value Step (Independent Value)
             # prev_v_states: (Batch, L, D)
-            _, prev_v_states = self._get_value_batch(agent_id, agent_obs_batch, agent_masks_batch)
+            _, prev_v_states = self._get_value_batch(
+                agent_id, 
+                agent_obs_batch, 
+                agent_masks_batch, 
+                prev_actions_onehot=agent_prev_actions_onehot
+            )
             
             # Distribute results
             for i in range(n_envs):
@@ -432,11 +448,19 @@ class rIPPOAlgorithm:
             if available_actions is not None and agent_id in available_actions:
                 avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
 
+            # --- Fix: Cache a_{t-1} before get_action updates it to a_t ---
+            agent_prev_action_onehot = self.agents[agent_id].prev_action.unsqueeze(0).clone()
+
             # Policy
             action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             # Value
-            _, v_state = self._get_value(agent_id, obs, mask_tensor)
+            _, v_state = self._get_value(
+                agent_id, 
+                obs, 
+                mask_tensor, 
+                prev_action_onehot=agent_prev_action_onehot
+            )
             
             actions[agent_id] = (action, log_prob)
             self.temp_hidden_states[agent_id] = (p_state, v_state)
@@ -538,113 +562,104 @@ class rIPPOAlgorithm:
                      # Convert to tensor (Batch, ActionDim)
                      available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
         
-        # Prepare data per agent
-        for agent_id in range(self.num_agents):
-            if agent_id not in batch_data[0]['bold_o_t']: continue
+        # === PPO Epoch Updates ===
+        # To avoid sequential bias on the shared value network, we aggregate the 
+        # value loss across all agents and perform a single value update per PPO epoch.
+        for epoch in range(self.ppo_epochs):
+            total_value_loss = 0.0
+            total_active_masks_sum = 0.0
             
-            # Extract Batch Data
-            # Extract Batch Data
-            agent_obs = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
-            
-            if self.global_reward:
-                 # Global reward (mean of all agents)
-                 rewards_list = [sum(t['bold_r_t'].values()) / self.num_agents for t in batch_data]
-                 agent_rewards = torch.tensor(rewards_list, dtype=torch.float32, device=self.device)
-            else:
-                 # Individual reward
-                 agent_rewards = torch.tensor([t['bold_r_t'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
-                 
-            agent_dones = torch.tensor([t['dones'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
-            masks_batch = torch.tensor([t['masks'][agent_id] for t in batch_data], device=self.device).unsqueeze(1)
-            
-            # Hidden states: (p_state, v_state)
-            p_states_all = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device)
-            v_states_all = torch.stack([t['hidden_states'][agent_id][1] for t in batch_data]).to(self.device)
-            
-            # --- 1. Extract Pre-computed Advantages and Returns ---
-            returns_list = [t['returns'][agent_id] for t in batch_data]
-            advantages_list = [t['advantages'][agent_id] for t in batch_data]
-            
-            agent_returns = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
-            agent_advantages = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
-            
-            if agent_advantages.numel() > 1:
-                adv = (agent_advantages - agent_advantages.mean()) / (agent_advantages.std() + 1e-8)
-            else:
-                adv = torch.zeros_like(agent_advantages)
-
-
-            # --- 2. Chunked PPO Update ---
-            my_actions = torch.tensor([t['bold_a_t'][agent_id] for t in batch_data], dtype=torch.long, device=self.device)
-            
-            T_total = agent_obs.size(0)
-            chunk_len = self.rnn_chunk_length
-            num_chunks = T_total // chunk_len
-            
-            if num_chunks > 0:
-                # Chunk data
-                rnn_obs_batch = self._chunk_sequence(agent_obs, chunk_len) # (L, Chunks, D)
-                my_actions_batch = self._chunk_sequence(my_actions, chunk_len).reshape(-1) # (L*Chunks)
-                rnn_masks_batch = self._chunk_sequence(masks_batch, chunk_len)
-                ret_batch = self._chunk_sequence(agent_returns, chunk_len).reshape(-1)
-                adv_batch = self._chunk_sequence(adv, chunk_len).reshape(-1)
+            # 1. Update each agent's policy independently and accumulate value loss
+            for agent_id in range(self.num_agents):
+                if agent_id not in batch_data[0]['bold_o_t']: continue
                 
-                # Active Masks (Padding Mask)
-                if 'active_mask' in batch_data[0]:
-                    active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1) # (T, 1)
-                    active_masks_chunked = self._chunk_sequence(active_masks, chunk_len) # (L, B, 1)
-                    active_masks_batch = active_masks_chunked.reshape(-1)
+                # Fetch pre-prepared batch data for this agent
+                # (For simplicity and exact reproduction of previous logic, we re-chunk here or 
+                # use pre-chunked references if available. The previous code chunked inside the loop.)
+                
+                agent_obs = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
+                masks_batch = torch.tensor([t['masks'][agent_id] for t in batch_data], device=self.device).unsqueeze(1)
+                p_states_all = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device)
+                v_states_all = torch.stack([t['hidden_states'][agent_id][1] for t in batch_data]).to(self.device)
+                my_actions = torch.tensor([t['bold_a_t'][agent_id] for t in batch_data], dtype=torch.long, device=self.device)
+                
+                # Extract pre-computed Returns and Advantages
+                if self.global_reward:
+                     rewards_list = [sum(t['bold_r_t'].values()) / self.num_agents for t in batch_data]
+                     agent_returns = torch.tensor([t['returns'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
                 else:
-                    active_masks = torch.ones(T_total, 1, device=self.device)
-                    active_masks_chunked = self._chunk_sequence(active_masks, chunk_len)
-                    active_masks_batch = active_masks_chunked.reshape(-1)
+                     agent_returns = torch.tensor([t['returns'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+                agent_advantages = torch.tensor([t['advantages'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
                 
-                chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
-                p_h0_batch = p_states_all[chunk_indices] # (Chunks, L, D) expecting (B, L, D) -> Correct
-                v_h0_batch = v_states_all[chunk_indices]
-                
-                # Construct prev_actions one-hot sequence from buffer
-                prev_actions_raw = torch.tensor(
-                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data[:num_chunks * chunk_len]],
-                    dtype=torch.long, device=self.device
-                )
-                prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
-                prev_actions_chunked = self._chunk_sequence(prev_actions_onehot_seq, chunk_len)
-                
-                avail_actions_batch_merged = None
-                if agent_id in available_actions_batch:
-                     avail_actions_chunked = self._chunk_sequence(available_actions_batch[agent_id], chunk_len)
-                     avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1))
+                if agent_advantages.numel() > 1:
+                    adv = (agent_advantages - agent_advantages.mean()) / (agent_advantages.std() + 1e-8)
+                else:
+                    adv = torch.zeros_like(agent_advantages)
 
-            else:
-                 rnn_obs_batch = agent_obs.unsqueeze(1)
-                 rnn_masks_batch = masks_batch
-                 my_actions_batch = my_actions
-                 ret_batch = agent_returns
-                 adv_batch = adv
-                 p_h0_batch = p_states_all[0].unsqueeze(0)
-                 v_h0_batch = v_states_all[0].unsqueeze(0)
-                 
-                 # Construct prev_actions for single batch
-                 prev_actions_raw = torch.tensor(
-                     [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
-                     dtype=torch.long, device=self.device
-                 )
-                 prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
-                 prev_actions_chunked = prev_actions_onehot_seq.unsqueeze(1)
-                 
-                 avail_actions_batch_merged = None
-                 if agent_id in available_actions_batch:
-                    avail_actions_batch_merged = available_actions_batch[agent_id]
+                T_total = agent_obs.size(0)
+                chunk_len = self.rnn_chunk_length
+                num_chunks = T_total // chunk_len
+                
+                if num_chunks > 0:
+                    rnn_obs_batch = self._chunk_sequence(agent_obs, chunk_len)
+                    my_actions_batch = self._chunk_sequence(my_actions, chunk_len).reshape(-1)
+                    rnn_masks_batch = self._chunk_sequence(masks_batch, chunk_len)
+                    ret_batch = self._chunk_sequence(agent_returns, chunk_len).reshape(-1)
+                    adv_batch = self._chunk_sequence(adv, chunk_len).reshape(-1)
+                    
+                    if 'active_mask' in batch_data[0]:
+                        active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
+                        active_masks_batch = self._chunk_sequence(active_masks, chunk_len).reshape(-1)
+                    else:
+                        active_masks = torch.ones(T_total, 1, device=self.device)
+                        active_masks_batch = self._chunk_sequence(active_masks, chunk_len).reshape(-1)
+                    
+                    chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
+                    p_h0_batch = p_states_all[chunk_indices] 
+                    v_h0_batch = v_states_all[chunk_indices]
+                    
+                    prev_actions_raw = torch.tensor(
+                        [t['bold_a_t_minus_1'][agent_id] for t in batch_data[:num_chunks * chunk_len]],
+                        dtype=torch.long, device=self.device
+                    )
+                    prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
+                    prev_actions_chunked = self._chunk_sequence(prev_actions_onehot_seq, chunk_len)
+                    
+                    avail_actions_batch_merged = None
+                    if agent_id in available_actions_batch:
+                         avail_actions_chunked = self._chunk_sequence(available_actions_batch[agent_id], chunk_len)
+                         avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1))
+                else:
+                     rnn_obs_batch = agent_obs.unsqueeze(1)
+                     rnn_masks_batch = masks_batch
+                     my_actions_batch = my_actions
+                     ret_batch = agent_returns
+                     adv_batch = adv
+                     p_h0_batch = p_states_all[0].unsqueeze(0)
+                     v_h0_batch = v_states_all[0].unsqueeze(0)
+                     if 'active_mask' in batch_data[0]:
+                         active_masks_batch = torch.tensor([t['active_mask'] for t in batch_data], device=self.device)
+                     else:
+                         active_masks_batch = torch.ones(T_total, device=self.device)
+                     
+                     prev_actions_raw = torch.tensor(
+                         [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
+                         dtype=torch.long, device=self.device
+                     )
+                     prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
+                     prev_actions_chunked = prev_actions_onehot_seq.unsqueeze(1)
+                     
+                     avail_actions_batch_merged = None
+                     if agent_id in available_actions_batch:
+                        avail_actions_batch_merged = available_actions_batch[agent_id]
 
-            # Use stored log_probs from rollout (not recalculated)
-            old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
-            if num_chunks > 0:
-                old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
-            else:
-                old_log_probs = old_log_probs_raw
-            
-            for _ in range(self.ppo_epochs):
+                old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+                if num_chunks > 0:
+                    old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
+                else:
+                    old_log_probs = old_log_probs_raw
+                
+                # --- Policy Evaluation ---
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
                     rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch,
                     available_actions=avail_actions_batch_merged, prev_actions=prev_actions_chunked
@@ -653,12 +668,11 @@ class rIPPOAlgorithm:
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 surr1 = ratio * adv_batch
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                # Masked Policy Loss
+                
                 policy_loss = -torch.min(surr1, surr2)
                 policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
                 
-                # Masked Entropy Loss
-                entropy_loss = -entropy # entropy is (T)
+                entropy_loss = -entropy 
                 entropy_loss = (entropy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
                 
                 loss = policy_loss + self.entropy_coef * entropy_loss
@@ -671,19 +685,31 @@ class rIPPOAlgorithm:
                 agent_losses[f'agent_{agent_id}_policy_loss'] += policy_loss.item()
                 agent_losses[f'agent_{agent_id}_entropy_loss'] += entropy_loss.item()
                 
-                # Pass prev_actions to value network
+                # --- Shared Value Net Evaluation ---
                 new_vals, _ = self.value_net(rnn_obs_batch, v_h0_batch, rnn_masks_batch, prev_actions=prev_actions_chunked)
-                # Masked Value Loss
-                # val_loss = F.mse_loss(new_vals.squeeze(1), ret_batch)
                 val_error = (new_vals.squeeze(1) - ret_batch) ** 2
-                val_loss = (val_error * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                val_loss = (val_error * active_masks_batch).sum()
                 
+                total_value_loss += val_loss
+                total_active_masks_sum += active_masks_batch.sum()
+                
+            # 2. Single Global Value Update per Epoch
+            if total_active_masks_sum > 0:
+                mean_val_loss = total_value_loss / total_active_masks_sum
                 self.value_optimizer.zero_grad()
-                (self.value_coef * val_loss).backward()
+                (self.value_coef * mean_val_loss).backward()
                 torch.nn.utils.clip_grad_norm_(self.value_net.parameters(), self.max_grad_norm)
                 self.value_optimizer.step()
                 
-                agent_losses[f'agent_{agent_id}_value_loss'] += val_loss.item()
+                # We can store the shared value loss 
+                agent_losses['value_loss'] += mean_val_loss.item()
+                
+        # 3. Normalize logs by ppo_epochs at the end
+        agent_losses['value_loss'] /= self.ppo_epochs
+        for agent_id in range(self.num_agents):
+            if f'agent_{agent_id}_policy_loss' in agent_losses:
+                agent_losses[f'agent_{agent_id}_policy_loss'] /= self.ppo_epochs
+                agent_losses[f'agent_{agent_id}_entropy_loss'] /= self.ppo_epochs
 
         return dict(agent_losses)
 
@@ -744,7 +770,14 @@ class rIPPOAlgorithm:
                         extended_masks = torch.cat([agent_masks_seq,
                                                    torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
                         
-                        all_values, _ = self.value_net(extended_obs, v_h0, extended_masks)
+                        # Extract prev_actions for sequence
+                        agent_prev_actions = torch.tensor([t['bold_a_t_minus_1'][agent_id] for t in traj], dtype=torch.long, device=self.device)
+                        agent_prev_actions_onehot = F.one_hot(agent_prev_actions, self.action_dim).float()
+                        # For the extra last step padding, simply repeat the last action
+                        last_prev_action_onehot = agent_prev_actions_onehot[-1].unsqueeze(0)
+                        extended_prev_actions = torch.cat([agent_prev_actions_onehot, last_prev_action_onehot], dim=0).unsqueeze(1)
+                        
+                        all_values, _ = self.value_net(extended_obs, v_h0, extended_masks, prev_actions=extended_prev_actions)
                         values = all_values[:-1].view(-1)
                         next_val = all_values[-1].item() * last_mask
                         

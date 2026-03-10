@@ -230,14 +230,20 @@ class rMAPPOAlgorithm:
             return torch.zeros(self.num_agents * self.obs_dim, device=device)
         return torch.cat(sorted_obs, dim=-1)
 
-    def _update_central_value(self, global_obs: torch.Tensor, mask: torch.Tensor) -> Tuple[float, torch.Tensor]:
+    def _update_central_value(self, global_obs: torch.Tensor, mask: torch.Tensor, global_prev_action_onehot: Optional[torch.Tensor] = None) -> Tuple[float, torch.Tensor]:
         with torch.no_grad():
             curr_rnn_state = self.rnn_state_value.unsqueeze(0)
+            
+            if global_prev_action_onehot is None:
+                # Construct global prev action from all agents
+                agent_prev_actions = [self.agents[i].prev_action for i in range(self.num_agents)]
+                global_prev_action_onehot = torch.cat(agent_prev_actions, dim=-1).unsqueeze(0) # (1, num_agents * action_dim)
             
             value, next_rnn_state = self.value_net(
                 global_obs.unsqueeze(0),
                 curr_rnn_state,
-                mask.unsqueeze(0)
+                mask.unsqueeze(0),
+                prev_actions=global_prev_action_onehot
             )
             self.rnn_state_value = next_rnn_state.squeeze(0)
         return value.item(), curr_rnn_state.squeeze(0).clone()
@@ -262,6 +268,12 @@ class rMAPPOAlgorithm:
             global_obs_list.append(self._concatenate_observations(observations_batch[i]))
         global_obs_batch = torch.stack(global_obs_list).to(self.device)
         
+        # Construct global prev_actions for batch
+        global_prev_actions_list = []
+        for i in range(self.num_agents): # (n_envs, action_dim)
+            global_prev_actions_list.append(self.agents[i].prev_actions_batch)
+        global_prev_action_onehot_batch = torch.cat(global_prev_actions_list, dim=-1) # (n_envs, num_agents * action_dim)
+        
         # 2. Masks based on last done status
         # Using agent 0's done status for central critic mask (similar to implementation plan)
         masks_list = []
@@ -283,7 +295,12 @@ class rMAPPOAlgorithm:
             # Checking algorithms/networks/rnn.py... it uses RNNLayer.
             # RNNLayer forward(x, h, mask): if x is (Batch, Dim), internally adds Seq dim.
             
-            values_batch, next_states_value = self.value_net(global_obs_batch, self.rnn_states_value_batch, masks_batch)
+            values_batch, next_states_value = self.value_net(
+                global_obs_batch, 
+                self.rnn_states_value_batch, 
+                masks_batch, 
+                prev_actions=global_prev_action_onehot_batch
+            )
             
             # Save next states
             self.rnn_states_value_batch = next_states_value
@@ -657,9 +674,24 @@ class rMAPPOAlgorithm:
                 agent_losses[f'agent_{agent_id}_policy_loss'] += policy_loss.item()
                 agent_losses[f'agent_{agent_id}_entropy_loss'] += entropy_loss.item()
 
+        # === Prepare Joint Prev Actions for Central Value ===
+        # Reconstruct the joint prev_actions for the batch across all agents
+        agent_prev_actions_list = []
+        for agent_id in range(self.num_agents):
+            agent_prev_actions = torch.tensor([t['bold_a_t_minus_1'][agent_id] for t in batch_data], dtype=torch.long, device=self.device)
+            agent_prev_actions_onehot = F.one_hot(agent_prev_actions, self.action_dim).float()
+            agent_prev_actions_list.append(agent_prev_actions_onehot)
+        
+        joint_prev_actions_batch_raw = torch.cat(agent_prev_actions_list, dim=-1) # (T_total, num_agents * action_dim)
+        
+        if num_chunks > 0:
+            global_prev_actions_batch = self._chunk_sequence(joint_prev_actions_batch_raw, chunk_len) # (L, B, num_agents * action_dim)
+        else:
+            global_prev_actions_batch = joint_prev_actions_batch_raw.unsqueeze(1) # (T, 1, num_agents * action_dim)
+
         # === Central Value Update ===
         for _ in range(self.ppo_epochs):
-             new_vals, _ = self.value_net(global_obs_batch, v_h0_batch, global_masks_batch)
+             new_vals, _ = self.value_net(global_obs_batch, v_h0_batch, global_masks_batch, prev_actions=global_prev_actions_batch)
              
              if self.global_reward:
                 # val_loss = F.mse_loss(new_vals.squeeze(1).squeeze(-1), global_ret_batch)
@@ -743,7 +775,19 @@ class rMAPPOAlgorithm:
                     extended_masks = torch.cat([global_masks_seq, 
                                                torch.tensor([[last_mask]], device=self.device)], dim=0)
                     
-                    all_values, _ = self.value_net(extended_obs, v_h0, extended_masks)
+                    # Extract joint prev_actions for the sequence
+                    agent_prev_actions_list = []
+                    for agent_id in range(self.num_agents):
+                        agent_prev_actions = torch.tensor([t['bold_a_t_minus_1'][agent_id] for t in traj], dtype=torch.long, device=self.device)
+                        agent_prev_actions_onehot = F.one_hot(agent_prev_actions, self.action_dim).float()
+                        # Pad the last step with the last action
+                        last_prev_action_onehot = agent_prev_actions_onehot[-1].unsqueeze(0)
+                        extended_agent_prev_actions = torch.cat([agent_prev_actions_onehot, last_prev_action_onehot], dim=0)
+                        agent_prev_actions_list.append(extended_agent_prev_actions)
+                        
+                    joint_prev_actions = torch.cat(agent_prev_actions_list, dim=-1).unsqueeze(1) # (T+1, 1, num_agents * action_dim)
+                    
+                    all_values, _ = self.value_net(extended_obs, v_h0, extended_masks, prev_actions=joint_prev_actions)
                     
                     if self.global_reward:
                         values = all_values[:-1].view(-1)

@@ -6,7 +6,7 @@ config="configs/smacv2.yaml"
 
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=0.1 # 0.1 for SMAC, SMACv2
+causal_lambda=1.0 # 0.1 for SMAC, SMACv2
 clip_delta=0.01
 use_centralized_critic=false  # true: MAPPO-style centralized critic, false: IPPO-style individual critic
 
@@ -23,7 +23,7 @@ device="cpu"
 seed=42
 
 # load model if necessary
-# checkpoint="save_checkpoints/20260301_111141/smacv2wrapper/checkpoints/checkpoint_1000.pt"
+# checkpoint="save_checkpoints/20260308_160642/smacv2wrapper/checkpoints/checkpoint_976.pt"
 
 export SC2PATH="$HOME/StarCraftII"
 # Conda 초기화 및 환경 활성화
@@ -34,8 +34,7 @@ conda activate pcimarl
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 # headless mode (no rendering)
-xvfb-run -a -s "-screen 0 64x64x8" \
-    python main.py --env ${env} --config ${config} --model ${model} \
+python main.py --env ${env} --config ${config} --model ${model} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
     --use-centralized-critic ${use_centralized_critic} \
     --n-rollout-threads ${n_rollout_threads} \
@@ -48,5 +47,5 @@ xvfb-run -a -s "-screen 0 64x64x8" \
     --log-interval ${log_interval} \
     --device ${device} --seed ${seed} \
     --use-wandb \
-    --wandb-project pci-marl-smacv2 \
+    --wandb-project pci-marl-smacv2
     # --checkpoint ${checkpoint}
