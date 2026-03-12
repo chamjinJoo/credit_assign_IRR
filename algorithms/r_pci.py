@@ -234,11 +234,7 @@ class rPCIAlgorithm:
         clip_delta: float = 0.2, # for delta clipping
         causal_lambda: float = 1.0,
         causal_lambda_schedule: bool = False,
-        causal_lambda_adaptive_per_agent: bool = False,
-        causal_lambda_adaptive_alpha: float = 0.9,
-        causal_lambda_adaptive_min: float = 0.1,
-        causal_lambda_adaptive_max: float = 1.0,
-        causal_lambda_adaptive_error_threshold: float = 0.5,
+
         causal_lambda_start: float = 0.0,
         causal_lambda_final: float = 0.2,
         causal_lambda_warmup_steps: int = 10000,
@@ -283,11 +279,6 @@ class rPCIAlgorithm:
         self.clip_delta = clip_delta
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
-        self.causal_lambda_adaptive_per_agent = causal_lambda_adaptive_per_agent
-        self.causal_lambda_adaptive_alpha = causal_lambda_adaptive_alpha
-        self.causal_lambda_adaptive_min = causal_lambda_adaptive_min
-        self.causal_lambda_adaptive_max = causal_lambda_adaptive_max
-        self.causal_lambda_adaptive_error_threshold = causal_lambda_adaptive_error_threshold
         self.causal_lambda_start = causal_lambda_start
         self.causal_lambda_final = causal_lambda_final
         self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
@@ -295,11 +286,6 @@ class rPCIAlgorithm:
 
         # training steps
         self.training_steps = 0
-        
-        # Agent별 adaptive lambda를 위한 error tracking
-        if self.causal_lambda_adaptive_per_agent:
-            self.adaptive_error_ema_per_agent = {i: None for i in range(num_agents)}
-            self.adaptive_lambda_per_agent = {i: causal_lambda for i in range(num_agents)}
         
         self.gamma = gamma
         self.gae_lambda = gae_lambda
@@ -382,8 +368,8 @@ class rPCIAlgorithm:
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            # z_dim=obs_dim * num_agents, # prev joint observation Default Z
-            z_dim=num_agents, # [SWITCH] Z=prev rewards
+            z_dim=obs_dim * num_agents, # prev joint observation Default Z
+            # z_dim=num_agents, # [SWITCH] Z=prev rewards
             # z_dim=obs_dim * num_agents + num_agents, # [SWITCH] Z = [Joint Obs, Joint Reward]
             action_dim=action_dim,
             num_agents=num_agents,
@@ -430,11 +416,7 @@ class rPCIAlgorithm:
         self.critic_kernel_w.to(self.device)
         self.feature_projector.to(self.device)
     
-    def get_current_causal_lambda(self, agent_id: Optional[int] = None) -> float:
-        # Agent별 adaptive lambda 사용
-        if self.causal_lambda_adaptive_per_agent and agent_id is not None:
-            return self.adaptive_lambda_per_agent[agent_id]
-        
+    def get_current_causal_lambda(self) -> float:
         if not self.causal_lambda_schedule:
             return self.causal_lambda
         if self.training_steps < self.causal_lambda_startingpoint:
@@ -515,8 +497,8 @@ class rPCIAlgorithm:
         # X_super = torch.cat([obs_super, H_all_super], dim=1)
         ########################################################################################
         
-        # Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
-        Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
+        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
+        # Z_super = joint_r_prev.repeat_interleave(num_agents, dim=0) # [SWITCH] prev rewards
         # Z_super = torch.cat([joint_o_prev, joint_r_prev], dim=1).repeat_interleave(num_agents, dim=0)
         # Z_super = torch.cat([joint_o_prev, joint_a_prev_onehot], dim=1).repeat_interleave(num_agents, dim=0)
         
@@ -552,7 +534,7 @@ class rPCIAlgorithm:
 
         avg_outcome_loss = 0.0
         avg_action_loss = 0.0
-        agent_residual_errors = {i: [] for i in range(num_agents)}
+
         sum_off_mean = 0.0
         sum_off_std = 0.0
         num_updates = 0
@@ -570,11 +552,7 @@ class rPCIAlgorithm:
             r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
             residuals_mb = y_mb - r_hat_mb
             
-            if self.causal_lambda_adaptive_per_agent:
-                for j, agent_id in enumerate(batch_agent_ids):
-                    residual_error = torch.norm(residuals_mb[j], p=2).item()
-                    agent_residual_errors[agent_id.item()].append(residual_error)
-            
+
             # --- block-wise standardization for kernel features ---
             eps = 1e-6
             
@@ -601,10 +579,10 @@ class rPCIAlgorithm:
             # 3) action one-hot block
             action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
             # Optional but often helpful: scale down action block so it doesn't dominate when action_dim is big.
-            action_scale = (self.action_dim ** -0.5)  # 1/sqrt(|A|)
-            a_mb_norm = action_onehot_mb * action_scale
+            # action_scale = (self.action_dim ** -0.5)  # 1/sqrt(|A|)
+            # a_mb_norm = action_onehot_mb * action_scale
             
-            # kernel_feat_z = torch.cat([z_mb_norm, a_mb_norm, x_mb_norm], dim=1) # x=(o_mb, h_others)
+            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # x=(o_mb, h_others) # NOTE: standardization
             kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1) # NOTE: no standardization
 
             # use feature projector MLP
@@ -674,35 +652,7 @@ class rPCIAlgorithm:
             'Kz_offdiag_mean': sum_off_mean / num_updates, # close to 0: Kernel is close to Identity I, close to 1: Kenrel is close to 11^\top
             'Kz_offdiag_std': sum_off_std / num_updates,
         }
-        # Adaptive lambda update: 
-        if self.causal_lambda_adaptive_per_agent:
-            for agent_id in range(num_agents):
-                if len(agent_residual_errors[agent_id]) > 0:
-                    avg_error = np.mean(agent_residual_errors[agent_id])
-                    
-                    if self.adaptive_error_ema_per_agent[agent_id] is None:
-                        self.adaptive_error_ema_per_agent[agent_id] = avg_error
-                    else:
-                        self.adaptive_error_ema_per_agent[agent_id] = (
-                            self.causal_lambda_adaptive_alpha * self.adaptive_error_ema_per_agent[agent_id] +
-                            (1 - self.causal_lambda_adaptive_alpha) * avg_error
-                        )
-                    
-                    error_ratio = self.adaptive_error_ema_per_agent[agent_id] / (
-                        self.causal_lambda_adaptive_error_threshold + 1e-8
-                    )
-                    
-                    lambda_factor = 1.0 / (1.0 + error_ratio)
-                    new_lambda = self.causal_lambda * lambda_factor
-                    self.adaptive_lambda_per_agent[agent_id] = np.clip(
-                        new_lambda,
-                        self.causal_lambda_adaptive_min,
-                        self.causal_lambda_adaptive_max
-                    )
-                    
-                    return_dict[f'adaptive_lambda_agent_{agent_id}'] = self.adaptive_lambda_per_agent[agent_id]
-                    return_dict[f'adaptive_error_ema_agent_{agent_id}'] = self.adaptive_error_ema_per_agent[agent_id]
-        
+
         return return_dict
 
     # for q-bridge function training
@@ -1312,7 +1262,7 @@ class rPCIAlgorithm:
 
                 r_factual = rewards_flat
                 raw_effects = r_factual - baseline
-                
+
                 # ------------ print for debugging ------------
                 # for idx, r in enumerate(r_factual):
                 #     if (r > 0).any():
@@ -1816,11 +1766,11 @@ class rPCIAlgorithm:
             
             # Prepare z_t (proxy variable)
             
-            # Default Z
-            # z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device) 
-            # Prev rewards
-            z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) 
-            # prev joint obs and joint reward
+            # --- Default Z
+            z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device) 
+            # --- Prev rewards
+            # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) 
+            # --- prev joint obs and joint reward
             # z_t_batch = torch.cat([torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device), torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)], dim=1) 
 
             # Prepare w_t (other agents' observations)
@@ -1871,25 +1821,13 @@ class rPCIAlgorithm:
                     prev_actions_batch=prev_actions_batch_cr,
                     debug=_do_causal_debug
                 )
-                # merging 1. summation
-                delta = C_matrix.sum(dim=2)
-                # merging 2. max
-                # delta = C_matrix.max(dim=2).values
             
+                delta = C_matrix.sum(dim=2)
                 # delta = torch.clamp(delta, min=0.0) # same as ReLU
                 delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
-                # compute shaped rewards
-                # (1-causal_lambda) * r + causal_lambda * causal_margin( = r - h^{\pi^i}(a', a^{-i}) )
                 team_rewards = rewards_batch.sum(dim=1, keepdim=True) # (B, 1) Sum of rewards for all agents
-
-                if self.causal_lambda_adaptive_per_agent:
-                    causal_lambdas = torch.tensor([
-                        self.get_current_causal_lambda(agent_id=i) for i in range(N)
-                    ], device=self.device).unsqueeze(0)
-                    shaped_rewards_all = (1-causal_lambdas) * team_rewards + causal_lambdas * delta
-                else:
-                    shaped_rewards_all = (1-self.get_current_causal_lambda()) * team_rewards + self.get_current_causal_lambda() * delta
+                shaped_rewards_all = (1-self.get_current_causal_lambda()) * team_rewards + self.get_current_causal_lambda() * delta
                 
                 shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
 
@@ -2091,7 +2029,7 @@ class rPCIAlgorithm:
         for batch_data in batches:
             if not batch_data: continue
             
-            if self.get_current_causal_lambda() > 0.0:
+            if self.get_current_causal_lambda() != 0.0:
                 causal_losses = self.update_causal_networks(batch_data, mc_samples_k_w2=16)
             else:
                 causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}

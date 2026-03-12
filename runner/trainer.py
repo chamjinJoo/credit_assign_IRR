@@ -552,7 +552,40 @@ class Trainer:
             Dictionary containing rollout statistics
         """
         import torch
+        import numpy as np
         from envs import dict_to_tensor
+        
+        def _batch_dict_to_tensor(dict_list, device):
+            """Helper to batch CPU->GPU transfers across parallel environments."""
+            tensor_dict_list = [{} for _ in range(len(dict_list))]
+            all_keys = set()
+            for d in dict_list:
+                all_keys.update(d.keys())
+                
+            for key in all_keys:
+                valid_indices = []
+                values = []
+                for i, d in enumerate(dict_list):
+                    if key in d:
+                        valid_indices.append(i)
+                        values.append(d[key])
+                        
+                if values:
+                    if isinstance(values[0], np.ndarray):
+                        stacked = np.stack(values)
+                        tensor_batch = torch.from_numpy(stacked).float().to(device)
+                    elif isinstance(values[0], (int, float)):
+                        tensor_batch = torch.tensor(values, dtype=torch.float32, device=device)
+                    else:
+                        # Fallback for other data types
+                        try:
+                            tensor_batch = torch.tensor(values, device=device)
+                        except ValueError:
+                            tensor_batch = [torch.tensor(v, device=device) for v in values]
+                            
+                    for idx, tensor_val in zip(valid_indices, tensor_batch):
+                        tensor_dict_list[idx][key] = tensor_val
+            return tensor_dict_list
         
         step_count = 0
         episode_count = 0
@@ -564,11 +597,8 @@ class Trainer:
         observations_batch = self.env.reset()
         self.algorithm.reset_agents_batch(self.n_rollout_threads)
         
-        # Convert to tensors
-        observations_batch = [
-            dict_to_tensor(obs, device=self.algorithm.device)
-            for obs in observations_batch
-        ]
+        # Convert to tensors in batch to minimize GPU transfer overhead
+        observations_batch = _batch_dict_to_tensor(observations_batch, self.algorithm.device)
         
         # Initialize previous 1) obs, 2) rewards, 3) actions for each environment
         prev_observations_batch = [
@@ -620,11 +650,8 @@ class Trainer:
             # Step all environments
             next_observations_batch, rewards_batch, dones_batch, infos_batch = self.env.step(env_actions_batch)
             
-            # Convert to tensors
-            next_observations_batch = [
-                dict_to_tensor(obs, device=self.algorithm.device)
-                for obs in next_observations_batch
-            ]
+            # Convert to tensors in batch to minimize GPU transfer overhead
+            next_observations_batch = _batch_dict_to_tensor(next_observations_batch, self.algorithm.device)
             
             # Store transitions for each environment
             for env_idx in range(self.n_rollout_threads):

@@ -91,11 +91,6 @@ def create_algorithm(env, config):
             causal_lambda=algorithm_config.causal_lambda,
             clip_delta=getattr(algorithm_config, 'clip_delta', 0.2), # [ADDED]
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
-            causal_lambda_adaptive_per_agent=getattr(algorithm_config, 'causal_lambda_adaptive_per_agent', False),
-            causal_lambda_adaptive_alpha=getattr(algorithm_config, 'causal_lambda_adaptive_alpha', 0.9),
-            causal_lambda_adaptive_min=getattr(algorithm_config, 'causal_lambda_adaptive_min', 0.1),
-            causal_lambda_adaptive_max=getattr(algorithm_config, 'causal_lambda_adaptive_max', 1.0),
-            causal_lambda_adaptive_error_threshold=getattr(algorithm_config, 'causal_lambda_adaptive_error_threshold', 0.5),
             causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
             causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.2),
             causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),

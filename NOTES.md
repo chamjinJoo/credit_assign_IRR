@@ -249,12 +249,20 @@ r_hat_all: tensor([[0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000],
 baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])  
 
 * 이것이 문제가 되는지 확인하기 위해 실제로 획득한 reward가 양수일 때만 reward shaping을 적용해봄 -> 나아지긴 하나 not significant, lack of theoretic foundation
-
 * Without renormalization -> c-lambda=1에서 성능이 더 좋음, not significant
-
 * Found a bug in IPPO-critic in @r_pci.py and @r_ippo.py: parameter-sharing critic is updated per agent loop (`for i in self.num_agents`) other than accumulated and updated per batch.
-    * Found that RNN value network does not fully use prev actions.
-
+    -> rIPPO의 성능은 제대로 나옴. rPCI는 아직..
 * SMACv2 paper says that if an agent chose an unavil action, it is converted into no-op action. Check how r_pci handles it. -> It is handled well.
 
+# 26.03.10
+* In `r_pci, r_ippo, r_mappo`, found that RNN value network does not fully use prev actions.
+    -> fix it and test on `StagHunt`: `rMAPPO` & `rIPPO` get better, but our method shows faster convergence.
 
+    <img src="image.png" alt="image" width="200"/>
+
+
+# 26.03.11
+* SMACv2 with rPCI 
+    * causal lambda를 음수로 설정해서 additive formulation으로 바꾸는 방식은 생각보다 별로였음.
+    * Set `clip_delta=0` in SMACv2? Cause the original value 0.1 can eliminate the effect of reward shaping due to the reward scale in SMACv2. -> hmm..
+    * causal_lambda=0.5 -> quite good.

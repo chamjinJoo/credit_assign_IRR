@@ -15,7 +15,7 @@ global_reward=true
 # training and logging 
 max_iterations=1500
 max_steps_per_iteration=2000
-n_rollout_threads=8
+n_rollout_threads=4
 log_interval=2
 device="cpu"
 seed=2

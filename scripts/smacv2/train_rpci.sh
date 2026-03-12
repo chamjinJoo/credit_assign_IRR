@@ -6,12 +6,11 @@ config="configs/smacv2.yaml"
 
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=1.0 # 0.1 for SMAC, SMACv2
-clip_delta=0.01
+causal_lambda=0.5 # 0.1 for SMAC, SMACv2 | # NOTE: for additive formulation, set to negative.
+clip_delta=0.0
 use_centralized_critic=false  # true: MAPPO-style centralized critic, false: IPPO-style individual critic
 
 use_value_parameter_sharing=true
-causal_lambda_adaptive_per_agent=false
 
 # training and logging 
 n_rollout_threads=4             # 4 is enough for SMACv2, large value causes MemoryIssue due to StarCraft2 instance.
@@ -23,7 +22,7 @@ device="cpu"
 seed=42
 
 # load model if necessary
-# checkpoint="save_checkpoints/20260308_160642/smacv2wrapper/checkpoints/checkpoint_976.pt"
+# checkpoint="save_checkpoints/20260311_114929/smacv2wrapper/checkpoints/checkpoint_700.pt"
 
 export SC2PATH="$HOME/StarCraftII"
 # Conda 초기화 및 환경 활성화
@@ -43,7 +42,6 @@ python main.py --env ${env} --config ${config} --model ${model} \
     --max-iterations ${max_iterations} \
     --clip-delta ${clip_delta} \
     --causal-lambda ${causal_lambda} \
-    --causal-lambda-adaptive-per-agent ${causal_lambda_adaptive_per_agent} \
     --log-interval ${log_interval} \
     --device ${device} --seed ${seed} \
     --use-wandb \
