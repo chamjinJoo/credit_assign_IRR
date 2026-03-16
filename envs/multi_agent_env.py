@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as patches
 from matplotlib.animation import FuncAnimation
 import matplotlib.colors as mcolors
+import copy
 MATPLOTLIB_AVAILABLE = True
 
 class MultiAgentEnv(ABC):
@@ -103,7 +104,6 @@ class StagHuntEnv(MultiAgentEnv):
             grid_observation: True면 기존 grid observation 사용, False면 좌표 기반 observation 사용
             vision: 에이전트의 시야 범위 
         """
-        # 에이전트 수를 유연하게 설정
         super().__init__(num_agents=num_agents, seed=seed)
 
         self.grid_observation = grid_observation
@@ -162,7 +162,16 @@ class StagHuntEnv(MultiAgentEnv):
     def print_env_setting(self):
         print(f"mauling_punishment: {self.mauling_punishment}, coop_bonus: {self.coop_bonus}")
         print(f"stag allocated agents: {self.required_agents}")
-        
+            
+    def get_env_state(self):
+        """현재 환경의 내부 상태(에이전트 위치, 사슴/토끼 위치, 스텝 수 등)를 깊은 복사하여 반환합니다."""
+        # 만약 numpy array나 기본 자료형으로만 이루어져 있다면 __dict__ 복사가 가장 빠릅니다.
+        return copy.deepcopy(self.__dict__)
+
+    def set_env_state(self, state):
+        """저장된 상태로 환경을 강제 복원(Reset 없이 되돌리기)합니다."""
+        self.__dict__.update(copy.deepcopy(state))
+
     def _get_empty_positions(self):
         """비어있는 위치들을 반환합니다."""
         occupied_positions = set()

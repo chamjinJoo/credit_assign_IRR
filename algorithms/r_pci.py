@@ -239,6 +239,7 @@ class rPCIAlgorithm:
         causal_lambda_final: float = 0.2,
         causal_lambda_warmup_steps: int = 10000,
         causal_lambda_startingpoint: int = 0,
+        bridge_epoch: int = 4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
         clip_epsilon: float = 0.2,
@@ -283,6 +284,7 @@ class rPCIAlgorithm:
         self.causal_lambda_final = causal_lambda_final
         self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
         self.causal_lambda_startingpoint = causal_lambda_startingpoint
+        self.bridge_epoch = bridge_epoch
 
         # training steps
         self.training_steps = 0
@@ -376,19 +378,28 @@ class rPCIAlgorithm:
             hidden_dim=hidden_dim,
             action_embedding_dim=8
         )
-        
+        # --- Feautre probjector for RBFKernel, NOTE: use with standardization and EMAGamma. ----- #
         self.feature_projector = nn.Sequential(
-            nn.Linear(num_agents + action_dim + obs_dim + hidden_dim * recurrent_N * (num_agents-1), hidden_dim),
+            nn.Linear(num_agents*obs_dim + action_dim + x_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
-
         # freeze the feature_projector
         for parmam in self.feature_projector.parameters():
             parmam.requires_grad = False
+        # ---------------------------------------------------------------------------------------- #
 
-        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
+        # --- Single kernel (original) ---
+        # self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
         self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
+
+        # --- Product Kernel: separate RBFKernel per block (z, a, x_obs, x_hid) ---
+        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)    # kept for checkpoint compatibility
+        self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # for z block
+        self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # for action one-hot block
+        # self.kernel_x_block = RBFKernel(gamma=1.0).to(self.device)   # [OPTION B-1] for x block (unsplit)
+        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2] for x: agent i's local obs
+        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2] for x: complements' hidden state
         
         self.stabilizer_lambda = 1.0
         self.tikhonov_gamma = 1e-4
@@ -415,6 +426,12 @@ class rPCIAlgorithm:
         self.critic_kernel_z.to(self.device)
         self.critic_kernel_w.to(self.device)
         self.feature_projector.to(self.device)
+        # Product kernel block-wise kernels
+        self.kernel_z_block.to(self.device)
+        self.kernel_a_block.to(self.device)
+        # self.kernel_x_block.to(self.device)   # [OPTION B-1]
+        self.kernel_xobs_block.to(self.device)  # [OPTION B-2]
+        self.kernel_xhid_block.to(self.device)  # [OPTION B-2]
     
     def get_current_causal_lambda(self) -> float:
         if not self.causal_lambda_schedule:
@@ -550,9 +567,8 @@ class rPCIAlgorithm:
 
             # --- Update Outcome Bridge h_φ ---
             r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
-            residuals_mb = y_mb - r_hat_mb
+            residuals_mb = y_mb - r_hat_mb # (B, N)
             
-
             # --- block-wise standardization for kernel features ---
             eps = 1e-6
             
@@ -571,10 +587,19 @@ class rPCIAlgorithm:
                 z_std = z_mb.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
                 z_mb_norm = (z_mb - z_mean) / z_std
 
-            # 2) standardize x block 
-            x_mean = x_mb.mean(dim=0, keepdim=True)
-            x_std = x_mb.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
-            x_mb_norm = (x_mb - x_mean) / x_std
+            # 2) split x block into obs and hid, then standardize respectively
+            x_obs_mb_raw = x_mb[:, :self.obs_dim]
+            x_hid_mb_raw = x_mb[:, self.obs_dim:]
+
+            x_obs_mean = x_obs_mb_raw.mean(dim=0, keepdim=True)
+            x_obs_std = x_obs_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
+            x_obs_mb = (x_obs_mb_raw - x_obs_mean) / x_obs_std
+
+            x_hid_mean = x_hid_mb_raw.mean(dim=0, keepdim=True)
+            x_hid_std = x_hid_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
+            x_hid_mb = (x_hid_mb_raw - x_hid_mean) / x_hid_std
+
+            x_mb_norm = torch.cat([x_obs_mb, x_hid_mb], dim=1)  # keep for OPTION A / B-1 compatibility
 
             # 3) action one-hot block
             action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
@@ -582,32 +607,70 @@ class rPCIAlgorithm:
             # action_scale = (self.action_dim ** -0.5)  # 1/sqrt(|A|)
             # a_mb_norm = action_onehot_mb * action_scale
             
-            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # x=(o_mb, h_others) # NOTE: standardization
-            kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1) # NOTE: no standardization
+            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # [OPTION A] single kernel w/ standardization
+            # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # [OPTION A] single kernel w/o standardization
 
-            # use feature projector MLP
+            # [OPTION A] use feature projector MLP
             # with torch.no_grad():
             #    kernel_feat_z = self.feature_projector(kernel_feat_z)
-                
-            # --- median heuristic gamma update with EMA (recommended) ---
+
+            # [OPTION A] median heuristic gamma update with EMA
             # with torch.no_grad():
             #     Xg = kernel_feat_z
             #     max_for_gamma = getattr(self, "max_points_for_kernel_gamma", 256)
             #     if Xg.size(0) > max_for_gamma:
             #         idx = torch.randperm(Xg.size(0), device=Xg.device)[:max_for_gamma]
             #         Xg = Xg[idx]
-
             #     if Xg.size(0) >= 2:
             #         d2 = torch.pdist(Xg, p=2).pow(2)
             #         med = d2.median().clamp_min(1e-8)
-            #         new_gamma = 1.0 / (2.0 * med)  # RBF: exp(-gamma * ||x-y||^2)
+            #         new_gamma = 1.0 / (2.0 * med)
             #         new_log_gamma = torch.log(new_gamma)
-
-            #         ema = getattr(self, "kernel_gamma_ema", 0.95)  # e.g., 0.95
+            #         ema = getattr(self, "kernel_gamma_ema", 0.95)
             #         self.critic_kernel_z.log_gamma.data = ema * self.critic_kernel_z.log_gamma.data + (1.0 - ema) * new_log_gamma
 
-            # --- Gram matrix ---
-            K_z = self.critic_kernel_z(kernel_feat_z)
+
+            # [OPTION A] Gram matrix (single kernel)
+            # K_z = self.critic_kernel_z(kernel_feat_z)
+
+            # ------------------------------------------------------------------ #
+            # [OPTION B-1] Product Kernel: K(z,a,x) = K_z(z) * K_a(a) * K_x(x) #
+            # ------------------------------------------------------------------ #
+            # with torch.no_grad():
+            #     for feat, kernel in [
+            #         (z_mb_norm,        self.kernel_z_block),
+            #         (action_onehot_mb, self.kernel_a_block),
+            #         (x_mb_norm,        self.kernel_x_block),
+            #     ]:
+            #         n = feat.shape[1]
+            #         var = feat.var(dim=0).mean().clamp_min(1e-8)
+            #         kernel.log_gamma.data.fill_(torch.log(1.0 / (n * var)))
+            # K_z = (self.kernel_z_block(z_mb_norm)
+            #        * self.kernel_a_block(action_onehot_mb)
+            #        * self.kernel_x_block(x_mb_norm))
+
+            # ------------------------------------------------------------------------------ #
+            # [OPTION B-2] Product Kernel: K(z,a,x_obs,x_hid)                              #
+            #   x_mb = [obs_i (obs_dim) | h_{-i} ((num_agents-1)*hidden_dim*recurrent_N)]  #
+            # ------------------------------------------------------------------------------ #   
+
+            # gamma='scale'의 n_features 부분만 적용 (var ≈ 1 이므로 생략)
+            with torch.no_grad():
+                for feat, kernel in [
+                    (z_mb_norm,        self.kernel_z_block),
+                    (action_onehot_mb, self.kernel_a_block),
+                    (x_obs_mb,         self.kernel_xobs_block),
+                    (x_hid_mb,         self.kernel_xhid_block),
+                ]:
+                    n = feat.shape[1]
+                    # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
+                    kernel.log_gamma.data.fill_(torch.log(torch.tensor(1.0 / n)))
+
+            # Element-wise product of block-wise Gram matrices
+            K_z = (self.kernel_z_block(z_mb_norm)
+                   * self.kernel_a_block(action_onehot_mb)
+                   * self.kernel_xobs_block(x_obs_mb)
+                   * self.kernel_xhid_block(x_hid_mb))
 
             # check the kernel collapse
             with torch.no_grad():
@@ -620,29 +683,37 @@ class rPCIAlgorithm:
 
             reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
             try:
-                solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
+                torch.linalg.solve(reg_K_z, y_mb) # check regularity
             except RuntimeError:
                 # Fallback for singular matrix
                 reg_K_z = reg_K_z + 1e-3 * torch.eye(current_batch_size, device=device)
+            
+            # --- Update Outcome Bridge h_φ for bridge_epoch times ---
+            epoch_outcome_loss = 0.0
+            for _ in range(self.bridge_epoch):
+                r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
+                residuals_mb = y_mb - r_hat_mb
+                
                 solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
-            
-            # Compute per-sample loss
-            per_sample_loss_h = (residuals_mb * (K_z @ solved_residuals)).sum(dim=1) # [B]
-            
-            loss_h = per_sample_loss_h.mean()
-            
-            # --- Update Action Bridge q_θ ---
-            loss_q = torch.tensor(0.0, device=device)
+                # Compute per-sample loss
+                per_sample_loss_h = (residuals_mb * (K_z @ solved_residuals)).sum(dim=1) # [B]
+                
+                loss_h = per_sample_loss_h.mean()
+                
+                # --- Update Action Bridge q_θ ---
+                loss_q = torch.tensor(0.0, device=device)
 
-            total_loss = loss_h + loss_q
-            
-            self.outcome_bridge_optimizer.zero_grad()
-            self.action_bridge_optimizer.zero_grad()
-            total_loss.backward()
-            self.outcome_bridge_optimizer.step()
-            # self.action_bridge_optimizer.step()
+                total_loss = loss_h + loss_q
+                
+                self.outcome_bridge_optimizer.zero_grad()
+                self.action_bridge_optimizer.zero_grad()
+                total_loss.backward()
+                self.outcome_bridge_optimizer.step()
+                # self.action_bridge_optimizer.step()
+                
+                epoch_outcome_loss += loss_h.item()
 
-            avg_outcome_loss += loss_h.item()
+            avg_outcome_loss += epoch_outcome_loss / self.bridge_epoch
             avg_action_loss += loss_q.item()
             num_updates += 1
 

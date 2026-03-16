@@ -19,3 +19,8 @@ wandb/
 
 # __pycache__
 __pycache__/
+
+# figures
+*.png
+*.jpg
+*.pdf

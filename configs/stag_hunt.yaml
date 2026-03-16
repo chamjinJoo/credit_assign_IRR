@@ -65,7 +65,7 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
   grid_observation: true
-  obs_noise_std: 0.0
+  obs_noise_std: 0.1
   
 # Weights & Biases Configuration
 wandb:

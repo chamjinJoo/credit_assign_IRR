@@ -262,7 +262,16 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 
 
 # 26.03.11
+* StagHunt
+    * 9x9 env size에서는 모든 알고리즘이 성공 x
+
 * SMACv2 with rPCI 
     * causal lambda를 음수로 설정해서 additive formulation으로 바꾸는 방식은 생각보다 별로였음.
     * Set `clip_delta=0` in SMACv2? Cause the original value 0.1 can eliminate the effect of reward shaping due to the reward scale in SMACv2. -> hmm..
-    * causal_lambda=0.5 -> quite good.
+    * causal_lambda=0.5 -> quite good. + It seems to be better with KernelNorm+EMAGamma
+
+# 26.03.16
+* Test outcome bridge epoch 4 (similar to ppo epoch)
+* Kerenel decomposition and product, note that X^i_t is decomposed into (o^i_t, h^{-i}_{t-1}) 
+* Use gamma=1/n_feature (=1/feature dimension)
+
