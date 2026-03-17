@@ -102,8 +102,8 @@ class Trainer:
         self.device = device
         
         # Store reproducibility info
-        self.seed = getattr(self, 'seed', None)
-        self.deterministic = getattr(self, 'deterministic', True)
+        self.seed = getattr(config.training, 'seed', None) if hasattr(config, 'training') else None
+        self.deterministic = getattr(config.training, 'deterministic', True) if hasattr(config, 'training') else True
         
         # Initialize logging first with algorithm-specific name
         algorithm_type = type(algorithm).__name__.replace('Algorithm', '').upper()
@@ -197,13 +197,16 @@ class Trainer:
         # Get current timestamp
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         
+        # Add seed to directory name if available
+        seed_str = f"_seed{self.seed}" if self.seed is not None else ""
+        
         # Get environment name
         env_name = self.eval_env.__class__.__name__.lower()
         
-        # Create directory structure: base_dir/timestamp/env_name/checkpoints
+        # Create directory structure: base_dir/timestamp_seed/env_name/checkpoints
         sim_dir = os.path.join(
             self.base_save_dir,
-            timestamp,
+            f"{timestamp}{seed_str}",
             env_name,
             "checkpoints"
         )
@@ -1014,6 +1017,21 @@ class Trainer:
         if is_final or (hasattr(self, 'best_eval_reward') and self.best_eval_reward > float('-inf')):
             best_path = os.path.join(self.save_dir, 'best_model.pt')
             torch.save(checkpoint, best_path, _use_new_zipfile_serialization=False)
+            
+        # Save naivepredictor checkpoint separately
+        if getattr(self.algorithm, "train_naivepredictor", False) and hasattr(self.algorithm, "naive_predictor"):
+            naive_dir = self.save_dir + "_naivepredictor"
+            os.makedirs(naive_dir, exist_ok=True)
+            naive_checkpoint = {
+                'iteration': self.iteration,
+                'naive_predictor_state': self.algorithm.naive_predictor.state_dict(),
+                'naive_optimizer_state': self.algorithm.naive_optimizer.state_dict()
+            }
+            if is_final:
+                naive_path = os.path.join(naive_dir, 'final_checkpoint.pt')
+            else:
+                naive_path = os.path.join(naive_dir, f'checkpoint_{self.iteration}.pt')
+            torch.save(naive_checkpoint, naive_path, _use_new_zipfile_serialization=False)
     
     def get_latest_checkpoint_path(self) -> Optional[str]:
         """Get the path to the latest checkpoint."""

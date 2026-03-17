@@ -182,7 +182,7 @@ class ActionBridgeNetwork(nn.Module):
         action_bridge_output = self.output_layer(encoded)  # [batch_size, 1]
         return action_bridge_output
 
-class RewardPredictor(nn.Module):
+class NaivePredictor(nn.Module):
     """
     Simple Neural Network predicting the reward of complements 
     Using current the concat of complements observation \mathbf{o}^{-i]_t and 
@@ -191,36 +191,35 @@ class RewardPredictor(nn.Module):
     """
     def __init__(
         self,
-        obs_dim: int,
         action_dim: int,
         num_agents: int,
-        output_dim: int,
+        x_dim: int,
         hidden_dim: int = 64,
         action_embedding_dim: int = 8  # kept for API compat but unused
     ):
-        super(RewardPredictor, self).__init__()
+        super(NaivePredictor, self).__init__()
         self.action_dim = action_dim
         self.num_agents = num_agents
         self.hidden_dim = hidden_dim
-        self.output_dim = output_dim
+        self.x_dim = x_dim
         
         # Use one-hot encoding instead of nn.Embedding
-        # Input is action one-hot and observation
-        input_dim = action_dim + obs_dim
+        # Input is action one-hot and x
+        input_dim = action_dim + x_dim
         
         # Bridge network with 3 hidden layers
         self.mlp = MLPBase(
             input_dim=input_dim,
-            hidden_size=2*hidden_dim,
+            hidden_size=hidden_dim,
             layer_N=2,
             use_feature_normalization=True,
             use_orthogonal=True,
             use_ReLU=True,
             use_layer_norm=True
         )
-        self.output_layer = nn.Linear(2*hidden_dim, output_dim)
+        self.output_layer = nn.Linear(hidden_dim, num_agents)
 
-        self.bridge_network = nn.Sequential(
+        self.full_network = nn.Sequential(
             self.mlp,
             self.output_layer
         )
@@ -228,7 +227,7 @@ class RewardPredictor(nn.Module):
     def forward(
         self, 
         actions: torch.Tensor, 
-        obs: torch.Tensor
+        x: torch.Tensor
     ) -> torch.Tensor:
         """
         Forward pass of bridge network.
@@ -237,9 +236,9 @@ class RewardPredictor(nn.Module):
         action_onehot = F.one_hot(actions.long(), self.action_dim).float()  # [batch_size, action_dim]
   
         # Concatenate action one-hot and observation
-        x = torch.cat([action_onehot, obs], dim=-1)
+        x = torch.cat([action_onehot, x], dim=-1)
         
         # Forward through network
-        output = self.bridge_network(x)
+        output = self.full_network(x)
         
         return output

@@ -45,6 +45,8 @@ class AlgorithmConfig:
     causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
+    train_naivepredictor: bool = False  # Train naive predictor for causal baseline
+
     
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
@@ -341,6 +343,8 @@ def parse_args() -> argparse.Namespace:
                         help='Number of recurrent layers for RNN')
     parser.add_argument('--global-reward', type=str, default=None,
                         help='Use global reward (true/false)')
+    parser.add_argument('--train-naivepredictor', type=str, default=None,
+                        help='Train naive predictor for causal baseline (true/false)')
     
     # Logging
     parser.add_argument('--save-dir', type=str, default='./save_checkpoints',
@@ -458,6 +462,11 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         # Convert string to boolean
         use_global = args.global_reward.lower() in ('true', '1', 'yes', 'on')
         config.algorithm.global_reward = use_global
+    if hasattr(args, 'train_naivepredictor') and args.train_naivepredictor is not None:
+        # Convert string to boolean
+        use_naive = args.train_naivepredictor.lower() in ('true', '1', 'yes', 'on')
+        config.algorithm.train_naivepredictor = use_naive
+
     
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb

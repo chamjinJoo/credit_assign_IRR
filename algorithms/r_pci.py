@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Tuple, Optional
 from collections import defaultdict
 from torch.distributions import Categorical
 from algorithms.networks.rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
-from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork
+from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork, NaivePredictor
 from algorithms.networks.mlp import MLPBase
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
@@ -255,6 +255,7 @@ class rPCIAlgorithm:
         env_required_agents: Optional[Dict[int, List[int]]] = None,
         # Optimization parameter
         causal_mini_batch_size: int = 256,
+        train_naivepredictor: bool = False,
         # Value network parameter sharing
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
@@ -272,6 +273,7 @@ class rPCIAlgorithm:
         self.env_required_agents = env_required_agents
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         self.causal_mini_batch_size = causal_mini_batch_size 
+        self.train_naivepredictor = train_naivepredictor
         self.use_value_parameter_sharing = use_value_parameter_sharing
         self.use_episode_buffer = use_episode_buffer
         self.use_centralized_critic = use_centralized_critic
@@ -407,6 +409,15 @@ class rPCIAlgorithm:
         self.outcome_bridge_optimizer = optim.Adam(self.outcome_bridge_net.parameters(), lr=lr_bridge)
         self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_critic)
         
+        if self.train_naivepredictor:
+            self.naive_predictor = NaivePredictor(
+                action_dim=action_dim,
+                num_agents=num_agents,
+                x_dim=x_dim,
+                hidden_dim=hidden_dim
+            )
+            self.naive_optimizer = optim.Adam(self.naive_predictor.parameters(), lr=lr_bridge)
+        
         # Keep track of done status for masks
         self.last_dones = {i: False for i in range(num_agents)}
         
@@ -426,6 +437,8 @@ class rPCIAlgorithm:
         self.critic_kernel_z.to(self.device)
         self.critic_kernel_w.to(self.device)
         self.feature_projector.to(self.device)
+        if getattr(self, "train_naivepredictor", False):
+            self.naive_predictor.to(self.device)
         # Product kernel block-wise kernels
         self.kernel_z_block.to(self.device)
         self.kernel_a_block.to(self.device)
@@ -551,6 +564,7 @@ class rPCIAlgorithm:
 
         avg_outcome_loss = 0.0
         avg_action_loss = 0.0
+        avg_naive_loss = 0.0
 
         sum_off_mean = 0.0
         sum_off_std = 0.0
@@ -715,6 +729,16 @@ class rPCIAlgorithm:
 
             avg_outcome_loss += epoch_outcome_loss / self.bridge_epoch
             avg_action_loss += loss_q.item()
+            
+            # --- Update Naive Predictor ---
+            if getattr(self, "train_naivepredictor", False):
+                naive_output = self.naive_predictor(a_mb, x_mb) # (B, N)
+                naive_loss = F.mse_loss(naive_output, y_mb)
+                self.naive_optimizer.zero_grad()
+                naive_loss.backward()
+                self.naive_optimizer.step()
+                avg_naive_loss += naive_loss.item()
+                
             num_updates += 1
 
         return_dict = {
@@ -723,6 +747,9 @@ class rPCIAlgorithm:
             'Kz_offdiag_mean': sum_off_mean / num_updates, # close to 0: Kernel is close to Identity I, close to 1: Kenrel is close to 11^\top
             'Kz_offdiag_std': sum_off_std / num_updates,
         }
+        
+        if getattr(self, "train_naivepredictor", False):
+            return_dict['naive_loss'] = avg_naive_loss / num_updates
 
         return return_dict
 

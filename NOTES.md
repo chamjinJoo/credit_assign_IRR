@@ -274,4 +274,5 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * Test outcome bridge epoch 4 (similar to ppo epoch)
 * Kerenel decomposition and product, note that X^i_t is decomposed into (o^i_t, h^{-i}_{t-1}) 
 * Use gamma=1/n_feature (=1/feature dimension)
-
+* evaluation_causal_validation: Jupyter notebook for verify trained outcome bridge network. 
+    * Evaluate the capacity of outcome bridge network to predict action-interventional reward. vs. NaivePredictor trained together.

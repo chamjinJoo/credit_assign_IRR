@@ -112,6 +112,7 @@ def create_algorithm(env, config):
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
             use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', False),
             use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
+            train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
         )
     elif algorithm_type == 'x_pci':
         algorithm = X_PCIAlgorithm(

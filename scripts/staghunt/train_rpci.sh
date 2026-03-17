@@ -10,6 +10,7 @@ causal_lambda=1.0
 clip_delta=0.01
 use_value_parameter_sharing=true
 recurrent_N=1
+train_naivepredictor=true
 
 # training and logging 
 max_iterations=1500
@@ -18,7 +19,7 @@ episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically
 n_rollout_threads=4
 log_interval=2
 device="cpu"
-seeds=(42 1 2 31 32)
+seeds=(43)
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
@@ -33,6 +34,7 @@ for seed in ${seeds[@]}; do
         --config ${config} --model ${model} \
         --use-value-parameter-sharing ${use_value_parameter_sharing} \
         --recurrent-N ${recurrent_N} \
+        --train-naivepredictor ${train_naivepredictor} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-steps ${max_steps_per_iteration} \
         --episodes-per-iteration ${episodes_per_iteration} \

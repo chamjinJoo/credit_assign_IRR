@@ -7,11 +7,8 @@ from typing import Any, Dict, List, Tuple, Optional
 from collections import defaultdict
 import random
 
-from algorithms.networks import PolicyNetwork, RewardPredictor, ValueNetwork
+from algorithms.networks import PolicyNetwork, NaivePredictor, ValueNetwork
 from utils.buffer import TransitionBuffer
-
-
-
 
 class X_PCIAgent:
     def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, lr_actor: float = 3e-4, lr_critic: float = 3e-4):

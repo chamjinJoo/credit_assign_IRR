@@ -1,6 +1,6 @@
 # Neural networks for PCI-MAPPO
 from .policy_network import PolicyNetwork, ValueNetwork
-from .bridge_network import OutcomeBridgeNetwork, ActionBridgeNetwork, RewardPredictor
+from .bridge_network import OutcomeBridgeNetwork, ActionBridgeNetwork, NaivePredictor
 from .mlp import MLPLayer, MLPBase
 
 from .rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
@@ -13,9 +13,9 @@ __all__ = [
     "RNNValueNetwork",
     "OutcomeBridgeNetwork", 
     "ActionBridgeNetwork",
-    "RewardPredictor",
+    "NaivePredictor",
     "MLPLayer",
     "MLPBase",
-    "COMARNNCritic"
+    "COMARNNCritic",
 ]
 
