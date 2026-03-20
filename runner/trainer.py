@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -54,7 +54,7 @@ class Trainer:
         self,
         config: Dict,
         env: MultiAgentEnv,
-        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, rQPCIAlgorithm],
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -502,7 +502,7 @@ class Trainer:
             # For COMA, finish the episode in the buffer only if episode actually completed
             # If episode was cut short due to max_steps_per_iteration, keep it in current_episode
             # for the next iteration to continue collecting
-            if isinstance(self.algorithm, (COMAAlgorithm, rCOMAAlgorithm)):
+            if isinstance(self.algorithm, (COMAAlgorithm, rCOMAAlgorithm, rQMIXAlgorithm)):
                 if done:  # Episode actually completed
                     self.algorithm.finish_episode()
                 # else: Incomplete episode remains in current_episode for next iteration
@@ -885,7 +885,19 @@ class Trainer:
         
         if update_info:
             self.logger.info("  Update Info:")
+            # Log epsilon first for QMIX (for easy visibility)
+            if 'epsilon' in update_info:
+                self.logger.info(f"    epsilon: {update_info['epsilon']:.4f}")
+            if 'total_env_steps' in update_info:
+                self.logger.info(f"    total_env_steps: {update_info['total_env_steps']}")
+            if 'replay_buffer_episodes' in update_info:
+                self.logger.info(f"    replay_buffer_episodes: {update_info['replay_buffer_episodes']}")
+
             for key, value in update_info.items():
+                # Skip already logged keys
+                if key in ['epsilon', 'total_env_steps', 'replay_buffer_episodes']:
+                    continue
+
                 if key.startswith('delta_'):
                     # Format delta statistics nicely
                     if key.endswith('_mean'):
@@ -1074,6 +1086,16 @@ class Trainer:
                 state['agents'][agent_id] = {
                     'policy_net': agent.policy_net.state_dict(),
                 }
+        elif isinstance(self.algorithm, rQMIXAlgorithm):
+            # QMIX: shared Q-network, mixer, target networks, single optimizer
+            state['shared_q_network'] = self.algorithm.shared_q_network.state_dict()
+            state['target_q_network'] = self.algorithm.target_q_network.state_dict()
+            state['mixer'] = self.algorithm.mixer.state_dict()
+            state['target_mixer'] = self.algorithm.target_mixer.state_dict()
+            state['optimizer'] = self.algorithm.optimizer.state_dict()
+            state['epsilon'] = self.algorithm.epsilon
+            state['total_env_steps'] = self.algorithm.total_env_steps
+            state['training_steps'] = self.algorithm.training_steps
         else:
             for agent_id, agent in self.algorithm.agents.items():
                 state['agents'][agent_id] = {
@@ -1147,6 +1169,8 @@ class Trainer:
             state['critic'] = self.algorithm.critic.state_dict()
             state['target_critic'] = self.algorithm.target_critic.state_dict()
             state['critic_optimizer'] = self.algorithm.critic_optimizer.state_dict()
+        elif isinstance(self.algorithm, rQMIXAlgorithm):
+            pass  # QMIX states already saved in the agent block above
         else:
             # MAPPO and IPPO: save shared value network
             if hasattr(self.algorithm, 'value_net'):
@@ -1174,6 +1198,24 @@ class Trainer:
                 self.algorithm.shared_policy.load_state_dict(algorithm_state['shared_policy'])
             if 'policy_optimizer' in algorithm_state:
                 self.algorithm.policy_optimizer.load_state_dict(algorithm_state['policy_optimizer'])
+        elif isinstance(self.algorithm, rQMIXAlgorithm):
+            # QMIX: load shared Q-network, mixer, target networks, optimizer
+            if 'shared_q_network' in algorithm_state:
+                self.algorithm.shared_q_network.load_state_dict(algorithm_state['shared_q_network'])
+            if 'target_q_network' in algorithm_state:
+                self.algorithm.target_q_network.load_state_dict(algorithm_state['target_q_network'])
+            if 'mixer' in algorithm_state:
+                self.algorithm.mixer.load_state_dict(algorithm_state['mixer'])
+            if 'target_mixer' in algorithm_state:
+                self.algorithm.target_mixer.load_state_dict(algorithm_state['target_mixer'])
+            if 'optimizer' in algorithm_state:
+                self.algorithm.optimizer.load_state_dict(algorithm_state['optimizer'])
+            if 'epsilon' in algorithm_state:
+                self.algorithm.epsilon = algorithm_state['epsilon']
+            if 'total_env_steps' in algorithm_state:
+                self.algorithm.total_env_steps = algorithm_state['total_env_steps']
+            if 'training_steps' in algorithm_state:
+                self.algorithm.training_steps = algorithm_state['training_steps']
         else:
             for agent_id, agent_state in algorithm_state['agents'].items():
                 agent = self.algorithm.agents[int(agent_id)]

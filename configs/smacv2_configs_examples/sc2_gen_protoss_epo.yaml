@@ -55,6 +55,7 @@ step_mul: 8
 heuristic_ai: False
 # heuristic_rest: False
 debug: False
+
 # Most severe partial obs setting:
 prob_obs_enemy: 1.0 # [0.0, 0.5, 1.0]
 action_mask: False

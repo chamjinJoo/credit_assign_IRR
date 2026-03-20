@@ -13,9 +13,8 @@ import torch
 from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
 from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
 from envs import create_environment, get_available_environments
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm
 from runner import Trainer
-
 
 def create_algorithm(env, config):
     """Create algorithm based on config.algorithm.type."""
@@ -308,58 +307,57 @@ def create_algorithm(env, config):
             env_required_agents=env_required_agents,
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 50),
         )
+    elif algorithm_type in ['qmix', 'r_qmix']:
+        epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)
+
+        if epsilon_anneal_time_config is None:
+            # Calculate expected total environment steps.
+            max_iterations = config.training.max_iterations
+            n_threads = getattr(config.training, 'n_rollout_threads', 1)
+            episodes_per_iteration = getattr(config.training, 'episodes_per_iteration', None)
+
+            if episodes_per_iteration is not None:
+                avg_episode_length = getattr(config.environment, 'max_steps', 50)
+                expected_steps_per_iter = episodes_per_iteration * avg_episode_length * n_threads
+                total_expected_steps = expected_steps_per_iter * max_iterations
+            else:
+                max_steps_per_iteration = config.training.max_steps_per_iteration
+                # Each iteration-step advances n_threads env-steps in total_env_steps
+                total_expected_steps = max_steps_per_iteration * max_iterations * n_threads
+
+            # Anneal over first 25% of training
+            epsilon_anneal_time = int(total_expected_steps * 0.25)
+            print(f"[QMIX] Auto-calculated epsilon_anneal_time: {epsilon_anneal_time:,} steps "
+                  f"(25% of ~{total_expected_steps:,} total env-steps, n_threads={n_threads})")
+        else:
+            epsilon_anneal_time = epsilon_anneal_time_config
+            print(f"[QMIX] Using configured epsilon_anneal_time: {epsilon_anneal_time} steps")
+
+        algorithm = rQMIXAlgorithm(
+            num_agents=env.num_agents,
+            obs_dim=env.get_obs_dim(),
+            action_dim=env.get_action_dim(),
+            hidden_dim=network_config.hidden_dim,
+            lr=getattr(network_config, 'lr', 5e-4),
+            gamma=algorithm_config.gamma,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
+            epsilon_start=getattr(algorithm_config, 'epsilon_start', 1.0),
+            epsilon_finish=getattr(algorithm_config, 'epsilon_finish', 0.05),
+            epsilon_anneal_time=epsilon_anneal_time,
+            double_q=getattr(algorithm_config, 'double_q', True),
+            mixing_embed_dim=getattr(algorithm_config, 'mixing_embed_dim', 32),
+            hypernet_layers=getattr(algorithm_config, 'hypernet_layers', 2),
+            hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
+            replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
+            train_batch_size=getattr(algorithm_config, 'train_batch_size', 64),
+            device=config.training.device,
+            use_episode_buffer=True,
+        )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'rqpci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'x_pci', 'coma', or 'r_coma'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'rqpci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'x_pci', 'coma', 'r_coma', or 'qmix'")
     
     return algorithm
-
-def run_causal_evaluation(env, algorithm, args, logger):
-    """
-    Causal effect 평가를 실행합니다.
-    
-    Args:
-        env: 환경 객체
-        algorithm: PCI-MAPPO 알고리즘 객체
-        args: 명령행 인자
-        logger: 로거 객체
-    """
-    # StagHunt 환경인지 확인
-    if not hasattr(env, '__class__') or 'StagHunt' not in env.__class__.__name__:
-        logger.error("Causal effect evaluation은 StagHunt 환경에서만 지원됩니다.")
-        return
-    
-    # Causal effect 평가자 생성
-    CausalEffectEvaluator = get_causal_evaluator()
-    evaluator = CausalEffectEvaluator(
-        algorithm=algorithm,
-        env=env,
-        num_eval_steps=1000,
-        device=algorithm.device
-    )
-    
-    # Causal effect 평가 실행
-    statistics = evaluator.evaluate_causal_effects()
-    
-    # 결과 저장 - training_summary.json과 같은 폴더에 저장
-    checkpoint_dir = os.path.dirname(args.checkpoint)
-    results_dir = checkpoint_dir  # training_summary.json과 같은 폴더
-    
-    # 통계 저장
-    evaluator.save_results(statistics, results_dir)
-    
-    # 플롯 생성 및 저장
-    plot_path = os.path.join(results_dir, 'causal_effect_plot.png')
-    evaluator.plot_causal_effects(statistics, save_path=plot_path)
-    
-    # t-SNE plot 생성
-    tsne_path = os.path.join(results_dir, 'observation_tsne.png')
-    logger.info("Observation t-SNE 분석 시작...")
-    evaluator.plot_tsne_observations(
-        save_path=tsne_path,
-        perplexity=30
-    )
-    
-    logger.info(f"Causal effect 평가 완료. 결과가 저장되었습니다: {results_dir}")
 
 def main():
     """Main training function."""
@@ -649,6 +647,55 @@ def main():
             if hasattr(env, 'close'):
                 env.close()
             logger.info("Environment closed")
+
+# unused:
+def run_causal_evaluation(env, algorithm, args, logger):
+    """
+    Causal effect 평가를 실행합니다.
+    
+    Args:
+        env: 환경 객체
+        algorithm: PCI-MAPPO 알고리즘 객체
+        args: 명령행 인자
+        logger: 로거 객체
+    """
+    # StagHunt 환경인지 확인
+    if not hasattr(env, '__class__') or 'StagHunt' not in env.__class__.__name__:
+        logger.error("Causal effect evaluation은 StagHunt 환경에서만 지원됩니다.")
+        return
+    
+    # Causal effect 평가자 생성
+    CausalEffectEvaluator = get_causal_evaluator()
+    evaluator = CausalEffectEvaluator(
+        algorithm=algorithm,
+        env=env,
+        num_eval_steps=1000,
+        device=algorithm.device
+    )
+    
+    # Causal effect 평가 실행
+    statistics = evaluator.evaluate_causal_effects()
+    
+    # 결과 저장 - training_summary.json과 같은 폴더에 저장
+    checkpoint_dir = os.path.dirname(args.checkpoint)
+    results_dir = checkpoint_dir  # training_summary.json과 같은 폴더
+    
+    # 통계 저장
+    evaluator.save_results(statistics, results_dir)
+    
+    # 플롯 생성 및 저장
+    plot_path = os.path.join(results_dir, 'causal_effect_plot.png')
+    evaluator.plot_causal_effects(statistics, save_path=plot_path)
+    
+    # t-SNE plot 생성
+    tsne_path = os.path.join(results_dir, 'observation_tsne.png')
+    logger.info("Observation t-SNE 분석 시작...")
+    evaluator.plot_tsne_observations(
+        save_path=tsne_path,
+        perplexity=30
+    )
+    
+    logger.info(f"Causal effect 평가 완료. 결과가 저장되었습니다: {results_dir}")
 
 if __name__ == "__main__":
     main()

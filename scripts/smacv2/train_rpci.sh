@@ -7,7 +7,7 @@ config="configs/smacv2.yaml"
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=0.5 # 0.1 for SMAC, SMACv2 | # NOTE: for additive formulation, set to negative.
-clip_delta=0.0
+clip_delta=0.001
 use_centralized_critic=false  # true: MAPPO-style centralized critic, false: IPPO-style individual critic
 
 use_value_parameter_sharing=true
@@ -22,7 +22,7 @@ device="cpu"
 seed=42
 
 # load model if necessary
-# checkpoint="save_checkpoints/20260311_114929/smacv2wrapper/checkpoints/checkpoint_700.pt"
+# checkpoint="save_checkpoints/20260317_162941_seed42/smacv2wrapper/checkpoints/final_checkpoint.pt"
 
 export SC2PATH="$HOME/StarCraftII"
 # Conda 초기화 및 환경 활성화
@@ -45,5 +45,4 @@ python main.py --env ${env} --config ${config} --model ${model} \
     --log-interval ${log_interval} \
     --device ${device} --seed ${seed} \
     --use-wandb \
-    --wandb-project pci-marl-smacv2
-    # --checkpoint ${checkpoint}
+    --wandb-project pci-marl-smacv2 #--checkpoint ${checkpoint}

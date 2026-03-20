@@ -24,3 +24,6 @@ __pycache__/
 *.png
 *.jpg
 *.pdf
+
+# backup
+archieve/

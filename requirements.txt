@@ -1,3 +1,8 @@
+# torch for cuda12.6
+torch==2.7.1+cu126
+torchaudio==2.7.1+cu126
+torchvision==0.22.1+cu126
+
 absl-py==2.3.0
 annotated-types==0.7.0
 antlr4-python3-runtime @ file:///home/conda/feedstock_root/build_artifacts/antlr-python-runtime-meta_1638309185939/work
@@ -108,9 +113,6 @@ tensorstore==0.1.75
 termcolor==3.1.0
 threadpoolctl @ file:///C:/b/abs_def0dwqlft/croot/threadpoolctl_1719407816649/work
 toolz==1.0.0
-torch==2.7.1+cu126
-torchaudio==2.7.1+cu126
-torchvision==0.22.1+cu126
 tqdm==4.67.1
 treescope==0.1.9
 trimesh==4.6.12

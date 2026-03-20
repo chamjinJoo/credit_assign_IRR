@@ -11,6 +11,7 @@ class NetworkConfig:
     lr_actor: float = 3e-4
     lr_bridge: float = 3e-4
     lr_critic: float = 3e-4
+    lr: float = 5e-4  # General learning rate (used by QMIX)
     rkhs_gamma: float = 1.0  # Gamma parameter for RBF kernel
     recurrent_N: int = 1  # Number of recurrent layers
 
@@ -46,11 +47,22 @@ class AlgorithmConfig:
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     train_naivepredictor: bool = False  # Train naive predictor for causal baseline
-
     
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
     max_buffer_size: int = 10000
+
+    # QMIX-specific parameters
+    target_update_interval: int = 50  # Update target network every N iterations
+    epsilon_start: float = 1.0  # Initial exploration rate
+    epsilon_finish: float = 0.05  # Final exploration rate
+    epsilon_anneal_time: Optional[int] = None  # Steps to anneal epsilon (None = auto-calculate)
+    double_q: bool = True  # Use double Q-learning
+    mixing_embed_dim: int = 32  # Mixing network embedding dimension
+    hypernet_layers: int = 2  # Number of hypernetwork layers
+    hypernet_embed: int = 64  # Hypernetwork embedding dimension
+    replay_buffer_size: int = 5000  # Maximum number of episodes in replay buffer
+    train_batch_size: int = 40  # Number of episodes to sample for training
 
 @dataclass
 class TrainingConfig:

@@ -178,7 +178,6 @@ class CausalEffectEvaluator:
                     agent_id=agent_id,
                     w_t=w_t,
                     z_t=z_t,
-                    z_t=z_t,
                     o_t=torch_observations[agent_id],
                     current_actions=actions,
                     current_rewards=rewards,

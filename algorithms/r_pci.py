@@ -254,7 +254,7 @@ class rPCIAlgorithm:
         rkhs_gamma: float = 1.0,
         env_required_agents: Optional[Dict[int, List[int]]] = None,
         # Optimization parameter
-        causal_mini_batch_size: int = 256,
+        causal_mini_batch_size: int = 10000,
         train_naivepredictor: bool = False,
         # Value network parameter sharing
         use_value_parameter_sharing: bool = True,

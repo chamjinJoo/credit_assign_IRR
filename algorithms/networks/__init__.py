@@ -5,6 +5,7 @@ from .mlp import MLPLayer, MLPBase
 
 from .rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
 from .coma_rnn_critic import COMARNNCritic
+from .qmix_mixer import QMixer
 
 __all__ = [
     "PolicyNetwork",
@@ -17,5 +18,6 @@ __all__ = [
     "MLPLayer",
     "MLPBase",
     "COMARNNCritic",
+    "QMixer",
 ]
 

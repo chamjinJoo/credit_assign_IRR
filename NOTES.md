@@ -276,3 +276,7 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * Use gamma=1/n_feature (=1/feature dimension)
 * evaluation_causal_validation: Jupyter notebook for verify trained outcome bridge network. 
     * Evaluate the capacity of outcome bridge network to predict action-interventional reward. vs. NaivePredictor trained together.
+
+# 26.03.18
+* SMACv2 with rPCI : set clip_delta=1e-3, causal_lambda=0.5
+* add QMIX for baseline.
