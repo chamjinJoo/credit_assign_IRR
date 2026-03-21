@@ -21,7 +21,10 @@ wandb/
 __pycache__/
 
 # figures
-.figures/
+*.png
+*.jpg
+*.pdf
+
 
 # backup
 archieve/
