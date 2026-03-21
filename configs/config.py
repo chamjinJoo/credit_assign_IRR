@@ -42,6 +42,8 @@ class AlgorithmConfig:
     causal_lambda_final: float = 0.2
     causal_lambda_warmup_steps: int = 10000
     causal_lambda_startingpoint: int = 0  # Starting iteration for causal lambda scheduling
+    bridge_epoch: int = 4  # Number of epochs for bridge network training
+    bridge_update_interval: int = 1  # Update bridge network every N QMIX updates
     num_batches: int = 4  # Number of batches K for training
     causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
@@ -90,6 +92,9 @@ class EnvironmentConfig:
     num_agents: int = 2
     max_steps: int = 50
     cooperation_bonus: float = 2.0
+    # For Simple Cooperative environment
+    grid_size: int = 5
+    
     # For toy causal env
     episode_length: int = 5
     
@@ -99,6 +104,8 @@ class EnvironmentConfig:
     fully_observable: bool = False
 
     # For Stag-Hunt environment
+    stag_follows: bool = False
+    run_away_after_maul: bool = False
     stag_move_prob: float = 0.7
     coop_bonus: float = 1.0
     forage_reward: float = 3.0
@@ -106,6 +113,7 @@ class EnvironmentConfig:
     mauling_punishment: float = -1.0
     grid_observation: bool = False
     forage_quantity: Optional[int] = None
+    vision: int = 2 # (2*vsision + 1) x (2*vsision + 1) grid
     obs_noise_std: float = 0.0
 
     # For MPE Simple Spread environment
@@ -135,7 +143,8 @@ class EnvironmentConfig:
     map_name: str = "3m"
     
     # For SMACv2 environment
-    capability_config: Optional[Dict[str, Any]] = None   
+    capability_config: Optional[Dict[str, Any]] = None
+    use_individual_rewards: bool = False
 
     # For visualization
     use_visualization: bool = True
@@ -341,6 +350,10 @@ def parse_args() -> argparse.Namespace:
                         help='Enable causal lambda scheduling')
     parser.add_argument('--causal-lambda-adaptive-per-agent', type=str, default=None,
                         help='Enable adaptive causal lambda per agent (true/false)')
+    parser.add_argument('--bridge-epoch', type=int, default=None,
+                        help='Number of epochs for bridge network training')
+    parser.add_argument('--bridge-update-interval', type=int, default=None,
+                        help='Update bridge network every N QMIX updates')
     parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
                         help='Use shared value network for all agents (true/false)')
     parser.add_argument('--use-centralized-critic', type=str, default=None,
@@ -351,13 +364,29 @@ def parse_args() -> argparse.Namespace:
                         help='Learning rate for bridge networks')
     parser.add_argument('--lr-critic', type=float, default=None,
                         help='Learning rate for critic')
+    parser.add_argument('--max-grad-norm', type=float, default=None,
+                        help='Maximum gradient norm for clipping')
     parser.add_argument('--recurrent-N', type=int, default=1,
                         help='Number of recurrent layers for RNN')
     parser.add_argument('--global-reward', type=str, default=None,
                         help='Use global reward (true/false)')
     parser.add_argument('--train-naivepredictor', type=str, default=None,
                         help='Train naive predictor for causal baseline (true/false)')
-    
+
+    # QMIX-specific parameters
+    parser.add_argument('--target-update-interval', type=int, default=None,
+                        help='Update target network every N training steps')
+    parser.add_argument('--epsilon-start', type=float, default=None,
+                        help='Initial exploration rate')
+    parser.add_argument('--epsilon-finish', type=float, default=None,
+                        help='Final exploration rate')
+    parser.add_argument('--epsilon-anneal-time', type=int, default=None,
+                        help='Steps to anneal epsilon over')
+    parser.add_argument('--replay-buffer-size', type=int, default=None,
+                        help='Maximum number of episodes in replay buffer')
+    parser.add_argument('--train-batch-size', type=int, default=None,
+                        help='Number of episodes to sample for training')
+
     # Logging
     parser.add_argument('--save-dir', type=str, default='./save_checkpoints',
                         help='Save directory for checkpoints')
@@ -420,6 +449,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.environment.map_name = args.map_name
         print(config.environment.map_name)
         
+    if hasattr(args, 'max_grad_norm') and args.max_grad_norm is not None:
+        config.algorithm.max_grad_norm = args.max_grad_norm
     if hasattr(args, 'max_iterations') and args.max_iterations:
         config.training.max_iterations = args.max_iterations
     if hasattr(args, 'max_steps') and args.max_steps:
@@ -450,6 +481,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.clip_delta = args.clip_delta
     if hasattr(args, 'causal_lambda') and args.causal_lambda is not None:
         config.algorithm.causal_lambda = args.causal_lambda
+    if hasattr(args, 'bridge_epoch') and args.bridge_epoch is not None:
+        config.algorithm.bridge_epoch = args.bridge_epoch
+    if hasattr(args, 'bridge_update_interval') and args.bridge_update_interval is not None:
+        config.algorithm.bridge_update_interval = args.bridge_update_interval
     if hasattr(args, 'use_value_parameter_sharing') and args.use_value_parameter_sharing is not None:
         # Convert string to boolean
         use_sharing = args.use_value_parameter_sharing.lower() in ('true', '1', 'yes', 'on')
@@ -479,7 +514,20 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         use_naive = args.train_naivepredictor.lower() in ('true', '1', 'yes', 'on')
         config.algorithm.train_naivepredictor = use_naive
 
-    
+    # QMIX-specific parameters
+    if hasattr(args, 'target_update_interval') and args.target_update_interval is not None:
+        config.algorithm.target_update_interval = args.target_update_interval
+    if hasattr(args, 'epsilon_start') and args.epsilon_start is not None:
+        config.algorithm.epsilon_start = args.epsilon_start
+    if hasattr(args, 'epsilon_finish') and args.epsilon_finish is not None:
+        config.algorithm.epsilon_finish = args.epsilon_finish
+    if hasattr(args, 'epsilon_anneal_time') and args.epsilon_anneal_time is not None:
+        config.algorithm.epsilon_anneal_time = args.epsilon_anneal_time
+    if hasattr(args, 'replay_buffer_size') and args.replay_buffer_size is not None:
+        config.algorithm.replay_buffer_size = args.replay_buffer_size
+    if hasattr(args, 'train_batch_size') and args.train_batch_size is not None:
+        config.algorithm.train_batch_size = args.train_batch_size
+
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb
     if hasattr(args, 'wandb_project') and args.wandb_project:

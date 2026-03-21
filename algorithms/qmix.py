@@ -712,23 +712,19 @@ class rQMIXAlgorithm:
         mac_out = torch.stack(mac_out, dim=1)
         return mac_out
     
-    def update(self, **kwargs) -> Dict[str, float]:
+    def _train_step(self, completed_episodes: List[List[Dict]]) -> Dict[str, float]:
         """
-        Update Q-network and mixer using completed episodes from replay buffer.
-        Follows PyMARL's QLearner.train() logic.
+        Perform a single gradient update step (PyMARL's QLearner.train equivalent).
         
-        QMIX is off-policy: completed episodes accumulate in the replay buffer
-        and are randomly sampled each update — the buffer is NOT cleared after
-        each call.
+        Samples a mini-batch from the replay buffer and performs one gradient step
+        on the Q-network and mixer.
+        
+        Args:
+            completed_episodes: All completed episodes currently in the replay buffer.
+            
+        Returns:
+            Dictionary containing training metrics for this step.
         """
-        if not self.buffer_manager.has_completed_episodes():
-            return {}
-        
-        completed_episodes = self.buffer_manager.get_completed_episodes()
-        if not completed_episodes:
-            return {}
-        
-        # --- Off-policy: randomly sample a mini-batch of episodes ---
         n_available = len(completed_episodes)
         sample_size = min(self.train_batch_size, n_available)
         indices = np.random.choice(n_available, sample_size, replace=False)
@@ -813,19 +809,61 @@ class rQMIXAlgorithm:
             self._update_targets()
             self.last_target_update_step = self.training_steps
         
-        # NOTE: Do NOT clear completed_episodes here — QMIX is off-policy.
-        # Episodes remain in the replay buffer until it reaches max capacity (FIFO).
-        
-        losses = {
+        return {
             'loss': loss.item(),
             'grad_norm': grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
             'td_error_abs': masked_td_error.abs().sum().item() / masks_expanded.sum().clamp(min=1.0).item(),
             'q_taken_mean': (chosen_action_q_tot * masks_expanded).sum().item() / (masks_expanded.sum().item() * self.num_agents),
             'target_mean': (targets * masks_expanded).sum().item() / (masks_expanded.sum().item() * self.num_agents),
-            'epsilon': self.epsilon,
-            'total_env_steps': self.total_env_steps,
-            'replay_buffer_episodes': len(completed_episodes),
         }
+    
+    def update(self, **kwargs) -> Dict[str, float]:
+        """
+        Update Q-network and mixer using completed episodes from replay buffer.
+        
+        Follows PyMARL's training loop: 1 gradient step per collected episode.
+        The trainer passes num_episodes_collected via kwargs so that QMIX
+        performs the correct number of gradient updates per iteration.
+        
+        QMIX is off-policy: completed episodes accumulate in the replay buffer
+        and are randomly sampled each update — the buffer is NOT cleared after
+        each call.
+        """
+        if not self.buffer_manager.has_completed_episodes():
+            return {}
+        
+        completed_episodes = self.buffer_manager.get_completed_episodes()
+        if not completed_episodes:
+            return {}
+        
+        n_available = len(completed_episodes)
+        if n_available < self.train_batch_size:
+            # Not enough episodes to form a full batch yet — skip training
+            # (matches PyMARL's buffer.can_sample(args.batch_size) check)
+            return {}
+        
+        # PyMARL-faithful: 1 gradient step per episode collected this iteration
+        num_updates = max(1, kwargs.get('num_episodes_collected', 1))
+        
+        # Accumulate metrics across all gradient steps
+        accumulated = defaultdict(float)
+        
+        for _ in range(num_updates):
+            step_metrics = self._train_step(completed_episodes)
+            for k, v in step_metrics.items():
+                accumulated[k] += v
+        
+        # Average metrics over all gradient steps
+        losses = {k: v / num_updates for k, v in accumulated.items()}
+        
+        # Add non-averaged metadata
+        losses['epsilon'] = self.epsilon
+        losses['total_env_steps'] = self.total_env_steps
+        losses['replay_buffer_episodes'] = n_available
+        losses['num_updates'] = num_updates
+        
+        # NOTE: Do NOT clear completed_episodes here — QMIX is off-policy.
+        # Episodes remain in the replay buffer until it reaches max capacity (FIFO).
         
         return losses
     

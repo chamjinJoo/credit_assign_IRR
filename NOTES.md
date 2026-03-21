@@ -279,4 +279,4 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 
 # 26.03.18
 * SMACv2 with rPCI : set clip_delta=1e-3, causal_lambda=0.5
-* add QMIX for baseline.
+* add QMIX for baseline - complete: check performance in SH3

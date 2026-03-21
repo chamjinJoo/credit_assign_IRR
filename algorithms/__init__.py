@@ -10,10 +10,11 @@ from .r_ippo import rIPPOAlgorithm
 from .r_q_pci import rQPCIAlgorithm
 from .r_coma import rCOMAAlgorithm
 from .qmix import rQMIXAlgorithm
+from .pci_qmix import PCIQMIXAlgorithm
 
 __all__ = [
     "PCIMAPPOAlgorithm",
-    "MAPPOAlgorithm", 
+    "MAPPOAlgorithm",
     "X_PCIAlgorithm",
     "COMAAlgorithm",
 
@@ -22,7 +23,8 @@ __all__ = [
     "rIPPOAlgorithm",
     "IPPOAlgorithm",
     "rCOMAAlgorithm",
-    
+
     "rQPCIAlgorithm",
     "rQMIXAlgorithm",
+    "PCIQMIXAlgorithm",
 ]

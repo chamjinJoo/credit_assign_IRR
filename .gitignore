@@ -21,9 +21,11 @@ wandb/
 __pycache__/
 
 # figures
-*.png
-*.jpg
-*.pdf
+.figures/
 
 # backup
 archieve/
+
+# vscode
+.vscode/
+.claude/

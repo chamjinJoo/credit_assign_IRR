@@ -1202,32 +1202,235 @@ class SMACv2Wrapper(MultiAgentEnv):
         "One limitation of SMAC is the constant starting positions and types of units, 
         allowing methods to memorise action sequences for solving individual scenarios."
     """
-    def __init__(self, map_name: str = "10gen_protoss", seed: int = None, normalized_obs: bool = False, **kwargs):
+    def __init__(self, map_name: str = "10gen_protoss", seed: int = None, use_individual_rewards: bool = True, **kwargs):
         try:
             from smacv2.env import StarCraftCapabilityEnvWrapper # for SMACv2
         except ImportError:
             raise ImportError("SMACv2 is not installed. Please install it using `pip install git+https://github.com/oxwhirl/smac.git`")
-            
+
         self._env = StarCraftCapabilityEnvWrapper(map_name=map_name, seed=seed, **kwargs)
         self._env_info = self._env.get_env_info()
-        # env_info: {'state_shape', 'obs_shape', 'n_actions', 'n_agents', 'episode_limit', 
-        #               'agent_features': ['health', 'energy/cooldown', 'rel_x', 'rel_y'], 
+        # env_info: {'state_shape', 'obs_shape', 'n_actions', 'n_agents', 'episode_limit',
+        #               'agent_features': ['health', 'energy/cooldown', 'rel_x', 'rel_y'],
         #               'enemy_features': ['health', 'rel_x', 'rel_y']}
 
         self.num_agents = self._env_info["n_agents"]
         self.agents = list(range(self.num_agents))
         self.obs_dim = self._env_info["obs_shape"]
         self.action_dim = self._env_info["n_actions"]
-        self.normalized_obs = normalized_obs
+        self.use_individual_rewards = use_individual_rewards
+
+        # Track previous ally health for individual damage calculation
+        # (prev enemy health is read directly from sc_env.previous_enemy_units)
+        self.prev_enemy_health = None
+        self.prev_ally_health = None
 
         super().__init__(num_agents=self.num_agents, seed=seed)
-        
+
+    def _get_health_info(self):
+        """Get current enemy and ally health from the environment."""
+        sc_env = self._env.env
+        enemies = sc_env.enemies # dict
+        agents = sc_env.agents   # dict
+
+        enemy_health = np.array([e.health + e.shield for e in enemies.values()]) if enemies else np.zeros(0)
+        ally_health = np.array([a.health + a.shield for a in agents.values()]) if agents else np.zeros(self.num_agents)
+        return enemy_health, ally_health
+
+    def _compute_individual_rewards(self, global_reward, terminated, info):
+        """
+        Compute individual rewards based on damage dealt by each agent.
+
+        Reward structure:
+        1. Damage-based reward: Each agent gets reward proportional to damage they dealt
+        2. Win bonus: Shared equally among all agents when battle is won
+
+        Args:
+            global_reward: The global reward from SMAC
+            terminated: Whether the episode terminated
+            info: Info dict from SMAC (may contain battle_won)
+
+        Returns:
+            Dict mapping agent_id to individual reward
+        """
+        # Get current health
+        curr_enemy_health, curr_ally_health = self._get_health_info()
+
+        # Compute total damage dealt using SC2Env's own previous_enemy_units.
+        # SC2Env saves a deepcopy of enemies at the START of update_units() each step,
+        # so previous_enemy_units is guaranteed to reflect the pre-step state regardless
+        # of whether enemies died (health set to 0 in-place) or survived.
+        sc_env_inner = self._env.env if hasattr(self._env, 'env') else self._env
+        if hasattr(sc_env_inner, 'previous_enemy_units') and sc_env_inner.previous_enemy_units:
+            total_damage_dealt = sum(
+                max(0.0, (prev.health + prev.shield) -
+                         (sc_env_inner.enemies[eid].health + sc_env_inner.enemies[eid].shield))
+                for eid, prev in sc_env_inner.previous_enemy_units.items()
+                if eid in sc_env_inner.enemies
+            )
+        elif self.prev_enemy_health is not None and len(curr_enemy_health) == len(self.prev_enemy_health):
+            total_damage_dealt = np.maximum(0, self.prev_enemy_health - curr_enemy_health).sum()
+        else:
+            total_damage_dealt = 0.0
+
+        # Try to get per-agent damage statistics from SMAC
+        individual_damages = self._get_agent_damage_stats()
+
+        # Compute individual damage-based rewards
+        rewards = {}
+        if total_damage_dealt > 0 and individual_damages is not None:
+            for i in range(self.num_agents):
+                total_credited_damage = individual_damages.sum()
+                if total_credited_damage > 0:
+                    rewards[i] = (individual_damages[i] / total_credited_damage) * global_reward
+                else:
+                    rewards[i] = 0.0
+        else:
+            # Fallback: equal distribution if no damage info available
+            for i in range(self.num_agents):
+                rewards[i] = global_reward
+
+        # Add win bonus (shared equally) when battle is won
+        battle_won = info.get("battle_won", False)
+        if battle_won and terminated:
+            for i in range(self.num_agents):
+                rewards[i] = global_reward
+
+        # Update ally health tracking for next step
+        self.prev_enemy_health = curr_enemy_health.copy()
+        self.prev_ally_health = curr_ally_health.copy()
+
+        return rewards, individual_damages
+
+    def _was_in_attack_range(self, sc_env, agent_id, enemy_id):
+        """
+        Check if an agent was in attack range of an enemy.
+
+        Args:
+            sc_env: StarCraft2 environment
+            agent_id: Agent ID
+            enemy_id: Enemy ID
+
+        Returns:
+            True if agent could attack enemy, False otherwise
+        """
+        # Get agent and enemy units
+        if not hasattr(sc_env, 'agents') or not hasattr(sc_env, 'enemies'):
+            return True  # Fallback: assume in range if we can't check
+
+        if agent_id not in sc_env.agents or enemy_id not in sc_env.enemies:
+            # Enemy may have been killed this step and removed from the dict.
+            # If the agent targeted it and it's now gone, assume the attack landed.
+            return True
+
+        agent_unit = sc_env.agents[agent_id]
+        enemy_unit = sc_env.enemies[enemy_id]
+
+        # Get agent position
+        agent_x = agent_unit.pos.x
+        agent_y = agent_unit.pos.y
+
+        # Get enemy position
+        enemy_x = enemy_unit.pos.x
+        enemy_y = enemy_unit.pos.y
+
+        # Calculate distance
+        import math
+        distance = math.hypot(enemy_x - agent_x, enemy_y - agent_y)
+
+        # Get attack range
+        attack_range = sc_env.unit_shoot_range(agent_id)
+    
+        # Add a small margin for inherent sampling frequency of SMACv2
+        return distance <= (attack_range * 1)
+
+    def _get_agent_damage_stats(self):
+        """
+        Extract per-agent damage statistics from SMAC environment.
+
+        Uses sc_env.previous_enemy_units (maintained by StarCraft2Env.update_units)
+        as the pre-step health source and sc_env.enemies as the post-step source.
+        This avoids all timing issues: SC2Env deepcopies enemies at the very start of
+        update_units(), so the diff is always exactly one step of damage regardless of
+        whether enemies died (health set to 0 in-place) or survived.
+
+        Returns:
+            np.array of shape (num_agents,) with damage dealt by each agent,
+            or np.ones if stats are unavailable.
+        """
+        sc_env = self._env.env if hasattr(self._env, 'env') else self._env
+
+        damages = np.zeros(self.num_agents)
+
+        # Require SC2Env's built-in previous-state snapshot
+        if not hasattr(sc_env, 'previous_enemy_units') or sc_env.previous_enemy_units is None:
+            return np.ones(self.num_agents)
+        if not hasattr(sc_env, 'enemies'):
+            return np.ones(self.num_agents)
+
+        # Per-enemy damage using SC2Env's own pre/post step snapshots.
+        # Dead enemies have health=0 in sc_env.enemies (set in-place by update_units).
+        enemy_damage_taken = {}
+        for eid, prev_unit in sc_env.previous_enemy_units.items():
+            prev_hp = prev_unit.health + prev_unit.shield
+            curr_unit = sc_env.enemies.get(eid)
+            curr_hp = (curr_unit.health + curr_unit.shield) if curr_unit is not None else 0.0
+            dmg = max(0.0, prev_hp - curr_hp)
+            if dmg > 0:
+                enemy_damage_taken[eid] = dmg
+
+        # Get last actions and n_actions_no_attack from SMAC
+        if not hasattr(sc_env, 'last_action') or not hasattr(sc_env, 'n_actions_no_attack'):
+            return np.ones(self.num_agents)
+
+        last_actions = sc_env.last_action  # (n_agents, n_actions) one-hot
+        n_actions_no_attack = sc_env.n_actions_no_attack
+
+        # Map agents to their attack targets (enemy_id = action_idx - n_actions_no_attack,
+        # which matches sc_env.enemies keys since SMAC indexes enemies 0..n_enemies-1)
+        attack_targets = {}
+        for agent_id in range(self.num_agents):
+            if agent_id < len(last_actions):
+                action_idx = np.argmax(last_actions[agent_id])
+                if action_idx >= n_actions_no_attack:
+                    target_id = action_idx - n_actions_no_attack
+                    attack_targets[agent_id] = target_id
+
+        # Filter to feasible attacks: target took damage AND agent was in range
+        feasible_attacks = {}
+        for agent_id, target_id in attack_targets.items():
+            if target_id in enemy_damage_taken:
+                if self._was_in_attack_range(sc_env, agent_id, target_id):
+                    feasible_attacks[agent_id] = target_id
+
+        # Assign damage credit to feasible attackers
+        for agent_id, target_id in feasible_attacks.items():
+            damages[agent_id] = enemy_damage_taken[target_id]
+
+        # No damage was registered for any agent.
+        # Two causes, both meaning no agent actually dealt damage this step:
+        #   - Path A: no one chose an attack action (step_mul carryover can produce
+        #             global_reward > 0 from the previous step's lingering SC2 commands)
+        #   - Path B: attack actions were chosen but get_agent_action() returned None
+        #             because can_shoot=False or stochastic_attack failed, so SC2 never
+        #             sent the command — last_action recorded the intent, not the execution
+        # Either way: no actual damage → no individual reward.
+        if damages.sum() == 0:
+            return np.zeros(self.num_agents)
+
+        return damages
+
     def reset(self) -> Dict[int, np.ndarray]:
         """Reset environment and return initial observations."""
         self._env.reset()
         obs_list = self._env.get_obs()
+
+        # Initialize health tracking for individual rewards
+        if self.use_individual_rewards:
+            self.prev_enemy_health, self.prev_ally_health = self._get_health_info()
+
         return {i: np.array(obs, dtype=np.float32) for i, obs in enumerate(obs_list)}
-        
+
     def step(self, actions: Dict[int, int]) -> Tuple[
         Dict[int, np.ndarray],
         Dict[int, float],
@@ -1237,24 +1440,18 @@ class SMACv2Wrapper(MultiAgentEnv):
         """Take actions and return next observations, rewards, dones, info."""
         # Convert dict actions to list for SMAC
         action_list = [actions[i] for i in range(self.num_agents)]
-        
+
         reward, terminated, info = self._env.step(action_list)
-        
+
         obs_list = self._env.get_obs()
         observations = {i: np.array(obs, dtype=np.float32) for i, obs in enumerate(obs_list)}
-        
-        # normalize observation
-        if self.normalized_obs:
-            for i in observations:
-                obs = observations[i]
-                obs_min = obs.min()
-                obs_max = obs.max()
-                if obs_max - obs_min > 1e-8:  # avoid division by zero
-                    observations[i] = (obs - obs_min) / (obs_max - obs_min)
 
-        # SMAC returns a single scalar reward (shared reward)
-        rewards = {i: float(reward) for i in self.agents}
-        
+        # === Individual Reward Computation ===
+        if self.use_individual_rewards:
+            rewards, d = self._compute_individual_rewards(reward, terminated, info)
+        else:
+            rewards = {i: float(reward) for i in self.agents}
+
         # SMAC returns a single terminated flag
         dones = {i: terminated for i in self.agents}
         

@@ -13,7 +13,7 @@ import torch
 from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
 from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
 from envs import create_environment, get_available_environments
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm, PCIQMIXAlgorithm
 from runner import Trainer
 
 def create_algorithm(env, config):
@@ -354,8 +354,67 @@ def create_algorithm(env, config):
             device=config.training.device,
             use_episode_buffer=True,
         )
+    elif algorithm_type in ['pci_qmix', 'pci-qmix']:
+        # Calculate epsilon anneal time (same as QMIX)
+        epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)
+
+        if epsilon_anneal_time_config is None:
+            max_iterations = config.training.max_iterations
+            n_threads = getattr(config.training, 'n_rollout_threads', 1)
+            episodes_per_iteration = getattr(config.training, 'episodes_per_iteration', None)
+
+            if episodes_per_iteration is not None:
+                avg_episode_length = getattr(config.environment, 'max_steps', 50)
+                expected_steps_per_iter = episodes_per_iteration * avg_episode_length * n_threads
+                total_expected_steps = expected_steps_per_iter * max_iterations
+            else:
+                max_steps_per_iteration = config.training.max_steps_per_iteration
+                total_expected_steps = max_steps_per_iteration * max_iterations * n_threads
+
+            epsilon_anneal_time = int(total_expected_steps * 0.25)
+            print(f"[PCI-QMIX] Auto-calculated epsilon_anneal_time: {epsilon_anneal_time:,} steps "
+                  f"(25% of ~{total_expected_steps:,} total env-steps, n_threads={n_threads})")
+        else:
+            epsilon_anneal_time = epsilon_anneal_time_config
+            print(f"[PCI-QMIX] Using configured epsilon_anneal_time: {epsilon_anneal_time} steps")
+
+        algorithm = PCIQMIXAlgorithm(
+            num_agents=env.num_agents,
+            obs_dim=env.get_obs_dim(),
+            action_dim=env.get_action_dim(),
+            hidden_dim=network_config.hidden_dim,
+            lr=getattr(network_config, 'lr', 5e-4),
+            lr_bridge=getattr(network_config, 'lr_bridge', 3e-4),
+            gamma=algorithm_config.gamma,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
+            epsilon_start=getattr(algorithm_config, 'epsilon_start', 1.0),
+            epsilon_finish=getattr(algorithm_config, 'epsilon_finish', 0.05),
+            epsilon_anneal_time=epsilon_anneal_time,
+            double_q=getattr(algorithm_config, 'double_q', True),
+            mixing_embed_dim=getattr(algorithm_config, 'mixing_embed_dim', 32),
+            hypernet_layers=getattr(algorithm_config, 'hypernet_layers', 2),
+            hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
+            replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
+            train_batch_size=getattr(algorithm_config, 'train_batch_size', 32),
+            device=config.training.device,
+            use_episode_buffer=True,
+            # PCI-specific parameters
+            w_dim=env.get_obs_dim() * (env.num_agents - 1),
+            causal_lambda=getattr(algorithm_config, 'causal_lambda', 0.1),
+            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
+            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
+            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.1),
+            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
+            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
+            bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
+            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2),
+            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 10000),
+            train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
+            bridge_update_interval=getattr(algorithm_config, 'bridge_update_interval', 1),
+        )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'rqpci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'x_pci', 'coma', 'r_coma', or 'qmix'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'rqpci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
     
     return algorithm
 

@@ -110,6 +110,7 @@ def create_environment(env_config) -> MultiAgentEnv:
         return SMACv2Wrapper(
             map_name=config_dict.get('map_name'),
             seed=config_dict.get('seed', None),
+            use_individual_rewards=config_dict.get('use_individual_rewards', False),
             capability_config=config_dict.get('capability_config', None),
             **config_dict.get('env_args', {})
         )
