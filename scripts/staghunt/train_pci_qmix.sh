@@ -18,7 +18,7 @@ max_steps_per_iteration=2000
 episodes_per_iteration=40 # QMIX uses EpisodeBuffer by default
 n_rollout_threads=4
 log_interval=2
-device="cpu"
+device="cuda"
 seeds=(42)
 
 # Conda 초기화 및 환경 활성화
