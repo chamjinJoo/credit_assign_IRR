@@ -16,7 +16,7 @@ use_value_parameter_sharing=true
 n_rollout_threads=4             # 4 is enough for SMACv2, large value causes MemoryIssue due to StarCraft2 instance.
 max_iterations=1500
 max_steps_per_iteration=6400    # 200 steps = 1 episode limit for 10gen scenarios
-episodes_per_iteration=0        # if it is positive, use EpiosdeBuffer automatically 
+# episodes_per_iteration=0        # if it is positive, use EpiosdeBuffer automatically 
 log_interval=2
 device="cpu"
 seed=42
@@ -38,7 +38,6 @@ python main.py --env ${env} --config ${config} --model ${model} \
     --use-centralized-critic ${use_centralized_critic} \
     --n-rollout-threads ${n_rollout_threads} \
     --max-steps ${max_steps_per_iteration} \
-    --episodes-per-iteration ${episodes_per_iteration} \
     --max-iterations ${max_iterations} \
     --clip-delta ${clip_delta} \
     --causal-lambda ${causal_lambda} \

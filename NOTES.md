@@ -280,3 +280,7 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.03.18
 * SMACv2 with rPCI : set clip_delta=1e-3, causal_lambda=0.5
 * add QMIX for baseline - complete: check performance in SH3
+    * show best performance when n_rollout_threads=2 why? -> fix and use max_steps_per_iteration instead of max_episodes
+
+# 26.03.23
+* QMIX seems to get benefits from agent id in obs (_add_agent_id) -> remove it and test

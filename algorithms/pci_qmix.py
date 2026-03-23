@@ -43,7 +43,6 @@ class RBFKernel(nn.Module):
         dists_sq = torch.sum((x1 - x2)**2, dim=-1)
         return torch.exp(-gamma * dists_sq)
 
-
 class QMIXRNNAgent(nn.Module):
     """
     RNN-based Q-network agent for QMIX.
@@ -94,7 +93,6 @@ class QMIXRNNAgent(nn.Module):
         h = self.rnn(x, h_in)
         q = self.fc2(h)
         return q, h
-
 
 class rQMIXAgent:
     """
@@ -778,26 +776,22 @@ class PCIQMIXAlgorithm:
                 # ── Policy probability: Q-value softmax (QMIX off-policy 근사) ──────
                 # Q-network input shape: [obs, agent_id_onehot, prev_action_onehot]
                 # hidden_states_batch[k]는 해당 시점 직전의 GRU hidden state.
+                # Vectorized Q-network forward for all agents
+                obs_flat = obs_b.view(-1, self.obs_dim)  # (curr_bs * N, obs_dim)
+                agent_ids = torch.eye(num_agents, device=self.device).unsqueeze(0).expand(curr_bs, -1, -1).reshape(-1, num_agents)  # (curr_bs * N, N)
+                prev_act_onehot = torch.zeros(curr_bs * num_agents, action_dim, device=self.device)
+                inputs_all = torch.cat([obs_flat, agent_ids, prev_act_onehot], dim=-1)
+                hidden_all = H_all_inf.view(-1, self.hidden_dim)  # (curr_bs * N, hidden_dim)
+                q_values_all, _ = self.shared_q_network(inputs_all, hidden_all)
+                q_values_all = q_values_all.view(curr_bs, num_agents, -1)  # (curr_bs, N, action_dim)
+
                 probs_list = []
                 for k in range(num_agents):
-                    obs_k = obs_b[:, k, :]        # (curr_bs, obs_dim)
-                    h_k = H_all_inf[:, k, :]       # (curr_bs, hidden_dim)
-
-                    # agent_id one-hot
-                    agent_id_onehot = torch.zeros(curr_bs, num_agents, device=self.device)
-                    agent_id_onehot[:, k] = 1.0
-
-                    # prev_action: neutral zeros (버퍼의 hidden state가 이미 이전 액션 반영)
-                    prev_act_onehot = torch.zeros(curr_bs, action_dim, device=self.device)
-
-                    inputs_k = torch.cat([obs_k, agent_id_onehot, prev_act_onehot], dim=-1)
-                    q_values_k, _ = self.shared_q_network(inputs_k, h_k)  # (curr_bs, action_dim)
-
+                    q_values_k = q_values_all[:, k, :]
                     # available_actions 마스킹: 불가능한 action의 Q-value를 -inf로
                     if available_actions_batch is not None and k in available_actions_batch:
                         avail_k = available_actions_batch[k][i:end]  # (curr_bs, action_dim)
                         q_values_k = q_values_k.masked_fill(avail_k == 0, -1e10)
-
                     probs_list.append(q_values_k)  # logits 저장
 
                 # action_probs_flat: (curr_bs * N, action_dim)
@@ -1085,11 +1079,14 @@ class PCIQMIXAlgorithm:
                 available_actions_batch=avail_act_batch,
             )
 
-            # Shape rewards: add causal influence to rewards
+            # Shape rewards: convex combination of team reward and causal delta (r_pci.py 방식)
             shaped_episode = []
             for t, transition in enumerate(episode):
                 shaped_transition = transition.copy()
                 shaped_rewards = {}
+
+                # Team reward: sum of all individual env rewards at this timestep
+                team_reward = sum(transition['bold_r_t'].values())
 
                 for agent_id in range(N):
                     # Delta: sum of causal effects this agent has on others
@@ -1097,9 +1094,10 @@ class PCIQMIXAlgorithm:
                     # Clip delta
                     delta = np.clip(delta, -self.clip_delta, self.clip_delta)
 
-                    # Shaped reward = env_reward + lambda * delta
-                    env_reward = transition['bold_r_t'][agent_id]
-                    shaped_reward = env_reward + current_lambda * delta
+                    # Shaped reward = (1-λ) * team_reward/N + λ * delta
+                    # λ=0: 팀 보상 공유 (env 신호 보존)
+                    # λ=1: causal delta만 남음
+                    shaped_reward = (1 - current_lambda) * (team_reward / N) + current_lambda * delta
                     shaped_rewards[agent_id] = shaped_reward
 
                     # Store delta for logging
@@ -1243,20 +1241,14 @@ class PCIQMIXAlgorithm:
         mac_out = torch.stack(mac_out, dim=1)
         return mac_out
 
-    def _train_step(self, completed_episodes: List[List[Dict]]) -> Dict[str, float]:
+    def _train_step(self, sampled_episodes: List[List[Dict]]) -> Dict[str, float]:
         """
         Perform a single gradient update step.
 
-        1. Sample episodes from replay buffer
-        2. Apply PCI reward shaping
-        3. Compute Q-learning loss
-        4. Update Q-network and mixer
+        1. Apply PCI reward shaping
+        2. Compute Q-learning loss
+        3. Update Q-network and mixer
         """
-        n_available = len(completed_episodes)
-        sample_size = min(self.train_batch_size, n_available)
-        indices = np.random.choice(n_available, sample_size, replace=False)
-        sampled_episodes = [completed_episodes[i] for i in indices]
-
         # Apply causal reward shaping
         shaped_episodes = self._apply_causal_reward_shaping(sampled_episodes)
 
@@ -1385,29 +1377,34 @@ class PCIQMIXAlgorithm:
         if n_available < self.train_batch_size:
             return {}
 
+        # Sample episodes once for both bridge and Q-learning
+        sample_size = min(self.train_batch_size, n_available)
+        indices = np.random.choice(n_available, sample_size, replace=False)
+        sampled_episodes = [completed_episodes[i] for i in indices]
+
         # Update bridge network (less frequently than Q-network)
         bridge_metrics = {}
         if self.training_steps % self.bridge_update_interval == 0:
-            # Flatten episodes to transitions for bridge network training
+            # Flatten sampled episodes to transitions for bridge network training
             all_transitions = []
-            for ep in completed_episodes:
+            for ep in sampled_episodes:
                 all_transitions.extend(ep)
 
             if len(all_transitions) > 0:
                 # Sample for bridge training
-                sample_size = min(len(all_transitions), 10000)
-                sampled_transitions = all_transitions if len(all_transitions) <= sample_size else \
-                    [all_transitions[i] for i in np.random.choice(len(all_transitions), sample_size, replace=False)]
+                sample_size_trans = min(len(all_transitions), 10000)
+                sampled_transitions = all_transitions if len(all_transitions) <= sample_size_trans else \
+                    [all_transitions[i] for i in np.random.choice(len(all_transitions), sample_size_trans, replace=False)]
 
                 bridge_metrics = self.update_causal_networks(sampled_transitions)
                 self.bridge_training_steps += 1
 
-        # Perform Q-learning updates
+        # Perform Q-learning updates using the same sampled episodes
         num_updates = max(1, kwargs.get('num_episodes_collected', 1))
         accumulated = defaultdict(float)
 
         for _ in range(num_updates):
-            step_metrics = self._train_step(completed_episodes)
+            step_metrics = self._train_step(sampled_episodes)
             for k, v in step_metrics.items():
                 accumulated[k] += v
 

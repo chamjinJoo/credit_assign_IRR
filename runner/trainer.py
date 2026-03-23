@@ -455,7 +455,6 @@ class Trainer:
                 available_actions = None
                 if hasattr(self.env, "get_avail_actions"):
                     avail = self.env.get_avail_actions()
-                    # Convert to Dict[int, List[int]]
                     # SMAC returns List[List[int]] where index is agent_id
                     available_actions = {i: avail[i] for i in range(len(avail))}
 
@@ -501,13 +500,9 @@ class Trainer:
                 # Check if episode is done
                 done = any(dones.values()) or episode_length >= 1000
             
-            # For COMA, finish the episode in the buffer only if episode actually completed
-            # If episode was cut short due to max_steps_per_iteration, keep it in current_episode
-            # for the next iteration to continue collecting
-            if isinstance(self.algorithm, (COMAAlgorithm, rCOMAAlgorithm, rQMIXAlgorithm)):
-                if done:  # Episode actually completed
-                    self.algorithm.finish_episode()
-                # else: Incomplete episode remains in current_episode for next iteration
+            if use_ep_buffer and done:
+                self.algorithm.finish_episode()
+            # else: Incomplete episode remains in current_episode for next iteration
             
             # Store episode statistics
             for agent_id, total_reward in episode_reward.items():
@@ -681,7 +676,7 @@ class Trainer:
                         env_episode_rewards[env_idx][agent_id] += reward
                     
                     env_episode_lengths[env_idx] += 1
-                    step_count += 1 # actually, increment=n_rollout_threads
+                    step_count += 1
                     
                     # Check if episode is done
                     if any(dones_batch[env_idx].values()):

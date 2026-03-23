@@ -107,7 +107,8 @@ class rQMIXAgent:
         """Concatenate agent_id one-hot encoding to observation (pymarl-style)."""
         leading_shape = obs.shape[:-1]
         agent_id_onehot = torch.zeros(*leading_shape, self.num_agents, device=obs.device)
-        agent_id_onehot[..., self.agent_id] = 1.0
+        # by inactivate below line, masking the agent id in each local observation
+        # agent_id_onehot[..., self.agent_id] = 1.0 
         return torch.cat([obs, agent_id_onehot], dim=-1)
     
     def _build_input(self, obs: torch.Tensor) -> torch.Tensor:
@@ -265,7 +266,7 @@ class rQMIXAlgorithm:
         hypernet_layers: int = 2,
         hypernet_embed: int = 64,
         replay_buffer_size: int = 5000,   # max episodes to keep in replay buffer
-        train_batch_size: int = 64,       # number of episodes per training batch
+        train_batch_size: int = 32,       # number of episodes per training batch
         device: str = "cpu",
         use_episode_buffer: bool = True,
         # Additional params for compatibility with the config system
@@ -473,7 +474,9 @@ class rQMIXAlgorithm:
                 self.temp_hidden_states_batch[i][agent_id] = (
                     self.agents[agent_id].rnn_states_batch[i].clone()
                 )
-        
+
+        # NOTE: Count actual environment steps, not parallelism
+        # Each parallel env contributes 1 step to total_env_steps
         self.total_env_steps += n_envs
         return actions_batch
     

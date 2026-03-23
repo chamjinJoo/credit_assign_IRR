@@ -5,17 +5,13 @@ from .multi_agent_env import MultiAgentEnv
 
 
 def create_environment(env_config) -> MultiAgentEnv:
-    """환경 팩토리 함수 - 설정에 따라 적절한 환경을 생성합니다."""
-    # env_config가 딕셔너리인지 객체인지 확인
     if hasattr(env_config, '__dict__'):
-        # 객체인 경우 딕셔너리로 변환
         from dataclasses import asdict
         config_dict = asdict(env_config) if hasattr(env_config, '__dataclass_fields__') else env_config.__dict__
     else:
-        # 이미 딕셔너리인 경우
         config_dict = env_config
     
-    env_name = config_dict.get('env_name', config_dict.get('name', 'ToyCausalEnv'))
+    env_name = config_dict.get('env_name', 'null')
     
     if env_name == 'Toy':
         from .multi_agent_env import ToyCausalEnv

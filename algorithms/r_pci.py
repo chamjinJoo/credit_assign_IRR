@@ -1921,7 +1921,7 @@ class rPCIAlgorithm:
                 )
             
                 delta = C_matrix.sum(dim=2)
-                # delta = torch.clamp(delta, min=0.0) # same as ReLU
+                delta = torch.clamp(delta, min=0.0) # same as ReLU
                 delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
                 team_rewards = rewards_batch.sum(dim=1, keepdim=True) # (B, 1) Sum of rewards for all agents

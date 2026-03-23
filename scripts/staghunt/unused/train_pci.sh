@@ -9,7 +9,7 @@ config="configs/stag_hunt.yaml"
 # model setting
 model="pci-mappo" # [pci-mappo, mappo, ippo]
 causal_lambda=1.0
-clip_delta=0.2
+clip_delta=0.01
 use_value_parameter_sharing=true
 causal_lambda_adaptive_per_agent=false
 
@@ -18,7 +18,7 @@ max_iterations=1500
 max_steps_per_iteration=2000
 log_interval=2
 device="cpu"
-seed=42
+seed=31
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

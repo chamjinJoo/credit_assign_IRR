@@ -19,7 +19,8 @@ algorithm:
   entropy_coef: 0.01
   value_coef: 0.5
   max_grad_norm: 0.5
-  ppo_epochs: 4
+  ppo_epochs: 10
+  bridge_epoch: 1
   batch_size: 64
   use_value_parameter_sharing: false
 
@@ -44,8 +45,7 @@ algorithm:
   target_update_interval: 200  # Update target network every N iterations
   epsilon_start: 1.0           # Initial exploration rate
   epsilon_finish: 0.05         # Final exploration rate
-  epsilon_anneal_time: null    # Steps to anneal epsilon (null = auto-calculate as 50% of training)
-  double_q: true               # Use double Q-learning
+  epsilon_anneal_time: 1500000 # Steps to anneal epsilon 
   mixing_embed_dim: 32         # Mixing network embedding dimension
   hypernet_layers: 2           # Number of hypernetwork layers
   hypernet_embed: 64           # Hypernetwork embedding dimension
@@ -78,7 +78,7 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
   grid_observation: true
-  obs_noise_std: 0.0
+  obs_noise_std: 0.1
   
 # Weights & Biases Configuration
 wandb:

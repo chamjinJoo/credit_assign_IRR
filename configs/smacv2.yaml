@@ -33,6 +33,17 @@ algorithm:
 
   # Buffer size limits for FIFO queue behavior
   max_buffer_size: 5000
+  
+  # QMIX-specific parameters
+  target_update_interval: 200  # Update target network every N iterations
+  epsilon_start: 1.0           # Initial exploration rate
+  epsilon_finish: 0.05         # Final exploration rate
+  epsilon_anneal_time: 3000000 # Steps to anneal epsilon 
+  mixing_embed_dim: 32         # Mixing network embedding dimension
+  hypernet_layers: 2           # Number of hypernetwork layers
+  hypernet_embed: 64           # Hypernetwork embedding dimension
+  replay_buffer_size: 5000     # Maximum number of episodes in replay buffer
+  train_batch_size: 64         # Number of episodes to sample for training
 
 # Training Configuration
 training:

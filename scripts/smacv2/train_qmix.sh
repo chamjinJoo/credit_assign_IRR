@@ -7,9 +7,11 @@ config="configs/smacv2.yaml"
 model="qmix"
 
 # training and logging 
-n_rollout_threads=4
-max_iterations=3000
-max_steps_per_iteration=3200
+n_rollout_threads=2
+max_grad_norm=10
+max_iterations=1500
+max_steps_per_iteration=6400
+episodes_per_iteration=64
 log_interval=2
 device="cpu"
 seed=42
@@ -23,6 +25,7 @@ conda activate pcimarl
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} \
+    --max-grad-norm ${max_grad_norm} \
     --n-rollout-threads ${n_rollout_threads} \
     --max-steps ${max_steps_per_iteration} \
     --max-iterations ${max_iterations} \

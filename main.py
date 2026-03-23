@@ -312,23 +312,24 @@ def create_algorithm(env, config):
 
         if epsilon_anneal_time_config is None:
             # Calculate expected total environment steps.
+            # NOTE: total_env_steps is independent of n_rollout_threads (counts actual env interactions)
             max_iterations = config.training.max_iterations
-            n_threads = getattr(config.training, 'n_rollout_threads', 1)
             episodes_per_iteration = getattr(config.training, 'episodes_per_iteration', None)
 
             if episodes_per_iteration is not None:
                 avg_episode_length = getattr(config.environment, 'max_steps', 50)
-                expected_steps_per_iter = episodes_per_iteration * avg_episode_length * n_threads
+                # Do NOT multiply by n_threads - total_env_steps counts actual steps, not parallelism
+                expected_steps_per_iter = episodes_per_iteration * avg_episode_length
                 total_expected_steps = expected_steps_per_iter * max_iterations
             else:
                 max_steps_per_iteration = config.training.max_steps_per_iteration
-                # Each iteration-step advances n_threads env-steps in total_env_steps
-                total_expected_steps = max_steps_per_iteration * max_iterations * n_threads
+                # Do NOT multiply by n_threads
+                total_expected_steps = max_steps_per_iteration * max_iterations
 
             # Anneal over first 25% of training
             epsilon_anneal_time = int(total_expected_steps * 0.25)
             print(f"[QMIX] Auto-calculated epsilon_anneal_time: {epsilon_anneal_time:,} steps "
-                  f"(25% of ~{total_expected_steps:,} total env-steps, n_threads={n_threads})")
+                  f"(25% of ~{total_expected_steps:,} total env-steps)")
         else:
             epsilon_anneal_time = epsilon_anneal_time_config
             print(f"[QMIX] Using configured epsilon_anneal_time: {epsilon_anneal_time} steps")
@@ -359,21 +360,24 @@ def create_algorithm(env, config):
         epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)
 
         if epsilon_anneal_time_config is None:
+            # Calculate expected total environment steps.
+            # NOTE: total_env_steps is independent of n_rollout_threads (counts actual env interactions)
             max_iterations = config.training.max_iterations
-            n_threads = getattr(config.training, 'n_rollout_threads', 1)
             episodes_per_iteration = getattr(config.training, 'episodes_per_iteration', None)
 
             if episodes_per_iteration is not None:
                 avg_episode_length = getattr(config.environment, 'max_steps', 50)
-                expected_steps_per_iter = episodes_per_iteration * avg_episode_length * n_threads
+                # Do NOT multiply by n_threads - total_env_steps counts actual steps, not parallelism
+                expected_steps_per_iter = episodes_per_iteration * avg_episode_length
                 total_expected_steps = expected_steps_per_iter * max_iterations
             else:
                 max_steps_per_iteration = config.training.max_steps_per_iteration
-                total_expected_steps = max_steps_per_iteration * max_iterations * n_threads
+                # Do NOT multiply by n_threads
+                total_expected_steps = max_steps_per_iteration * max_iterations
 
             epsilon_anneal_time = int(total_expected_steps * 0.25)
             print(f"[PCI-QMIX] Auto-calculated epsilon_anneal_time: {epsilon_anneal_time:,} steps "
-                  f"(25% of ~{total_expected_steps:,} total env-steps, n_threads={n_threads})")
+                  f"(25% of ~{total_expected_steps:,} total env-steps)")
         else:
             epsilon_anneal_time = epsilon_anneal_time_config
             print(f"[PCI-QMIX] Using configured epsilon_anneal_time: {epsilon_anneal_time} steps")
@@ -426,7 +430,7 @@ def main():
     # Create config
     config = create_config_from_args(args)
     
-    # Set up reproducibility BEFORE any other operations
+    # Set up reproducibility
     ensure_reproducible_environment()
     actual_seed = set_global_seed(config.training.seed, config.training.deterministic)
     
@@ -454,7 +458,7 @@ def main():
     
     # Log reproducibility information
     log_reproducibility_info(actual_seed, logger)
-    # logger.info(f"Configuration: {config.to_dict()}")
+    # logger.info(f"Configuration: {config.to_dict()}") # print out all config settings
     
     # Create environment
     env = None
@@ -477,6 +481,7 @@ def main():
             
         # Auto-generate wandb run_name based on environment if not explicitly set
         algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
+        
         if not config.wandb.run_name:
             env_class_name = env.__class__.__name__
             # For LBForagingWrapper, use env_id
@@ -502,7 +507,7 @@ def main():
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()
                 config.wandb.run_name = env_name
-
+        
         # Log available environments
         available_envs = get_available_environments()
         logger.info(f"Available environments: {list(available_envs.keys())}")
@@ -533,10 +538,8 @@ def main():
                 wandb_algo_name = 'PCI_rIPPO'
         wandb_run_name = config.wandb.run_name
         if wandb_run_name:
-            # run_name이 있으면 앞에 알고리즘 타입 추가
             wandb_run_name = f"{wandb_algo_name}_{wandb_run_name}_seed{actual_seed}"
         else:
-            # run_name이 없으면 알고리즘 타입만 사용
             wandb_run_name = wandb_algo_name
         
         # Create env_fn for parallel environments
@@ -561,6 +564,7 @@ def main():
             algorithm=algorithm,
             max_iterations=config.training.max_iterations,
             max_steps_per_iteration=config.training.max_steps_per_iteration,
+            episodes_per_iteration=getattr(config.training, 'episodes_per_iteration', None),
             log_interval=config.training.log_interval,
             save_interval=config.training.save_interval,
             eval_interval=config.training.eval_interval,
@@ -570,9 +574,8 @@ def main():
             wandb_project=config.wandb.project,
             wandb_run_name=wandb_run_name,
             device=device,
-            n_rollout_threads=n_rollout_threads,
-            episodes_per_iteration=getattr(config.training, 'episodes_per_iteration', None), # [ADDED]
-            env_fn=env_fn  # [ADDED]
+            n_rollout_threads=n_rollout_threads, 
+            env_fn=env_fn
         )
         # Check for evaluation or test mode
         if hasattr(args, 'eval') and args.eval:
@@ -585,8 +588,7 @@ def main():
             logger.info(f"Evaluation results: {eval_results}")
             return
         
-        # Always run causal effect evaluation after training
-        causal_eval_enabled = True
+        causal_eval_enabled = False
         
         if hasattr(args, 'test') and args.test:
             if args.checkpoint:
@@ -676,8 +678,6 @@ def main():
             logger.info("Training interrupted by user")
             trainer.save_checkpoint()
             logger.info("Checkpoint saved before exit")
-            
-            # Run causal effect evaluation even after interruption if checkpoint exists
             if causal_eval_enabled:
                 logger.info("Running causal effect evaluation after interruption...")
                 latest_checkpoint = trainer.get_latest_checkpoint_path()
