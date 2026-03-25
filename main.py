@@ -20,12 +20,21 @@ def create_algorithm(env, config):
     """Create algorithm based on config.algorithm.type."""
     network_config = config.network
     algorithm_config = config.algorithm
-    
+
     # Get required_agents from environment if available (for StagHunt)
     env_required_agents = None
     if hasattr(env, 'required_agents'):
         env_required_agents = env.required_agents
-    
+
+    # Calculate effective observation dimension
+    # If add_agent_id is enabled, trainer will add agent_id one-hot to observations
+    base_obs_dim = env.get_obs_dim()
+    add_agent_id = getattr(algorithm_config, 'add_agent_id', False)
+    effective_obs_dim = base_obs_dim + env.num_agents if add_agent_id else base_obs_dim
+
+    if add_agent_id:
+        print(f"[INFO] add_agent_id enabled: base_obs_dim={base_obs_dim}, effective_obs_dim={effective_obs_dim}")
+
     # Normalize algorithm type string (hyphen to underscore, lower case)
     algorithm_type = getattr(algorithm_config, 'type', 'pci_mappo').lower().replace('-', '_')
     
@@ -33,9 +42,9 @@ def create_algorithm(env, config):
         algorithm = PCIMAPPOAlgorithm(
             env = env,
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
-            w_dim=env.get_obs_dim(), # observation dim only (excluding previous reward)
+            w_dim=base_obs_dim, # observation dim only (excluding previous reward and agent_id)
             hidden_dim=network_config.hidden_dim,
             lr_actor=network_config.lr_actor,
             lr_bridge=network_config.lr_bridge,
@@ -78,9 +87,8 @@ def create_algorithm(env, config):
         algorithm = rPCIAlgorithm(
             env=env,
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
-            w_dim=env.get_obs_dim(), 
             hidden_dim=network_config.hidden_dim,
             recurrent_N=getattr(network_config, 'recurrent_N', 1),
             rnn_chunk_length=getattr(algorithm_config, 'rnn_chunk_length', 16),
@@ -116,9 +124,9 @@ def create_algorithm(env, config):
     elif algorithm_type == 'x_pci':
         algorithm = X_PCIAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
-            w_dim=env.get_obs_dim(), 
+            w_dim=base_obs_dim, 
             hidden_dim=network_config.hidden_dim,
             lr_actor=network_config.lr_actor,
             lr_bridge=network_config.lr_bridge,
@@ -153,7 +161,7 @@ def create_algorithm(env, config):
     elif algorithm_type == 'mappo':
         algorithm = MAPPOAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             lr_actor=network_config.lr_actor,
@@ -173,7 +181,7 @@ def create_algorithm(env, config):
     elif algorithm_type == 'ippo':
         algorithm = IPPOAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             lr_actor=network_config.lr_actor,
@@ -192,7 +200,7 @@ def create_algorithm(env, config):
     elif algorithm_type == 'coma':
         algorithm = COMAAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             lr_actor=network_config.lr_actor,
@@ -211,7 +219,7 @@ def create_algorithm(env, config):
     elif algorithm_type in ['coma_rnn', 'r_coma']:
         algorithm = rCOMAAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             recurrent_N=getattr(network_config, 'recurrent_N', 1),
@@ -228,7 +236,7 @@ def create_algorithm(env, config):
     elif algorithm_type in ['mappo_rnn', 'r_mappo']:
         algorithm = rMAPPOAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             recurrent_N=getattr(network_config, 'recurrent_N', 1),
@@ -250,7 +258,7 @@ def create_algorithm(env, config):
     elif algorithm_type in ['ippo_rnn', 'r_ippo']:
         algorithm = rIPPOAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             recurrent_N=getattr(network_config, 'recurrent_N', 1),
@@ -273,9 +281,9 @@ def create_algorithm(env, config):
         algorithm = rQPCIAlgorithm(
             env=env,
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
-            w_dim=env.get_obs_dim(), 
+            w_dim=base_obs_dim, 
             hidden_dim=network_config.hidden_dim,
             recurrent_N=getattr(network_config, 'recurrent_N', 1),
             rnn_chunk_length=getattr(algorithm_config, 'rnn_chunk_length', 50),
@@ -336,7 +344,7 @@ def create_algorithm(env, config):
 
         algorithm = rQMIXAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             lr=getattr(network_config, 'lr', 5e-4),
@@ -384,7 +392,7 @@ def create_algorithm(env, config):
 
         algorithm = PCIQMIXAlgorithm(
             num_agents=env.num_agents,
-            obs_dim=env.get_obs_dim(),
+            obs_dim=effective_obs_dim,
             action_dim=env.get_action_dim(),
             hidden_dim=network_config.hidden_dim,
             lr=getattr(network_config, 'lr', 5e-4),
@@ -404,7 +412,7 @@ def create_algorithm(env, config):
             device=config.training.device,
             use_episode_buffer=True,
             # PCI-specific parameters
-            w_dim=env.get_obs_dim() * (env.num_agents - 1),
+            w_dim=base_obs_dim * (env.num_agents - 1),
             causal_lambda=getattr(algorithm_config, 'causal_lambda', 0.1),
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
             causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),

@@ -15,7 +15,7 @@ max_steps_per_iteration=2000
 # episodes_per_iteration=0  # Match 2000 transitions/iter: 40 eps → 10 eps/env × 50 steps × 4 envs = 2000 transitions
 log_interval=2
 device="cpu"
-seed=42
+seed=31
 # checkpoint="save_checkpoints/20260320_215805_seed42/staghuntenv/checkpoints/checkpoint_300.pt"
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"

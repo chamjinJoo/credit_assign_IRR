@@ -19,7 +19,7 @@ class NetworkConfig:
 @dataclass
 class AlgorithmConfig:
     """Algorithm configuration."""
-    type: str = "r_pci" 
+    type: str = "r_pci"
     gamma: float = 0.99
     gae_lambda: float = 0.95
     rnn_chunk_length: int = 50
@@ -49,10 +49,13 @@ class AlgorithmConfig:
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     train_naivepredictor: bool = False  # Train naive predictor for causal baseline
-    
+
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
     max_buffer_size: int = 10000
+
+    # Agent ID feature
+    add_agent_id: bool = False  # If True, concatenate agent_id one-hot vector to observations
 
     # QMIX-specific parameters
     target_update_interval: int = 50  # Update target network every N iterations

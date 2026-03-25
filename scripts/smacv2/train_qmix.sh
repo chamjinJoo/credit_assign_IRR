@@ -11,9 +11,8 @@ n_rollout_threads=2
 max_grad_norm=10
 max_iterations=1500
 max_steps_per_iteration=6400
-episodes_per_iteration=64
 log_interval=2
-device="cpu"
+device="cuda"
 seed=42
 
 export SC2PATH="$HOME/StarCraftII"

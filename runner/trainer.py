@@ -100,10 +100,14 @@ class Trainer:
         self.base_save_dir = save_dir
         self.use_wandb = use_wandb
         self.device = device
-        
+
         # Store reproducibility info
         self.seed = getattr(config.training, 'seed', None) if hasattr(config, 'training') else None
         self.deterministic = getattr(config.training, 'deterministic', True) if hasattr(config, 'training') else True
+
+        # Agent ID feature configuration
+        self.add_agent_id = getattr(config.algorithm, 'add_agent_id', False) if hasattr(config, 'algorithm') else False
+        self.num_agents = env.num_agents if hasattr(env, 'num_agents') else len(env.agents)
         
         # Initialize logging first with algorithm-specific name
         algorithm_type = type(algorithm).__name__.replace('Algorithm', '').upper()
@@ -398,7 +402,46 @@ class Trainer:
         
         if self.use_wandb:
             wandb.finish()
-    
+
+    def _add_agent_id_to_obs(self, observations: Dict[int, torch.Tensor]) -> Dict[int, torch.Tensor]:
+        """
+        Add agent_id one-hot vector to each agent's observation.
+
+        Args:
+            observations: Dictionary mapping agent_id to observation tensor
+
+        Returns:
+            Dictionary mapping agent_id to observation with agent_id one-hot concatenated
+        """
+        if not self.add_agent_id:
+            return observations
+
+        processed_obs = {}
+        for agent_id, obs in observations.items():
+            # Create one-hot encoding for this agent
+            leading_shape = obs.shape[:-1]
+            agent_id_onehot = torch.zeros(*leading_shape, self.num_agents, device=obs.device, dtype=obs.dtype)
+            agent_id_onehot[..., agent_id] = 1.0
+            # Concatenate to observation
+            processed_obs[agent_id] = torch.cat([obs, agent_id_onehot], dim=-1)
+
+        return processed_obs
+
+    def _add_agent_id_to_obs_batch(self, observations_batch: List[Dict[int, torch.Tensor]]) -> List[Dict[int, torch.Tensor]]:
+        """
+        Add agent_id one-hot vector to each agent's observation in batch.
+
+        Args:
+            observations_batch: List of dictionaries mapping agent_id to observation tensor
+
+        Returns:
+            List of dictionaries mapping agent_id to observation with agent_id one-hot concatenated
+        """
+        if not self.add_agent_id:
+            return observations_batch
+
+        return [self._add_agent_id_to_obs(obs_dict) for obs_dict in observations_batch]
+
     def collect_rollouts(self) -> Dict[str, Any]:
         """
         Collect rollouts for one iteration.
@@ -434,14 +477,12 @@ class Trainer:
             self.algorithm.reset_agents()
             # Convert observations to tensors
             observations = dict_to_tensor(observations, device=self.algorithm.device)
-            
-            # Initialize previous observations (for first step, use zero vector since no previous observation exists)
+            # if enabled, add agent ID to observations 
+            observations = self._add_agent_id_to_obs(observations)
+
+            # Initialize previous components (for first step, use zero vector since no previous observation exists)
             prev_observations = {agent_id: torch.zeros_like(obs) for agent_id, obs in observations.items()}
-            # Initialize previous rewards (for first step, use 0.0)
             prev_rewards = {agent_id: 0.0 for agent_id in observations.keys()}
-            # Initialize previous actions (for first step, use 0 for simplicity, or -1 if 0 is meaningful)
-            # Assuming 0 is a valid action, but since it's the first step, it shouldn't matter much as long as it's consistent dimension-wise.
-            # Ideally, we could use a special token or just 0.
             prev_actions = {agent_id: 0 for agent_id in observations.keys()}
             
             episode_reward = defaultdict(float)
@@ -466,10 +507,12 @@ class Trainer:
                 
                 # Take step in environment
                 next_observations, rewards, dones, info = self.env.step(env_actions)
-                
+
                 # Convert to tensors
                 next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
-                
+                # Add agent ID to observations if enabled
+                next_observations = self._add_agent_id_to_obs(next_observations)
+
                 # Store transition with proper causal structure (o_{t-1}, o_t, a_t, r_t, o_{t+1})
                 self.algorithm.store_transition(
                     prev_observations=prev_observations,  # o_{t-1}
@@ -596,10 +639,11 @@ class Trainer:
         # Reset all environments
         observations_batch = self.env.reset()
         self.algorithm.reset_agents_batch(self.n_rollout_threads)
-        
-        # Convert to tensors in batch to minimize GPU transfer overhead
+
         observations_batch = _batch_dict_to_tensor(observations_batch, self.algorithm.device)
-        
+        # if enabled, Add agent ID to observations
+        observations_batch = self._add_agent_id_to_obs_batch(observations_batch)
+
         # Initialize previous 1) obs, 2) rewards, 3) actions for each environment
         prev_observations_batch = [
             {agent_id: torch.zeros_like(obs) for agent_id, obs in obs_dict.items()}
@@ -649,10 +693,10 @@ class Trainer:
             
             # Step all environments
             next_observations_batch, rewards_batch, dones_batch, infos_batch = self.env.step(env_actions_batch)
-            
-            # Convert to tensors in batch to minimize GPU transfer overhead
             next_observations_batch = _batch_dict_to_tensor(next_observations_batch, self.algorithm.device)
-            
+            # Add agent ID to observations if enabled
+            next_observations_batch = self._add_agent_id_to_obs_batch(next_observations_batch)
+
             # Store transitions for each environment
             for env_idx in range(self.n_rollout_threads):
                 if not env_dones[env_idx]:
@@ -758,7 +802,9 @@ class Trainer:
             observations = self.eval_env.reset()
             self.algorithm.reset_agents()
             observations = dict_to_tensor(observations, device=self.algorithm.device)
-            
+            # Add agent ID to observations if enabled
+            observations = self._add_agent_id_to_obs(observations)
+
             episode_reward = defaultdict(float)
             episode_success = 0.0
             episode_length = 0
@@ -797,7 +843,9 @@ class Trainer:
                 # Take step
                 next_observations, rewards, dones, info = self.eval_env.step(actions)
                 next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
-                
+                # Add agent ID to observations if enabled
+                next_observations = self._add_agent_id_to_obs(next_observations)
+
                 # Check success (Evaluate)
                 if self.eval_env.__class__.__name__ == "StagHuntEnv":
                     stag_alive = info.get('stag_alive', {})

@@ -19,10 +19,11 @@ algorithm:
   value_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 10
-  bridge_epoch: 10
+  bridge_epoch: 1
   batch_size: 1
   causal_lambda: 1.0
   use_value_parameter_sharing: true
+  add_agent_id: true
 
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_start: 0.0      # Starting causal lambda value
@@ -38,12 +39,12 @@ algorithm:
   target_update_interval: 200  # Update target network every N iterations
   epsilon_start: 1.0           # Initial exploration rate
   epsilon_finish: 0.05         # Final exploration rate
-  epsilon_anneal_time: 3000000 # Steps to anneal epsilon 
+  epsilon_anneal_time: 100000 # Steps to anneal epsilon 
   mixing_embed_dim: 32         # Mixing network embedding dimension
   hypernet_layers: 2           # Number of hypernetwork layers
   hypernet_embed: 64           # Hypernetwork embedding dimension
   replay_buffer_size: 5000     # Maximum number of episodes in replay buffer
-  train_batch_size: 64         # Number of episodes to sample for training
+  train_batch_size: 128        # Number of episodes to sample for training
 
 # Training Configuration
 training:

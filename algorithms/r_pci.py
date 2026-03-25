@@ -225,7 +225,6 @@ class rPCIAlgorithm:
         num_agents: int,
         obs_dim: int,
         action_dim: int,
-        w_dim: int, 
         hidden_dim: int = 64,
         recurrent_N: int = 1, # RNN layers
         lr_actor: float = 3e-4,
@@ -266,7 +265,13 @@ class rPCIAlgorithm:
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
-        self.w_dim = w_dim
+        # W dimension: complementary observations from other agents
+        # obs_dim may include agent_id if config.algorithm.add_agent_id=True
+        # We need the base observation dimension (without agent_id) for W
+        # Since we don't know if agent_id is included, we assume obs_dim is the actual dimension
+        # and let main.py handle the adjustment by passing base_obs_dim separately if needed
+        # For now, use obs_dim as-is for W calculation
+        self.w_dim = obs_dim * (num_agents - 1)
         self.hidden_dim = hidden_dim
         self.recurrent_N = recurrent_N
         self.rnn_chunk_length = rnn_chunk_length
@@ -357,8 +362,12 @@ class rPCIAlgorithm:
         
         ## option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N 
+        
         ## option 2. x = (o^i_t, \mathbf{h}_{t-1})
         # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N 
+        
+        ## option 3. x = (o^i_t, \mathbf{h}_{t-1}, a^{-i}_{t})
+        # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N + action_dim * (num_agents-1)
 
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
             action_dim=action_dim,
@@ -400,8 +409,9 @@ class rPCIAlgorithm:
         self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # for z block
         self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # for action one-hot block
         # self.kernel_x_block = RBFKernel(gamma=1.0).to(self.device)   # [OPTION B-1] for x block (unsplit)
-        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2] for x: agent i's local obs
-        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2] for x: complements' hidden state
+        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2/3] for x: agent i's local obs
+        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2/3] for x: joint hidden state
+        self.kernel_xact_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-3]   for x: complement actions (one-hot)
         
         self.stabilizer_lambda = 1.0
         self.tikhonov_gamma = 1e-4
@@ -443,8 +453,9 @@ class rPCIAlgorithm:
         self.kernel_z_block.to(self.device)
         self.kernel_a_block.to(self.device)
         # self.kernel_x_block.to(self.device)   # [OPTION B-1]
-        self.kernel_xobs_block.to(self.device)  # [OPTION B-2]
-        self.kernel_xhid_block.to(self.device)  # [OPTION B-2]
+        self.kernel_xobs_block.to(self.device)  # [OPTION B-2/3]
+        self.kernel_xhid_block.to(self.device)  # [OPTION B-2/3]
+        self.kernel_xact_block.to(self.device)  # [OPTION B-3]
     
     def get_current_causal_lambda(self) -> float:
         if not self.causal_lambda_schedule:
@@ -458,7 +469,7 @@ class rPCIAlgorithm:
             progress = effective_steps / self.causal_lambda_warmup_steps
             return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
     
-    def update_causal_networks(self, batch_data: List[Dict], mc_samples_k_w2: int = 16) -> Dict[str, float]:
+    def update_causal_networks(self, batch_data: List[Dict]) -> Dict[str, float]:
         if self.get_current_causal_lambda() == 0.0:
             return {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
         
@@ -525,6 +536,12 @@ class rPCIAlgorithm:
         # H_all_super = H_all_expanded.reshape(batch_size * num_agents, -1)   # (B*N, N*RecN*H)
         # obs_super = obs_batch.view(-1, self.obs_dim)
         # X_super = torch.cat([obs_super, H_all_super], dim=1)
+
+        ## Option 3. x = {o^i_t, \mathbf{h}_{t-1}, a^{-i}_{t}}
+        # H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
+        # H_all_super = H_all_expanded.reshape(batch_size * num_agents, -1)   # (B*N, N*RecN*H)
+        # obs_super = obs_batch.view(-1, self.obs_dim)
+        # X_super = torch.cat([obs_super, H_all_super, A_others_super], dim=1)
         ########################################################################################
         
         Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
@@ -578,10 +595,6 @@ class rPCIAlgorithm:
             a_mb = A_super[idx]; w_mb = W_super[idx]; y_mb = Y_super[idx]; z_mb = Z_super[idx]; x_mb = X_super[idx]; o_mb = obs_super[idx] 
             pi_mb = policy_probs_super[idx]
             batch_agent_ids = idx % num_agents
-
-            # --- Update Outcome Bridge h_φ ---
-            r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
-            residuals_mb = y_mb - r_hat_mb # (B, N)
             
             # --- block-wise standardization for kernel features ---
             eps = 1e-6
@@ -603,7 +616,17 @@ class rPCIAlgorithm:
 
             # 2) split x block into obs and hid, then standardize respectively
             x_obs_mb_raw = x_mb[:, :self.obs_dim]
-            x_hid_mb_raw = x_mb[:, self.obs_dim:]
+
+            ## Option 1 / Option 2: h^{-i} or \mathbf{h} (complement-only hidden or all-agents hidden, single-agent step only)
+            x_hid_mb_raw = x_mb[:, self.obs_dim:self.obs_dim + self.recurrent_N * self.hidden_dim]
+            # x_act_mb_raw = x_mb[:, self.obs_dim + self.recurrent_N * self.hidden_dim:]
+
+            ## Option 3: x = (o^i_t, \mathbf{h}_{t-1}, a^{-i}_t)
+            # ## hidden block = num_agents * recurrent_N * hidden_dim
+            # _hid_block_dim = self.num_agents * self.recurrent_N * self.hidden_dim
+            # x_hid_mb_raw = x_mb[:, self.obs_dim:self.obs_dim + _hid_block_dim]
+            # x_act_mb_raw = x_mb[:, self.obs_dim + _hid_block_dim:]
+            # do not normalize action one-hot block
 
             x_obs_mean = x_obs_mb_raw.mean(dim=0, keepdim=True)
             x_obs_std = x_obs_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
@@ -613,7 +636,7 @@ class rPCIAlgorithm:
             x_hid_std = x_hid_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
             x_hid_mb = (x_hid_mb_raw - x_hid_mean) / x_hid_std
 
-            x_mb_norm = torch.cat([x_obs_mb, x_hid_mb], dim=1)  # keep for OPTION A / B-1 compatibility
+            x_mb_norm = torch.cat([x_obs_mb, x_hid_mb], dim=1)
 
             # 3) action one-hot block
             action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
@@ -665,9 +688,8 @@ class rPCIAlgorithm:
 
             # ------------------------------------------------------------------------------ #
             # [OPTION B-2] Product Kernel: K(z,a,x_obs,x_hid)                              #
-            #   x_mb = [obs_i (obs_dim) | h_{-i} ((num_agents-1)*hidden_dim*recurrent_N)]  #
-            # ------------------------------------------------------------------------------ #   
-
+            #   x_mb = [obs_i (obs_dim) | h_{t-1} (num_agents*hidden_dim*recurrent_N)]     #
+            # ------------------------------------------------------------------------------ #
             # gamma='scale'의 n_features 부분만 적용 (var ≈ 1 이므로 생략)
             with torch.no_grad():
                 for feat, kernel in [
@@ -675,6 +697,7 @@ class rPCIAlgorithm:
                     (action_onehot_mb, self.kernel_a_block),
                     (x_obs_mb,         self.kernel_xobs_block),
                     (x_hid_mb,         self.kernel_xhid_block),
+                    # (x_act_mb_raw,     self.kernel_xact_block),  # others action
                 ]:
                     n = feat.shape[1]
                     # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
@@ -684,7 +707,9 @@ class rPCIAlgorithm:
             K_z = (self.kernel_z_block(z_mb_norm)
                    * self.kernel_a_block(action_onehot_mb)
                    * self.kernel_xobs_block(x_obs_mb)
-                   * self.kernel_xhid_block(x_hid_mb))
+                   * self.kernel_xhid_block(x_hid_mb)
+                   #* self.kernel_xact_block(x_act_mb_raw)
+                   )
 
             # check the kernel collapse
             with torch.no_grad():
@@ -722,6 +747,7 @@ class rPCIAlgorithm:
                 self.outcome_bridge_optimizer.zero_grad()
                 self.action_bridge_optimizer.zero_grad()
                 total_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.outcome_bridge_net.parameters(), self.max_grad_norm)
                 self.outcome_bridge_optimizer.step()
                 # self.action_bridge_optimizer.step()
                 
@@ -1266,6 +1292,17 @@ class rPCIAlgorithm:
                 # H_all_inf_flat = H_all_inf_expanded.reshape(curr_bs * num_agents, -1)  # (curr_bs*N, N*RecN*H)
                 # obs_flat = obs_b.view(-1, self.obs_dim)
                 # x_flat = torch.cat([obs_flat, H_all_inf_flat], dim=1)
+
+                ## Option 3. x = (o^i_t, \mathbf{h}_{t-1}, \mathbf{a}^{-i}_t)
+                # H_all_inf_expanded = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                # H_all_inf_flat = H_all_inf_expanded.reshape(curr_bs * num_agents, -1)  # (curr_bs*N, N*RecN*H)
+                # obs_flat = obs_b.view(-1, self.obs_dim)
+                # # complement actions one-hot: (curr_bs, N, action_dim) -> exclude self -> (curr_bs*N, (N-1)*action_dim)
+                # A_onehot_inf = F.one_hot(act_b, action_dim).float()  # (curr_bs, N, action_dim)
+                # A_onehot_inf_expanded = A_onehot_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                # mask_A_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, action_dim)
+                # A_others_inf = A_onehot_inf_expanded[mask_A_inf].view(curr_bs * num_agents, -1)  # (curr_bs*N, (N-1)*action_dim)
+                # x_flat = torch.cat([obs_flat, H_all_inf_flat, A_others_inf], dim=1)
                 #######################################################################
 
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
@@ -1921,7 +1958,7 @@ class rPCIAlgorithm:
                 )
             
                 delta = C_matrix.sum(dim=2)
-                delta = torch.clamp(delta, min=0.0) # same as ReLU
+                # delta = torch.clamp(delta, min=0.0) # same as ReLU
                 delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
                 team_rewards = rewards_batch.sum(dim=1, keepdim=True) # (B, 1) Sum of rewards for all agents
@@ -2128,7 +2165,7 @@ class rPCIAlgorithm:
             if not batch_data: continue
             
             if self.get_current_causal_lambda() != 0.0:
-                causal_losses = self.update_causal_networks(batch_data, mc_samples_k_w2=16)
+                causal_losses = self.update_causal_networks(batch_data)
             else:
                 causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
             

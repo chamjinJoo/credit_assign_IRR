@@ -103,35 +103,35 @@ class rQMIXAgent:
         
         self.reset_rnn_state()
     
-    def _add_agent_id(self, obs: torch.Tensor) -> torch.Tensor:
-        """Concatenate agent_id one-hot encoding to observation (pymarl-style)."""
-        leading_shape = obs.shape[:-1]
-        agent_id_onehot = torch.zeros(*leading_shape, self.num_agents, device=obs.device)
-        # by inactivate below line, masking the agent id in each local observation
-        # agent_id_onehot[..., self.agent_id] = 1.0 
-        return torch.cat([obs, agent_id_onehot], dim=-1)
-    
     def _build_input(self, obs: torch.Tensor) -> torch.Tensor:
-        """Build input: [obs, agent_id_onehot, prev_action_onehot]."""
-        obs_with_id = self._add_agent_id(obs)
+        """
+        Build input: [obs (potentially with agent_id from trainer), prev_action_onehot].
+
+        Note: agent_id can be added by trainer if config.algorithm.add_agent_id=True.
+        This method only adds previous action one-hot encoding.
+        """
         # Append previous action one-hot
         if self.prev_action is not None:
             prev_act = self.prev_action
-            if prev_act.dim() < obs_with_id.dim():
+            if prev_act.dim() < obs.dim():
                 prev_act = prev_act.unsqueeze(0)
-            return torch.cat([obs_with_id, prev_act], dim=-1)
+            return torch.cat([obs, prev_act], dim=-1)
         else:
-            zeros = torch.zeros(*obs_with_id.shape[:-1], self.action_dim, device=obs.device)
-            return torch.cat([obs_with_id, zeros], dim=-1)
-    
+            zeros = torch.zeros(*obs.shape[:-1], self.action_dim, device=obs.device)
+            return torch.cat([obs, zeros], dim=-1)
+
     def _build_input_batch(self, obs_batch: torch.Tensor) -> torch.Tensor:
-        """Build input for batch: [obs, agent_id_onehot, prev_action_onehot]."""
-        obs_with_id = self._add_agent_id(obs_batch)
+        """
+        Build input for batch: [obs (potentially with agent_id from trainer), prev_action_onehot].
+
+        Note: agent_id can be added by trainer if config.algorithm.add_agent_id=True.
+        This method only adds previous action one-hot encoding.
+        """
         if self.prev_actions_batch is not None:
-            return torch.cat([obs_with_id, self.prev_actions_batch], dim=-1)
+            return torch.cat([obs_batch, self.prev_actions_batch], dim=-1)
         else:
             zeros = torch.zeros(obs_batch.size(0), self.action_dim, device=obs_batch.device)
-            return torch.cat([obs_with_id, zeros], dim=-1)
+            return torch.cat([obs_batch, zeros], dim=-1)
     
     def reset_rnn_state(self):
         """Reset RNN hidden state (single environment)."""
@@ -301,10 +301,12 @@ class rQMIXAlgorithm:
         
         # Episode replay buffer (off-policy: episodes are kept across iterations)
         self.buffer_manager = EpisodeBuffer(max_episodes=replay_buffer_size)
-        
-        # Input shape: obs + agent_id_onehot + prev_action_onehot
-        input_shape = obs_dim + num_agents + action_dim
-        
+
+        # Input shape: obs (potentially with agent_id from trainer) + prev_action_onehot
+        # Note: trainer adds agent_id if config.algorithm.add_agent_id=True,
+        # so obs_dim already includes agent_id dimension in that case
+        input_shape = obs_dim + action_dim
+
         # Shared Q-network (PyMARL-style RNNAgent)
         self.shared_q_network = QMIXRNNAgent(
             input_shape=input_shape,
@@ -692,18 +694,16 @@ class rQMIXAlgorithm:
         for t in range(Tp1):
             # Build inputs for all agents at timestep t
             obs_t = agent_obs[:, t]  # [B, N, obs_dim]
-            
-            # Add agent_id one-hot
-            agent_ids = torch.eye(N, device=self.device).unsqueeze(0).expand(B, -1, -1)  # [B, N, N]
-            
+            # Note: obs_t may already include agent_id if config.algorithm.add_agent_id=True
+
             # Previous actions one-hot
             if t == 0:
                 prev_act = torch.zeros(B, N, self.action_dim, device=self.device)
             else:
                 prev_act = F.one_hot(actions[:, t - 1], self.action_dim).float()  # [B, N, A]
-            
-            # Concatenate: [obs, agent_id, prev_action]
-            inputs = torch.cat([obs_t, agent_ids, prev_act], dim=-1)  # [B, N, input_shape]
+
+            # Concatenate: [obs (potentially with agent_id), prev_action]
+            inputs = torch.cat([obs_t, prev_act], dim=-1)  # [B, N, input_shape]
             inputs = inputs.reshape(B * N, -1)  # [B*N, input_shape]
             
             q_vals, hidden = q_network(inputs, hidden)  # [B*N, A], [B*N, H]
