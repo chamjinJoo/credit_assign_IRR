@@ -160,30 +160,49 @@ def env_worker(remote, env_fn_wrapper):
             
             # Check if episode is done
             episode_done = any(dones.values())
-            
-            # Auto-reset if episode is done
+
+            # [OPTIMIZED] Fetch avail_actions here to avoid a separate IPC round-trip
             if episode_done:
                 reset_obs = env.reset()
+                # After reset, get avail_actions for the NEW episode
+                if hasattr(env, "get_avail_actions"):
+                    avail = env.get_avail_actions()
+                    avail_actions = {i: avail[i] for i in range(len(avail))}
+                else:
+                    avail_actions = None
                 remote.send({
                     "observations": next_observations,
                     "rewards": rewards,
                     "dones": dones,
                     "info": info,
                     "episode_done": True,
-                    "reset_observations": reset_obs
+                    "reset_observations": reset_obs,
+                    "avail_actions": avail_actions,         # avail_actions after reset
                 })
             else:
+                if hasattr(env, "get_avail_actions"):
+                    avail = env.get_avail_actions()
+                    avail_actions = {i: avail[i] for i in range(len(avail))}
+                else:
+                    avail_actions = None
                 remote.send({
                     "observations": next_observations,
                     "rewards": rewards,
                     "dones": dones,
                     "info": info,
-                    "episode_done": False
+                    "episode_done": False,
+                    "avail_actions": avail_actions,
                 })
                 
         elif cmd == "reset":
             observations = env.reset()
-            remote.send(observations)
+            # [OPTIMIZED] Also return avail_actions after reset
+            if hasattr(env, "get_avail_actions"):
+                avail = env.get_avail_actions()
+                avail_actions = {i: avail[i] for i in range(len(avail))}
+            else:
+                avail_actions = None
+            remote.send({"observations": observations, "avail_actions": avail_actions})
             
         elif cmd == "get_avail_actions":
             # For SMAC environments
@@ -260,43 +279,50 @@ class ParallelEnvWrapper:
         self.obs_dim = self.env_info["obs_dim"]
         self.action_dim = self.env_info["action_dim"]
     
-    def reset(self) -> List[Dict[int, np.ndarray]]:
+    def reset(self) -> Tuple[List[Dict[int, np.ndarray]], List[Optional[Dict[int, List[int]]]]]:
         """
         Reset all environments.
-        
+
         Returns:
-            List of observation dicts, length = n_rollout_threads
-            Each element is Dict[agent_id, observation]
+            observations_batch: List of observation dicts, length = n_rollout_threads
+            avail_actions_batch: List of avail_actions dicts (or None), length = n_rollout_threads
         """
         # Send reset command to all environments
         for parent_conn in self.parent_conns:
             parent_conn.send(("reset", None))
         
-        # Collect observations from all environments
+        # Collect observations + avail_actions from all environments
         observations_batch = []
+        avail_actions_batch = []
         for parent_conn in self.parent_conns:
-            obs = parent_conn.recv()
-            observations_batch.append(obs)
+            result = parent_conn.recv()
+            observations_batch.append(result["observations"])
+            avail_actions_batch.append(result["avail_actions"])
         
-        return observations_batch
+        return observations_batch, avail_actions_batch
     
     def step(
         self,
         actions_batch: List[Dict[int, int]]
-    ) -> Tuple[List[Dict[int, np.ndarray]], List[Dict[int, float]], 
-               List[Dict[int, bool]], List[Dict]]:
+    ) -> Tuple[List[Dict[int, np.ndarray]], List[Dict[int, float]],
+               List[Dict[int, bool]], List[Dict],
+               List[Optional[Dict[int, List[int]]]]]:
         """
         Take a step in all environments.
-        
+
+        [OPTIMIZED] avail_actions are now fetched inside the worker process
+        alongside the step, eliminating a separate IPC round-trip per step.
+
         Args:
             actions_batch: List of action dicts, length = n_rollout_threads
                           Each element is Dict[agent_id, action]
-        
+
         Returns:
-            observations_batch: List[Dict[int, np.ndarray]]
-            rewards_batch: List[Dict[int, float]]
-            dones_batch: List[Dict[int, bool]]
-            infos_batch: List[Dict]
+            observations_batch:  List[Dict[int, np.ndarray]]
+            rewards_batch:       List[Dict[int, float]]
+            dones_batch:         List[Dict[int, bool]]
+            infos_batch:         List[Dict]
+            avail_actions_batch: List[Optional[Dict[int, List[int]]]]
         """
         # Send step command to all environments
         for parent_conn, actions in zip(self.parent_conns, actions_batch):
@@ -307,6 +333,7 @@ class ParallelEnvWrapper:
         rewards_batch = []
         dones_batch = []
         infos_batch = []
+        avail_actions_batch = []
         
         for parent_conn in self.parent_conns:
             result = parent_conn.recv()
@@ -320,13 +347,20 @@ class ParallelEnvWrapper:
             rewards_batch.append(result["rewards"])
             dones_batch.append(result["dones"])
             infos_batch.append(result["info"])
+            avail_actions_batch.append(result["avail_actions"])
         
-        return observations_batch, rewards_batch, dones_batch, infos_batch
+        return observations_batch, rewards_batch, dones_batch, infos_batch, avail_actions_batch
     
     def get_avail_actions_batch(self) -> List[Optional[Dict[int, List[int]]]]:
         """
-        Get available actions from all environments.
-        
+        Get available actions from all environments (explicit IPC call).
+
+        NOTE: This method is kept for backward compatibility but should be
+        avoided in the main training loop. After the optimization, avail_actions
+        are returned directly from step() and reset(), so this method is only
+        needed for the very first step before any step() has been called AND
+        reset() has not been called yet.
+
         Returns:
             List of available actions dicts, length = n_rollout_threads
             Each element is Dict[agent_id, List[int]] or None if not applicable

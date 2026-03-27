@@ -7,14 +7,14 @@ config="configs/smacv2.yaml"
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=0.5 # 0.1 for SMAC, SMACv2 | # NOTE: for additive formulation, set to negative.
-clip_delta=0.001
+clip_delta=0.0
 use_centralized_critic=false  # true: MAPPO-style centralized critic, false: IPPO-style individual critic
 
 use_value_parameter_sharing=true
 
 # training and logging 
 n_rollout_threads=4             # 4 is enough for SMACv2, large value causes MemoryIssue due to StarCraft2 instance.
-max_iterations=500
+max_iterations=1000
 max_steps_per_iteration=6400    # 200 steps = 1 episode limit for 10gen scenarios
 # episodes_per_iteration=0        # if it is positive, use EpiosdeBuffer automatically 
 log_interval=2

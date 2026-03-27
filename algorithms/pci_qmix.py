@@ -434,6 +434,7 @@ class PCIQMIXAlgorithm:
             self.naive_predictor = NaivePredictor(
                 action_dim=action_dim,
                 num_agents=num_agents,
+                w_dim=obs_dim * (num_agents - 1),
                 x_dim=x_dim,
                 hidden_dim=hidden_dim
             ).to(self.device)
@@ -992,7 +993,7 @@ class PCIQMIXAlgorithm:
 
             # Update Naive Predictor
             if getattr(self, "train_naivepredictor", False):
-                naive_output = self.naive_predictor(a_mb, x_mb)
+                naive_output = self.naive_predictor(a_mb, w_mb, x_mb)
                 naive_loss = F.mse_loss(naive_output, y_mb)
                 self.naive_optimizer.zero_grad()
                 naive_loss.backward()

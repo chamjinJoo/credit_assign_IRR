@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm, PCIQMIXAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm, rQMIXAlgorithm, PCIQMIXAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -54,7 +54,7 @@ class Trainer:
         self,
         config: Dict,
         env: MultiAgentEnv,
-        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, rQPCIAlgorithm, rQMIXAlgorithm],
+        algorithm: Union[PCIMAPPOAlgorithm, MAPPOAlgorithm, IPPOAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, qPCIAlgorithm, rQMIXAlgorithm],
         max_iterations: int = 1000,
         max_steps_per_iteration: int = 2048,
         log_interval: int = 10,
@@ -361,16 +361,16 @@ class Trainer:
                 )
                 
                 # Log metrics (only for logging, not displayed in tqdm)
-                if iteration % self.log_interval == 0:
+                if iteration % self.log_interval == 0 or iteration == self.max_iterations - 1:
                     self.log_training_metrics(rollout_data, update_info)
                 
                 # Evaluate policy
-                if iteration % self.eval_interval == 0:
+                if iteration % self.eval_interval == 0 or iteration == self.max_iterations - 1:
                     eval_info = self.evaluate_policy()
                     self.log_evaluation_metrics(eval_info)
                 
                 # Save checkpoint
-                if iteration % self.save_interval == 0:
+                if iteration % self.save_interval == 0 or iteration == self.max_iterations - 1:
                     self.save_checkpoint()
                 
                 # Update progress bar
@@ -599,35 +599,58 @@ class Trainer:
         from envs import dict_to_tensor
         
         def _batch_dict_to_tensor(dict_list, device):
-            """Helper to batch CPU->GPU transfers across parallel environments."""
+            """
+            Optimized helper to batch CPU->GPU transfers across parallel environments.
+            Minimizes the number of GPU transfers by stacking all data first.
+            """
+            if not dict_list:
+                return []
+
             tensor_dict_list = [{} for _ in range(len(dict_list))]
+
+            # Collect all unique keys
             all_keys = set()
             for d in dict_list:
                 all_keys.update(d.keys())
-                
+
+            # Process each key
             for key in all_keys:
-                valid_indices = []
                 values = []
+                valid_indices = []
+
+                # Collect values for this key
                 for i, d in enumerate(dict_list):
                     if key in d:
                         valid_indices.append(i)
                         values.append(d[key])
-                        
-                if values:
-                    if isinstance(values[0], np.ndarray):
-                        stacked = np.stack(values)
-                        tensor_batch = torch.from_numpy(stacked).float().to(device)
-                    elif isinstance(values[0], (int, float)):
-                        tensor_batch = torch.tensor(values, dtype=torch.float32, device=device)
-                    else:
-                        # Fallback for other data types
-                        try:
-                            tensor_batch = torch.tensor(values, device=device)
-                        except ValueError:
-                            tensor_batch = [torch.tensor(v, device=device) for v in values]
-                            
+
+                if not values:
+                    continue
+
+                # Optimize: Single CPU→GPU transfer per key
+                if isinstance(values[0], np.ndarray):
+                    # Stack on CPU first, then single GPU transfer
+                    stacked = np.stack(values)
+                    tensor_batch = torch.from_numpy(stacked).float().to(device, non_blocking=True)
+                elif isinstance(values[0], (int, float)):
+                    # Direct tensor creation on GPU
+                    tensor_batch = torch.tensor(values, dtype=torch.float32, device=device)
+                else:
+                    # Fallback for other types
+                    try:
+                        tensor_batch = torch.tensor(values, device=device)
+                    except (ValueError, TypeError):
+                        # Last resort: individual transfers (slower)
+                        tensor_batch = [torch.tensor(v, device=device) for v in values]
+
+                # Distribute to dictionary list
+                if isinstance(tensor_batch, list):
                     for idx, tensor_val in zip(valid_indices, tensor_batch):
                         tensor_dict_list[idx][key] = tensor_val
+                else:
+                    for i, idx in enumerate(valid_indices):
+                        tensor_dict_list[idx][key] = tensor_batch[i]
+
             return tensor_dict_list
         
         step_count = 0
@@ -637,7 +660,8 @@ class Trainer:
         episode_successes = []
         
         # Reset all environments
-        observations_batch = self.env.reset()
+        # [OPTIMIZED] reset() now also returns avail_actions, eliminating a separate IPC call
+        observations_batch, available_actions_batch = self.env.reset()
         self.algorithm.reset_agents_batch(self.n_rollout_threads)
 
         observations_batch = _batch_dict_to_tensor(observations_batch, self.algorithm.device)
@@ -668,8 +692,8 @@ class Trainer:
         use_ep_limit = use_ep_buffer and self.episodes_per_iteration is not None
 
         while (episode_count < self.episodes_per_iteration if use_ep_limit else step_count < self.max_steps_per_iteration):
-            # Get available actions
-            available_actions_batch = self.env.get_avail_actions_batch()
+            # [OPTIMIZED] avail_actions now come from the previous step()/reset() result —
+            # no separate get_avail_actions_batch() IPC call needed here.
             # Get actions for all environments
             actions_batch = self.algorithm.get_actions_batch(
                 observations_batch,
@@ -692,7 +716,8 @@ class Trainer:
                 env_actions_batch.append(env_actions)
             
             # Step all environments
-            next_observations_batch, rewards_batch, dones_batch, infos_batch = self.env.step(env_actions_batch)
+            # [OPTIMIZED] step() now returns avail_actions for the NEXT step as the 5th element
+            next_observations_batch, rewards_batch, dones_batch, infos_batch, next_available_actions_batch = self.env.step(env_actions_batch)
             next_observations_batch = _batch_dict_to_tensor(next_observations_batch, self.algorithm.device)
             # Add agent ID to observations if enabled
             next_observations_batch = self._add_agent_id_to_obs_batch(next_observations_batch)
@@ -772,6 +797,8 @@ class Trainer:
                     prev_actions_batch[env_idx] = env_actions_batch[env_idx]
 
             observations_batch = next_observations_batch
+            # [OPTIMIZED] carry forward the avail_actions from this step
+            available_actions_batch = next_available_actions_batch
         
         # Compile rollout data
         rollout_data = {
@@ -1149,7 +1176,7 @@ class Trainer:
                 }
         
         # Save algorithm-specific states
-        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, rQPCIAlgorithm, PCIQMIXAlgorithm)):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, qPCIAlgorithm, PCIQMIXAlgorithm)):
             # PCI-MAPPO specific states
             state['outcome_bridge_net'] = self.algorithm.outcome_bridge_net.state_dict()
             state['action_bridge_net'] = self.algorithm.action_bridge_net.state_dict()
@@ -1268,7 +1295,7 @@ class Trainer:
                 agent.optimizer.load_state_dict(agent_state['optimizer'])
         
         # Load algorithm-specific states
-        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, rQPCIAlgorithm)):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, qPCIAlgorithm)):
             # PCI-MAPPO specific states
             if 'outcome_bridge_net' in algorithm_state:
                 self.algorithm.outcome_bridge_net.load_state_dict(algorithm_state['outcome_bridge_net'])

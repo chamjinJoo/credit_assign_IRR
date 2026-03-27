@@ -194,6 +194,7 @@ class NaivePredictor(nn.Module):
         action_dim: int,
         num_agents: int,
         x_dim: int,
+        w_dim: int,
         hidden_dim: int = 64,
         action_embedding_dim: int = 8  # kept for API compat but unused
     ):
@@ -202,10 +203,11 @@ class NaivePredictor(nn.Module):
         self.num_agents = num_agents
         self.hidden_dim = hidden_dim
         self.x_dim = x_dim
+        self.w_dim = w_dim
         
         # Use one-hot encoding instead of nn.Embedding
         # Input is action one-hot and x
-        input_dim = action_dim + x_dim
+        input_dim = action_dim + w_dim + x_dim
         
         # Bridge network with 3 hidden layers
         self.mlp = MLPBase(
@@ -227,6 +229,7 @@ class NaivePredictor(nn.Module):
     def forward(
         self, 
         actions: torch.Tensor, 
+        w: torch.Tensor,
         x: torch.Tensor
     ) -> torch.Tensor:
         """
@@ -236,7 +239,7 @@ class NaivePredictor(nn.Module):
         action_onehot = F.one_hot(actions.long(), self.action_dim).float()  # [batch_size, action_dim]
   
         # Concatenate action one-hot and observation
-        x = torch.cat([action_onehot, x], dim=-1)
+        x = torch.cat([action_onehot, w, x], dim=-1)
         
         # Forward through network
         output = self.full_network(x)

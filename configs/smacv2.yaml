@@ -4,7 +4,7 @@
 network:
   hidden_dim: 64
   lr_actor: 5.0e-4
-  lr_bridge: 1.0e-3
+  lr_bridge: 1.0e-3 # default: 1e-3
   lr_critic: 1.0e-3
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
@@ -17,13 +17,13 @@ algorithm:
   clip_epsilon: 0.1 # clip_range 0.1 as the SMACv2 paper
   entropy_coef: 0.01
   value_coef: 0.5
-  max_grad_norm: 0.5
+  max_grad_norm: 1.0
   ppo_epochs: 10
-  bridge_epoch: 1
+  bridge_epoch: 10
   batch_size: 1
   causal_lambda: 1.0
   use_value_parameter_sharing: true
-  add_agent_id: true
+  add_agent_id: false
 
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_start: 0.0      # Starting causal lambda value

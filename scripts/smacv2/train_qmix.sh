@@ -23,7 +23,7 @@ conda activate pcimarl
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-xvfb-run -a python main.py --env ${env} --config ${config} --model ${model} \
+python main.py --env ${env} --config ${config} --model ${model} \
     --max-grad-norm ${max_grad_norm} \
     --n-rollout-threads ${n_rollout_threads} \
     --max-steps ${max_steps_per_iteration} \

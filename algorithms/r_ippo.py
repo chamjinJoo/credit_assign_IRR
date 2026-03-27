@@ -100,34 +100,37 @@ class rIPPOAgent:
             return action.item(), log_prob.item()
 
     def get_action_batch(
-        self, 
-        obs_batch: torch.Tensor, 
-        masks_batch: torch.Tensor, 
+        self,
+        obs_batch: torch.Tensor,
+        masks_batch: torch.Tensor,
         available_actions_batch: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get actions for a batch of environments.
         """
         with torch.no_grad():
-            # Save current states (these will be returned as prev_states)
-            prev_states = self.rnn_states_policy_batch.clone()
+            # Optimized: Avoid unnecessary clone at start
+            prev_states = self.rnn_states_policy_batch
             
             # Prepare prev_actions one-hot for RNN input
             prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
             
             action, log_prob, next_states = self.policy_net.get_action_and_log_prob(
-                obs_batch, 
-                self.rnn_states_policy_batch, 
-                masks_batch, 
+                obs_batch,
+                prev_states,  # Pass directly
+                masks_batch,
                 available_actions_batch,
                 prev_actions=prev_actions_onehot
             )
-            
+
+            # Clone after network call (saves one allocation)
+            prev_states_copy = prev_states.clone()
+
             self.rnn_states_policy_batch = next_states
             # Update prev_actions for next timestep
             self.prev_actions_batch = F.one_hot(action, self.action_dim).float()
-            
-        return action, log_prob, prev_states
+
+        return action, log_prob, prev_states_copy
 
 
 class rIPPOAlgorithm:
@@ -742,27 +745,28 @@ class rIPPOAlgorithm:
                 for agent_id in range(self.num_agents):
                     if agent_id not in traj[0]['bold_o_t']:
                         continue
-                    
-                    # Extract agent observations
-                    agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
+
+                    # Optimized: Stack on CPU, then single GPU transfer
+                    agent_obs_list = [t['bold_o_t'][agent_id] for t in traj]
+                    agent_obs_seq = torch.stack(agent_obs_list).to(self.device, non_blocking=True)
                     agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
-                    
+
                     if self.global_reward:
-                        agent_rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj], 
+                        agent_rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
                                                         dtype=torch.float32, device=self.device)
                     else:
-                        agent_rewards_seq = torch.tensor([t['bold_r_t'][agent_id] for t in traj], 
+                        agent_rewards_seq = torch.tensor([t['bold_r_t'][agent_id] for t in traj],
                                                         dtype=torch.float32, device=self.device)
-                    
+
                     agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
-                    
+
                     # Initial hidden state for value network
                     _, v_h0 = traj[0]['hidden_states'][agent_id]
-                    v_h0 = v_h0.to(self.device).unsqueeze(0)
-                    
+                    v_h0 = v_h0.to(self.device, non_blocking=True).unsqueeze(0)
+
                     # Compute values for entire trajectory
                     with torch.no_grad():
-                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device)
+                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
                         last_mask = 1.0 - traj[-1]['dones'][agent_id]
                         
                         extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),

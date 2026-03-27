@@ -5,9 +5,9 @@ from .non_rnn.ippo import IPPOAlgorithm
 from .non_rnn.coma import COMAAlgorithm
 
 from .r_pci import rPCIAlgorithm
+from .q_pci import qPCIAlgorithm
 from .r_mappo import rMAPPOAlgorithm
 from .r_ippo import rIPPOAlgorithm
-from .r_q_pci import rQPCIAlgorithm
 from .r_coma import rCOMAAlgorithm
 from .qmix import rQMIXAlgorithm
 from .pci_qmix import PCIQMIXAlgorithm
@@ -19,12 +19,12 @@ __all__ = [
     "COMAAlgorithm",
 
     "rPCIAlgorithm",
+    "qPCIAlgorithm",
     "rMAPPOAlgorithm",
     "rIPPOAlgorithm",
     "IPPOAlgorithm",
     "rCOMAAlgorithm",
 
-    "rQPCIAlgorithm",
     "rQMIXAlgorithm",
     "PCIQMIXAlgorithm",
 ]

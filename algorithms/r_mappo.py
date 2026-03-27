@@ -90,34 +90,37 @@ class rMAPPOAgent:
             return action.item(), log_prob.item()
 
     def get_action_batch(
-        self, 
-        obs_batch: torch.Tensor, 
-        masks_batch: torch.Tensor, 
+        self,
+        obs_batch: torch.Tensor,
+        masks_batch: torch.Tensor,
         available_actions_batch: Optional[torch.Tensor] = None
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Get actions for a batch of environments.
         """
         with torch.no_grad():
-            # Save current states (these will be returned as prev_states)
-            prev_states = self.rnn_states_policy_batch.clone()
+            # Optimized: Avoid unnecessary clone at start
+            prev_states = self.rnn_states_policy_batch
             
             # Prepare prev_actions one-hot for RNN input
             prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
             
             action, log_prob, next_states = self.policy_net.get_action_and_log_prob(
-                obs_batch, 
-                self.rnn_states_policy_batch, 
-                masks_batch, 
+                obs_batch,
+                prev_states,  # Pass directly
+                masks_batch,
                 available_actions_batch,
                 prev_actions=prev_actions_onehot
             )
-            
+
+            # Clone after network call (saves one allocation)
+            prev_states_copy = prev_states.clone()
+
             self.rnn_states_policy_batch = next_states
             # Update prev_actions for next timestep
             self.prev_actions_batch = F.one_hot(action, self.action_dim).float()
-            
-        return action, log_prob, prev_states
+
+        return action, log_prob, prev_states_copy
 
 
 class rMAPPOAlgorithm:
@@ -745,29 +748,31 @@ class rMAPPOAlgorithm:
             for env_id, traj in env_trajectories.items():
                 if len(traj) == 0:
                     continue
-                
+
                 # Extract data for this trajectory
                 T = len(traj)
-                global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in traj]).to(self.device)
+                # Optimized: Stack on CPU first, then single GPU transfer
+                global_obs_list = [self._concatenate_observations(t['bold_o_t']) for t in traj]
+                global_obs_seq = torch.stack(global_obs_list).to(self.device, non_blocking=True)
                 global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
-                
-                # Rewards
+
+                # Rewards - Direct GPU tensor creation
                 if self.global_reward:
-                    rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj], 
+                    rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
                                               dtype=torch.float32, device=self.device)
                 else:
                     rewards_list = [[t['bold_r_t'].get(i, 0.0) for i in range(self.num_agents)] for t in traj]
                     rewards_seq = torch.tensor(rewards_list, dtype=torch.float32, device=self.device)
-                
+
                 # Dones
                 dones_seq = torch.tensor([any(t['dones'].values()) for t in traj], dtype=torch.float32, device=self.device)
-                
+
                 # Initial hidden state for value network
-                v_h0 = traj[0]['hidden_states'][0][1].to(self.device).unsqueeze(0)
-                
+                v_h0 = traj[0]['hidden_states'][0][1].to(self.device, non_blocking=True).unsqueeze(0)
+
                 # Compute values for entire trajectory
                 with torch.no_grad():
-                    last_next_obs = self._concatenate_observations(traj[-1]['next_observations']).to(self.device)
+                    last_next_obs = self._concatenate_observations(traj[-1]['next_observations']).to(self.device, non_blocking=True)
                     last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
                     
                     extended_obs = torch.cat([global_obs_seq.unsqueeze(1), 

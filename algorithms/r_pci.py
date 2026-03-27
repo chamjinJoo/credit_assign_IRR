@@ -171,25 +171,30 @@ class rPCIAgent:
         Get actions for a batch of observations (for parallel environments).
         """
         with torch.no_grad():
-            prev_states = self.rnn_states_policy_batch.clone()
-            
+            # Optimized: View instead of clone (saves memory allocation)
+            # Clone only needed if we store the reference, but next_states overwrites it
+            prev_states = self.rnn_states_policy_batch
+
             # Prepare prev_actions one-hot for RNN input
             prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
-            
+
             actions, log_probs, next_states = self.policy_net.get_action_and_log_prob(
                 obs_batch,
-                self.rnn_states_policy_batch,
+                prev_states,  # Pass directly instead of cloning
                 masks_batch,
                 available_actions_batch,
                 prev_actions=prev_actions_onehot
             )
-            
+
+            # Store prev_states BEFORE updating (this is where clone is actually needed)
+            prev_states_copy = prev_states.clone()
+
             # Update internal states
             self.rnn_states_policy_batch = next_states
             # Update prev_actions for next timestep
             self.prev_actions_batch = F.one_hot(actions, self.action_dim).float()
-            
-        return actions, log_probs, prev_states
+
+        return actions, log_probs, prev_states_copy
     
     def get_value_batch(
         self,
@@ -201,22 +206,26 @@ class rPCIAgent:
         Get values for a batch of observations (for parallel environments).
         """
         with torch.no_grad():
-            prev_states = self.rnn_states_value_batch.clone()
-            
+            # Optimized: Avoid unnecessary clone
+            prev_states = self.rnn_states_value_batch
+
             if prev_actions_onehot is None:
                 prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
-            
+
             values, next_states = self.value_net(
                 obs_batch,
-                self.rnn_states_value_batch,
+                prev_states,  # Pass directly
                 masks_batch,
                 prev_actions=prev_actions_onehot
             )
-            
+
+            # Clone after getting next_states
+            prev_states_copy = prev_states.clone()
+
             # Update internal states
             self.rnn_states_value_batch = next_states
-            
-        return values.squeeze(-1), prev_states
+
+        return values.squeeze(-1), prev_states_copy
 
 class rPCIAlgorithm:
     def __init__(
@@ -423,6 +432,7 @@ class rPCIAlgorithm:
             self.naive_predictor = NaivePredictor(
                 action_dim=action_dim,
                 num_agents=num_agents,
+                w_dim=self.w_dim,
                 x_dim=x_dim,
                 hidden_dim=hidden_dim
             )
@@ -730,8 +740,8 @@ class rPCIAlgorithm:
             # --- Update Outcome Bridge h_φ for bridge_epoch times ---
             epoch_outcome_loss = 0.0
             for _ in range(self.bridge_epoch):
-                r_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
-                residuals_mb = y_mb - r_hat_mb
+                y_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb) # x=(o_mb, h_others)
+                residuals_mb = y_mb - y_hat_mb
                 
                 solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
                 # Compute per-sample loss
@@ -758,7 +768,7 @@ class rPCIAlgorithm:
             
             # --- Update Naive Predictor ---
             if getattr(self, "train_naivepredictor", False):
-                naive_output = self.naive_predictor(a_mb, x_mb) # (B, N)
+                naive_output = self.naive_predictor(a_mb, w_mb, x_mb) # (B, N)
                 naive_loss = F.mse_loss(naive_output, y_mb)
                 self.naive_optimizer.zero_grad()
                 naive_loss.backward()
@@ -1395,9 +1405,9 @@ class rPCIAlgorithm:
                 if avail_mask_flat is not None:
                     r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
 
-                r_factual = rewards_flat
-                raw_effects = r_factual - baseline
-
+                # r_factual = rewards_flat
+                # raw_effects = r_factual - baseline
+                raw_effects = r_hat_factual - baseline
                 # ------------ print for debugging ------------
                 # for idx, r in enumerate(r_factual):
                 #     if (r > 0).any():
@@ -1535,7 +1545,9 @@ class rPCIAlgorithm:
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
         agent_losses = defaultdict(float)
 
-        full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(self.device)
+        # Optimized: Stack on CPU, then single GPU transfer
+        full_obs_list = [torch.stack(list(t['bold_o_t'].values())) for t in batch_data]
+        full_obs_batch = torch.stack(full_obs_list).to(self.device, non_blocking=True)
         T, N, D = full_obs_batch.shape
         
         actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(self.num_agents)] for t in batch_data], dtype=torch.long, device=self.device)
@@ -1884,6 +1896,7 @@ class rPCIAlgorithm:
             self._update_call_count = 0
         self._update_call_count += 1
         _do_causal_debug = (self._update_call_count % 50 == 1)
+        _do_causal_debug = False # deactivate
 
         # Compute GAE on full trajectories before chunking
         # 2. Compute causal rewards for each trajectory
@@ -1893,16 +1906,22 @@ class rPCIAlgorithm:
             # Prepare data for causal reward computation
             B = len(traj)
             N = self.num_agents
-            
-            full_obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in traj]).to(self.device)
+
+            # Optimized: Batch all tensor creation and transfer to GPU at once
+            # Stack observations on CPU first
+            full_obs_list = [torch.stack(list(t['bold_o_t'].values())) for t in traj]
+            full_obs_batch = torch.stack(full_obs_list).to(self.device, non_blocking=True)
+
+            # Create tensors directly on GPU
             actions_batch = torch.tensor([[t['bold_a_t'][i] for i in range(N)] for t in traj], dtype=torch.long, device=self.device)
             rewards_batch = torch.tensor([[t['bold_r_t'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
             dones_batch = torch.tensor([[t['dones'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device)
-            
+
             # Prepare z_t (proxy variable)
-            
             # --- Default Z
-            z_t_batch = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]).to(self.device) 
+            # Optimized: Stack first, then transfer
+            z_t_list = [self._concatenate_observations(t['bold_o_t_minus_1']) for t in traj]
+            z_t_batch = torch.stack(z_t_list).to(self.device, non_blocking=True) 
             # --- Prev rewards
             # z_t_batch = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(N)] for t in traj], dtype=torch.float32, device=self.device) 
             # --- prev joint obs and joint reward
@@ -1921,22 +1940,25 @@ class rPCIAlgorithm:
             # w_t_all = torch.cat([obs_others_all, A_others_all], dim=2)
             w_t_all = obs_others_all # Default W
 
-            # Prepare hidden states
+            # Prepare hidden states - Optimized: Stack on CPU first
             hidden_states_batch = {}
             if 'hidden_states' in traj[0] and traj[0]['hidden_states'] is not None:
-                # Check if any agent has hidden states
                 for agent_id in range(N):
                     if agent_id in traj[0]['hidden_states']:
-                        p_states = torch.stack([t['hidden_states'][agent_id][0] for t in traj]).to(self.device) # actor hidden state
-                        v_states = torch.stack([t['hidden_states'][agent_id][1] for t in traj]).to(self.device) # critic hidden state
+                        # Stack on CPU, then single GPU transfer per agent
+                        p_states_list = [t['hidden_states'][agent_id][0] for t in traj]
+                        v_states_list = [t['hidden_states'][agent_id][1] for t in traj]
+                        p_states = torch.stack(p_states_list).to(self.device, non_blocking=True)
+                        v_states = torch.stack(v_states_list).to(self.device, non_blocking=True)
                         hidden_states_batch[agent_id] = (p_states, v_states)
-            
-            # Extract available actions
+
+            # Extract available actions - Optimized: Direct GPU tensor creation
             available_actions_batch = {}
             if 'available_actions' in traj[0] and traj[0]['available_actions'] is not None:
                 for agent_id in range(N):
                     if agent_id in traj[0]['available_actions']:
                         avail_list = [t['available_actions'][agent_id] for t in traj]
+                        # Direct GPU tensor creation
                         available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
             
             # Prepare prev_actions for compute_causal_rewards
@@ -1983,14 +2005,16 @@ class rPCIAlgorithm:
             if self.use_centralized_critic:
                 # === Centralized critic GAE (N-output) ===
                 T = len(traj)
-                global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in traj]).to(self.device)
+                # Optimized: Stack on CPU first, then single GPU transfer
+                global_obs_list = [self._concatenate_observations(t['bold_o_t']) for t in traj]
+                global_obs_seq = torch.stack(global_obs_list).to(self.device, non_blocking=True)
                 global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
-                
+
                 # Initial hidden state for central value network (agent 0's v_state)
-                v_h0 = traj[0]['hidden_states'][0][1].to(self.device).unsqueeze(0)
-                
+                v_h0 = traj[0]['hidden_states'][0][1].to(self.device, non_blocking=True).unsqueeze(0)
+
                 with torch.no_grad():
-                    last_next_obs = self._concatenate_observations(traj[-1]['next_observations']).to(self.device)
+                    last_next_obs = self._concatenate_observations(traj[-1]['next_observations']).to(self.device, non_blocking=True)
                     last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
                     
                     extended_obs = torch.cat([global_obs_seq.unsqueeze(1),
@@ -2049,20 +2073,21 @@ class rPCIAlgorithm:
                 for agent_id in range(self.num_agents):
                     if agent_id not in traj[0]['bold_o_t']:
                         continue
-                    
-                    # Extract agent observations
-                    agent_obs_seq = torch.stack([t['bold_o_t'][agent_id] for t in traj]).to(self.device)
+
+                    # Optimized: Batch tensor creation and transfer
+                    agent_obs_list = [t['bold_o_t'][agent_id] for t in traj]
+                    agent_obs_seq = torch.stack(agent_obs_list).to(self.device, non_blocking=True)
                     agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
                     agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
                     agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
-                    
+
                     # Initial hidden state for value network
                     _, v_h0 = traj[0]['hidden_states'][agent_id]
-                    v_h0 = v_h0.to(self.device).unsqueeze(0)
-                    
+                    v_h0 = v_h0.to(self.device, non_blocking=True).unsqueeze(0)
+
                     # Compute values for entire trajectory
                     with torch.no_grad():
-                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device)
+                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
                         last_mask = 1.0 - traj[-1]['dones'][agent_id]
 
                         # Extended sequence: (T+1, 1, D)

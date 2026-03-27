@@ -20,7 +20,7 @@ algorithm:
   value_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 4
-  bridge_epoch: 1
+  bridge_epoch: 4
   batch_size: 64
   use_value_parameter_sharing: false
   add_agent_id: false
@@ -79,7 +79,7 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
   grid_observation: true
-  obs_noise_std: 0.1
+  obs_noise_std: 0.0
   
 # Weights & Biases Configuration
 wandb:

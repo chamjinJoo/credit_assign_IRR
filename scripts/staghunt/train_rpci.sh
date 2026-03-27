@@ -6,8 +6,8 @@ config="configs/stag_hunt.yaml"
  
 # model setting
 model="r-pci" 
-causal_lambda=1.0
-clip_delta=0.01
+causal_lambda=0.5
+clip_delta=0.005
 use_value_parameter_sharing=true
 recurrent_N=1
 train_naivepredictor=true
@@ -19,7 +19,7 @@ episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically
 n_rollout_threads=4
 log_interval=2
 device="cpu"
-seeds=(42)
+seeds=(42 1 2 31 32)
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
