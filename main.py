@@ -132,7 +132,6 @@ def create_algorithm(env, config):
             rnn_chunk_length=getattr(algorithm_config, 'rnn_chunk_length', 16),
             lr_actor=network_config.lr_actor,
             lr_bridge=network_config.lr_bridge,
-            lr_critic=network_config.lr_critic,
             causal_lambda=algorithm_config.causal_lambda,
             clip_delta=getattr(algorithm_config, 'clip_delta', 0.2),
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
@@ -144,7 +143,6 @@ def create_algorithm(env, config):
             gae_lambda=algorithm_config.gae_lambda,
             clip_epsilon=algorithm_config.clip_epsilon,
             entropy_coef=algorithm_config.entropy_coef,
-            value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
             batch_size=algorithm_config.batch_size,
@@ -154,10 +152,7 @@ def create_algorithm(env, config):
             rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
             env_required_agents=env_required_agents,
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
-            use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
             use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', False),
-            use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
-            train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
         )
     elif algorithm_type == 'x_pci':
         algorithm = X_PCIAlgorithm(

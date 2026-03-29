@@ -17,7 +17,7 @@ algorithm:
   clip_epsilon: 0.1 # clip_range 0.1 as the SMACv2 paper
   entropy_coef: 0.01
   value_coef: 0.5
-  max_grad_norm: 1.0
+  max_grad_norm: 10
   ppo_epochs: 10
   bridge_epoch: 10
   batch_size: 1

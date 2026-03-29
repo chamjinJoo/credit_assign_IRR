@@ -1179,13 +1179,11 @@ class Trainer:
         if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, qPCIAlgorithm, PCIQMIXAlgorithm)):
             # PCI-MAPPO specific states
             state['outcome_bridge_net'] = self.algorithm.outcome_bridge_net.state_dict()
-            state['action_bridge_net'] = self.algorithm.action_bridge_net.state_dict()
-            state['critic_kernel_z'] = self.algorithm.critic_kernel_z.state_dict()
-            state['critic_kernel_w'] = self.algorithm.critic_kernel_w.state_dict()
+            state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
+            if hasattr(self.algorithm, 'critic_kernel_w'):
+                state['critic_kernel_w'] = self.algorithm.critic_kernel_w.state_dict()
             if hasattr(self.algorithm, 'action_embedding_for_kernel'):
                 state['action_embedding_for_kernel'] = self.algorithm.action_embedding_for_kernel.state_dict()
-            state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
-            state['action_bridge_optimizer'] = self.algorithm.action_bridge_optimizer.state_dict()
             if hasattr(self.algorithm, 'kernel_action_embed_optimizer'):
                 state['kernel_action_embed_optimizer'] = self.algorithm.kernel_action_embed_optimizer.state_dict()
             # W Predictor (rQPCI only)
