@@ -11,6 +11,7 @@ from .r_ippo import rIPPOAlgorithm
 from .r_coma import rCOMAAlgorithm
 from .qmix import rQMIXAlgorithm
 from .pci_qmix import PCIQMIXAlgorithm
+from algorithms_jax import JAXPPOAlgorithm, JAXRPCIAlgorithm
 
 __all__ = [
     "PCIMAPPOAlgorithm",
@@ -27,4 +28,6 @@ __all__ = [
 
     "rQMIXAlgorithm",
     "PCIQMIXAlgorithm",
+    "JAXPPOAlgorithm",
+    "JAXRPCIAlgorithm",
 ]

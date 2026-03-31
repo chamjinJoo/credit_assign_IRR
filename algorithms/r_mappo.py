@@ -7,7 +7,12 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 import random
 
-from algorithms.networks import RNNPolicyNetwork, RNNValueNetwork
+from algorithms.networks import (
+    FeedForwardPolicyNetworkCompat,
+    FeedForwardValueNetworkCompat,
+    RNNPolicyNetwork,
+    RNNValueNetwork,
+)
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class rMAPPOAgent:
@@ -22,7 +27,8 @@ class rMAPPOAgent:
         hidden_dim: int = 64,
         recurrent_N: int = 1,
         lr_actor: float = 3e-4,
-        device: str = "cpu"
+        device: str = "cpu",
+        use_recurrent_policy: bool = True,
     ):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
@@ -30,8 +36,13 @@ class rMAPPOAgent:
         self.hidden_dim = hidden_dim
         self.recurrent_N = recurrent_N
         self.device = device
+        self.use_recurrent_policy = use_recurrent_policy
         
-        self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
+        self.policy_net = (
+            RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
+            if use_recurrent_policy
+            else FeedForwardPolicyNetworkCompat(obs_dim, action_dim, hidden_dim)
+        )
         self.policy_net.to(device)
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         
@@ -149,6 +160,7 @@ class rMAPPOAlgorithm:
         rnn_chunk_length: int = 16,
         global_reward: bool = True,
         use_episode_buffer: bool = False,
+        use_recurrent_policy: bool = True,
     ):
         self.global_reward = global_reward
         print('global_reward: ',global_reward)
@@ -158,6 +170,7 @@ class rMAPPOAlgorithm:
         self.hidden_dim = hidden_dim
         self.recurrent_N = recurrent_N
         self.rnn_chunk_length = rnn_chunk_length
+        self.use_recurrent_policy = use_recurrent_policy
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         
         self.gamma = gamma
@@ -186,17 +199,26 @@ class rMAPPOAlgorithm:
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
                 lr_actor=lr_actor,
-                device=self.device
+                device=self.device,
+                use_recurrent_policy=use_recurrent_policy,
             )
             
         # Central RNN Critic
-        self.value_net = RNNValueNetwork(
-            obs_dim=obs_dim * num_agents,
-            hidden_dim=hidden_dim,
-            recurrent_N=recurrent_N,
-            out_dim=1 if global_reward else num_agents,
-            action_dim=action_dim,
-            num_agents=num_agents
+        self.value_net = (
+            RNNValueNetwork(
+                obs_dim=obs_dim * num_agents,
+                hidden_dim=hidden_dim,
+                recurrent_N=recurrent_N,
+                out_dim=1 if global_reward else num_agents,
+                action_dim=action_dim,
+                num_agents=num_agents
+            )
+            if use_recurrent_policy
+            else FeedForwardValueNetworkCompat(
+                obs_dim=obs_dim * num_agents,
+                hidden_dim=hidden_dim,
+                out_dim=1 if global_reward else num_agents,
+            )
         )
 
         self.value_net.to(self.device)

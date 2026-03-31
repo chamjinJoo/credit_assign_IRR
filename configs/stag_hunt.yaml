@@ -13,7 +13,7 @@ network:
 # Algorithm Configuration
 algorithm:
   gamma: 0.99
-  rnn_chunk_length: 50
+  rnn_chunk_length: 10 # originally, 50
   gae_lambda: 0.95
   clip_epsilon: 0.2
   entropy_coef: 0.01

@@ -14,6 +14,7 @@ class NetworkConfig:
     lr: float = 5e-4  # General learning rate (used by QMIX)
     rkhs_gamma: float = 1.0  # Gamma parameter for RBF kernel
     recurrent_N: int = 1  # Number of recurrent layers
+    use_recurrent_policy: bool = True  # If False, use feedforward actor/critic
 
 
 @dataclass
@@ -53,6 +54,10 @@ class AlgorithmConfig:
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
     max_buffer_size: int = 10000
+
+    global_reward: bool = True  # If True, use team/shared rewards when supported
+    lse_temperature: float = 1.0  # Temperature for LSE-style bridge potential shaping
+    normalize_returns: bool = True  # Normalize return targets when supported
 
     # Agent ID feature
     add_agent_id: bool = False  # If True, concatenate agent_id one-hot vector to observations
@@ -149,6 +154,20 @@ class EnvironmentConfig:
     capability_config: Optional[Dict[str, Any]] = None
     use_individual_rewards: bool = False
 
+    # For SMAX environment
+    enemy_shoots: bool = True
+    attack_mode: str = "closest"
+    map_width: int = 32
+    map_height: int = 32
+    world_steps_per_env_step: int = 8
+    time_per_step: float = 1.0 / 16
+    see_enemy_actions: bool = True
+    won_battle_bonus: float = 1.0
+    walls_cause_death: bool = True
+    observation_type: str = "unit_list"
+    smacv2_position_generation: bool = False
+    smacv2_unit_type_generation: bool = False
+
     # For visualization
     use_visualization: bool = True
     visualize_freq: int = 1
@@ -188,7 +207,15 @@ class EnvironmentConfig:
                 'failed_cooperation_punishment', 'eps_per_game'
             },
             'smac': {'map_name'},
-            'smacv2': {'map_name', 'capability_config'}
+            'smacv2': {'map_name', 'capability_config'},
+            'smax': {
+                'map_name', 'max_steps',
+                'use_individual_rewards', 'enemy_shoots', 'attack_mode',
+                'map_width', 'map_height', 'world_steps_per_env_step',
+                'time_per_step', 'see_enemy_actions', 'won_battle_bonus',
+                'walls_cause_death', 'observation_type',
+                'smacv2_position_generation', 'smacv2_unit_type_generation'
+            }
         }
         
         # Determine current env key
@@ -344,7 +371,7 @@ def parse_args() -> argparse.Namespace:
     
     # Algorithm
     parser.add_argument('--algorithm-type', '--model', type=str, default=None,
-                        help='Algorithm type: pci_mappo, mappo, or ippo')
+                        help='Algorithm type: pci_mappo, mappo, ippo, jax_ippo, jax_mappo, jax_rpci, etc.')
     parser.add_argument('--clip-delta', type=float, default=None,
                         help='Clip threshold for delta (causal intrinsic reward)')
     parser.add_argument('--causal-lambda', type=float, default=None,
@@ -371,6 +398,8 @@ def parse_args() -> argparse.Namespace:
                         help='Maximum gradient norm for clipping')
     parser.add_argument('--recurrent-N', type=int, default=1,
                         help='Number of recurrent layers for RNN')
+    parser.add_argument('--use-recurrent-policy', type=str, default=None,
+                        help='Use recurrent actor/critic instead of feedforward (true/false)')
     parser.add_argument('--global-reward', type=str, default=None,
                         help='Use global reward (true/false)')
     parser.add_argument('--train-naivepredictor', type=str, default=None,
@@ -508,6 +537,9 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.network.lr_critic = args.lr_critic
     if hasattr(args, 'recurrent_N') and args.recurrent_N is not None:
         config.network.recurrent_N = args.recurrent_N
+    if hasattr(args, 'use_recurrent_policy') and args.use_recurrent_policy is not None:
+        use_recurrent = args.use_recurrent_policy.lower() in ('true', '1', 'yes', 'on')
+        config.network.use_recurrent_policy = use_recurrent
     if hasattr(args, 'global_reward') and args.global_reward is not None:
         # Convert string to boolean
         use_global = args.global_reward.lower() in ('true', '1', 'yes', 'on')

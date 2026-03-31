@@ -8,7 +8,15 @@ from typing import Any, Dict, List, Tuple, Optional
 from collections import defaultdict
 from torch.distributions import Categorical
 from algorithms.networks.rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
-from algorithms.networks import PolicyNetwork, OutcomeBridgeNetwork, ActionBridgeNetwork, ValueNetwork, NaivePredictor
+from algorithms.networks import (
+    ActionBridgeNetwork,
+    FeedForwardPolicyNetworkCompat,
+    FeedForwardValueNetworkCompat,
+    OutcomeBridgeNetwork,
+    PolicyNetwork,
+    ValueNetwork,
+    NaivePredictor,
+)
 from algorithms.networks.mlp import MLPBase
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
@@ -59,15 +67,34 @@ class ConditionalMeanNet(nn.Module):
         return self.net(inp).squeeze(-1)  # (B,)
 
 class rPCIAgent:
-    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, hidden_dim: int = 64, recurrent_N: int = 1, lr_actor: float = 3e-4, lr_critic: float = 3e-4):
+    def __init__(
+        self,
+        agent_id: int,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int = 64,
+        recurrent_N: int = 1,
+        lr_actor: float = 3e-4,
+        lr_critic: float = 3e-4,
+        use_recurrent_policy: bool = True,
+    ):
         self.agent_id = agent_id
         self.obs_dim = obs_dim
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
         self.recurrent_N = recurrent_N
+        self.use_recurrent_policy = use_recurrent_policy
         
-        self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
-        self.value_net = RNNValueNetwork(obs_dim, hidden_dim, recurrent_N, action_dim=action_dim, num_agents=1)
+        self.policy_net = (
+            RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
+            if use_recurrent_policy
+            else FeedForwardPolicyNetworkCompat(obs_dim, action_dim, hidden_dim)
+        )
+        self.value_net = (
+            RNNValueNetwork(obs_dim, hidden_dim, recurrent_N, action_dim=action_dim, num_agents=1)
+            if use_recurrent_policy
+            else FeedForwardValueNetworkCompat(obs_dim=obs_dim, hidden_dim=hidden_dim, out_dim=1)
+        )
         
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
@@ -89,14 +116,14 @@ class rPCIAgent:
 
     def reset_rnn_state(self, device=None):
         """Reset RNN state for single environment (backward compatibility)"""
-        if device is None: device = self.policy_net.output_layer.weight.device
+        if device is None: device = next(self.policy_net.parameters()).device
         self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
         self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
         self.prev_action = torch.zeros(self.action_dim, device=device)
     
     def reset_rnn_states_batch(self, n_envs: int, device=None):
         """Reset RNN states for multiple environments (batch mode)"""
-        if device is None: device = self.policy_net.output_layer.weight.device
+        if device is None: device = next(self.policy_net.parameters()).device
         self.n_envs = n_envs
         self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
         self.rnn_states_value_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
@@ -112,7 +139,7 @@ class rPCIAgent:
             if masks is None:
                 # Called from trainer (evaluation)
                 batch_size = obs_in.size(0)
-                masks_in = torch.ones(batch_size, 1, device=self.policy_net.output_layer.weight.device)
+                masks_in = torch.ones(batch_size, 1, device=next(self.policy_net.parameters()).device)
                 return_rnn_state = False
             else:
                 # Called from algorithm (collection)
@@ -269,6 +296,7 @@ class rPCIAlgorithm:
         rnn_chunk_length: int = 16, # Chunk length for RNN training
         use_episode_buffer: bool = False, # Use EpisodeBuffer instead of TransitionBuffer
         use_centralized_critic: bool = False, # MAPPO-style centralized critic
+        use_recurrent_policy: bool = True,
     ):
         self.env = env
         self.num_agents = num_agents
@@ -291,6 +319,7 @@ class rPCIAlgorithm:
         self.use_value_parameter_sharing = use_value_parameter_sharing
         self.use_episode_buffer = use_episode_buffer
         self.use_centralized_critic = use_centralized_critic
+        self.use_recurrent_policy = use_recurrent_policy
 
         # for causal intrinsic reward
         self.clip_delta = clip_delta
@@ -331,19 +360,28 @@ class rPCIAlgorithm:
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
                 lr_actor=lr_actor,
-                lr_critic=lr_critic
+                lr_critic=lr_critic,
+                use_recurrent_policy=use_recurrent_policy,
             )
         
         # Value network 설정
         if self.use_centralized_critic:
             # MAPPO-style centralized critic
-            self.value_net = RNNValueNetwork(
-                obs_dim=obs_dim * num_agents,
-                hidden_dim=hidden_dim,
-                recurrent_N=recurrent_N,
-                out_dim=num_agents,
-                action_dim=action_dim,
-                num_agents=num_agents
+            self.value_net = (
+                RNNValueNetwork(
+                    obs_dim=obs_dim * num_agents,
+                    hidden_dim=hidden_dim,
+                    recurrent_N=recurrent_N,
+                    out_dim=num_agents,
+                    action_dim=action_dim,
+                    num_agents=num_agents
+                )
+                if use_recurrent_policy
+                else FeedForwardValueNetworkCompat(
+                    obs_dim=obs_dim * num_agents,
+                    hidden_dim=hidden_dim,
+                    out_dim=num_agents,
+                )
             )
             self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
             self.rnn_state_value = None  # 초기화는 reset_agents에서
@@ -353,7 +391,11 @@ class rPCIAlgorithm:
 
         elif self.use_value_parameter_sharing:
             # one shared value network (IPPO-style)
-            self.shared_value_net = RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, action_dim=action_dim, num_agents=1)
+            self.shared_value_net = (
+                RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, action_dim=action_dim, num_agents=1)
+                if use_recurrent_policy
+                else FeedForwardValueNetworkCompat(obs_dim=obs_dim, hidden_dim=hidden_dim, out_dim=1)
+            )
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
             # parameter sharing
@@ -370,7 +412,7 @@ class rPCIAlgorithm:
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
         ## option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
-        x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N 
+        x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N if use_recurrent_policy else obs_dim
         
         ## option 2. x = (o^i_t, \mathbf{h}_{t-1})
         # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N 
@@ -535,11 +577,14 @@ class rPCIAlgorithm:
         # 2. Concat obs and hidden states
         ########################################################################################
         ## Option 1. x = {o^i_t, h^{-i}_{t-1}}
-        expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1) # (B, N, N, RecN*H)
-        mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
-        H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1) # (B*N, (N-1)*RecN*H)
         obs_super = obs_batch.view(-1, self.obs_dim)
-        X_super = torch.cat([obs_super, H_others_super], dim=1)
+        if self.use_recurrent_policy:
+            expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1) # (B, N, N, RecN*H)
+            mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
+            H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1) # (B*N, (N-1)*RecN*H)
+            X_super = torch.cat([obs_super, H_others_super], dim=1)
+        else:
+            X_super = obs_super
 
         ## Option 2. x = {o^i_t, \mathbf{h}_{t-1}}
         # H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
@@ -628,7 +673,7 @@ class rPCIAlgorithm:
             x_obs_mb_raw = x_mb[:, :self.obs_dim]
 
             ## Option 1 / Option 2: h^{-i} or \mathbf{h} (complement-only hidden or all-agents hidden, single-agent step only)
-            x_hid_mb_raw = x_mb[:, self.obs_dim:self.obs_dim + self.recurrent_N * self.hidden_dim]
+            x_hid_mb_raw = x_mb[:, self.obs_dim:] if self.use_recurrent_policy else x_mb[:, self.obs_dim:self.obs_dim]
             # x_act_mb_raw = x_mb[:, self.obs_dim + self.recurrent_N * self.hidden_dim:]
 
             ## Option 3: x = (o^i_t, \mathbf{h}_{t-1}, a^{-i}_t)
@@ -642,9 +687,12 @@ class rPCIAlgorithm:
             x_obs_std = x_obs_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
             x_obs_mb = (x_obs_mb_raw - x_obs_mean) / x_obs_std
 
-            x_hid_mean = x_hid_mb_raw.mean(dim=0, keepdim=True)
-            x_hid_std = x_hid_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
-            x_hid_mb = (x_hid_mb_raw - x_hid_mean) / x_hid_std
+            if x_hid_mb_raw.size(1) > 0:
+                x_hid_mean = x_hid_mb_raw.mean(dim=0, keepdim=True)
+                x_hid_std = x_hid_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
+                x_hid_mb = (x_hid_mb_raw - x_hid_mean) / x_hid_std
+            else:
+                x_hid_mb = x_hid_mb_raw
 
             x_mb_norm = torch.cat([x_obs_mb, x_hid_mb], dim=1)
 
@@ -702,13 +750,14 @@ class rPCIAlgorithm:
             # ------------------------------------------------------------------------------ #
             # gamma='scale'의 n_features 부분만 적용 (var ≈ 1 이므로 생략)
             with torch.no_grad():
-                for feat, kernel in [
+                kernel_blocks = [
                     (z_mb_norm,        self.kernel_z_block),
                     (action_onehot_mb, self.kernel_a_block),
                     (x_obs_mb,         self.kernel_xobs_block),
-                    (x_hid_mb,         self.kernel_xhid_block),
-                    # (x_act_mb_raw,     self.kernel_xact_block),  # others action
-                ]:
+                ]
+                if x_hid_mb.size(1) > 0:
+                    kernel_blocks.append((x_hid_mb, self.kernel_xhid_block))
+                for feat, kernel in kernel_blocks:
                     n = feat.shape[1]
                     # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
                     kernel.log_gamma.data.fill_(torch.log(torch.tensor(1.0 / n)))
@@ -717,9 +766,10 @@ class rPCIAlgorithm:
             K_z = (self.kernel_z_block(z_mb_norm)
                    * self.kernel_a_block(action_onehot_mb)
                    * self.kernel_xobs_block(x_obs_mb)
-                   * self.kernel_xhid_block(x_hid_mb)
                    #* self.kernel_xact_block(x_act_mb_raw)
                    )
+            if x_hid_mb.size(1) > 0:
+                K_z = K_z * self.kernel_xhid_block(x_hid_mb)
 
             # check the kernel collapse
             with torch.no_grad():
@@ -1291,11 +1341,14 @@ class rPCIAlgorithm:
                 # get others hiddens
                 ########################################################################
                 ## Option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
-                expanded_H_inf = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
-                mask_H_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, self.recurrent_N * self.hidden_dim)
-                H_others_inf = expanded_H_inf[mask_H_inf].view(curr_bs * num_agents, -1)
                 obs_flat = obs_b.view(-1, self.obs_dim)
-                x_flat = torch.cat([obs_flat, H_others_inf], dim=1)
+                if self.use_recurrent_policy:
+                    expanded_H_inf = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                    mask_H_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, self.recurrent_N * self.hidden_dim)
+                    H_others_inf = expanded_H_inf[mask_H_inf].view(curr_bs * num_agents, -1)
+                    x_flat = torch.cat([obs_flat, H_others_inf], dim=1)
+                else:
+                    x_flat = obs_flat
 
                 ## Option 2. x = (o^i_t, \mathbf{h}_{t-1})
                 # H_all_inf_expanded = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
@@ -1389,6 +1442,17 @@ class rPCIAlgorithm:
                     baseline = (renormalized_probs.unsqueeze(2) * r_hat_all).sum(dim=1)
                     # if want to include factual action, active the below line
                     # baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1)
+
+                elif baseline_type == 'max':
+                    valid_non_factual = non_factual_mask.bool()
+                    if avail_mask_flat is not None:
+                        valid_non_factual = valid_non_factual & avail_mask_flat.bool()
+
+                    masked_r_hat = r_hat_all.masked_fill(~valid_non_factual.unsqueeze(2), float('-inf'))
+                    baseline = masked_r_hat.max(dim=1).values
+
+                    no_valid_cf = ~valid_non_factual.any(dim=1, keepdim=True)
+                    baseline = torch.where(no_valid_cf, r_hat_factual, baseline)
 
                 elif baseline_type == 'averaged':
                     # Factual action을 제외한 나머지 action들의 단순 평균 계산 (가능한 action들만 평균)
@@ -1973,7 +2037,7 @@ class rPCIAlgorithm:
                     w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
                     hidden_states_batch=hidden_states_batch,
                     dones_batch=dones_batch,
-                    baseline_type='weighted', # weighted / averaged
+                    baseline_type='weighted', # weighted / averaged / max
                     available_actions_batch=available_actions_batch,
                     prev_actions_batch=prev_actions_batch_cr,
                     debug=_do_causal_debug
@@ -1984,7 +2048,8 @@ class rPCIAlgorithm:
                 delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
                 team_rewards = rewards_batch.sum(dim=1, keepdim=True) # (B, 1) Sum of rewards for all agents
-                shaped_rewards_all = (1-self.get_current_causal_lambda()) * team_rewards + self.get_current_causal_lambda() * delta
+                lambda_c = self.get_current_causal_lambda()
+                shaped_rewards_all = (1-lambda_c) * team_rewards + (lambda_c) * delta
                 
                 shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
 

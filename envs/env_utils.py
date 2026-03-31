@@ -111,6 +111,27 @@ def create_environment(env_config) -> MultiAgentEnv:
             **config_dict.get('env_args', {})
         )
     
+    elif env_name == 'SMAX':
+        from .multi_agent_env import SMAXWrapper
+        return SMAXWrapper(
+            map_name=config_dict.get('map_name', None),
+            seed=config_dict.get('seed', None),
+            max_steps=config_dict.get('max_steps', 100),
+            use_individual_rewards=config_dict.get('use_individual_rewards', False),
+            enemy_shoots=config_dict.get('enemy_shoots', True),
+            attack_mode=config_dict.get('attack_mode', 'closest'),
+            map_width=config_dict.get('map_width', 32),
+            map_height=config_dict.get('map_height', 32),
+            world_steps_per_env_step=config_dict.get('world_steps_per_env_step', 8),
+            time_per_step=config_dict.get('time_per_step', 1.0 / 16),
+            see_enemy_actions=config_dict.get('see_enemy_actions', True),
+            won_battle_bonus=config_dict.get('won_battle_bonus', 1.0),
+            walls_cause_death=config_dict.get('walls_cause_death', True),
+            observation_type=config_dict.get('observation_type', 'unit_list'),
+            smacv2_position_generation=config_dict.get('smacv2_position_generation', False),
+            smacv2_unit_type_generation=config_dict.get('smacv2_unit_type_generation', False),
+        )
+    
     else:
         raise ValueError(f"Unknown environment: {env_name}")
 
@@ -131,7 +152,8 @@ def get_available_environments() -> Dict[str, str]:
         'mpe_simple_spread': 'MPE Simple Spread 환경 (N 에이전트)',
         'SMAC': 'StarCraftII 환경 (N 에이전트)',
         'StarCraft2': 'StarCraftII 환경 (N 에이전트)',
-        'SMACv2': 'StarCraftII 환경 (N 에이전트)'
+        'SMACv2': 'StarCraftII 환경 (N 에이전트)',
+        'SMAX': 'JaxMARL SMAX 환경 - SC2 바이너리 불필요, JAX 구현 (N 에이전트)',
     }
 
 

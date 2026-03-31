@@ -22,8 +22,7 @@
 11. bridge network | ValuenetNoPS | Causal Reciprocity MAX | adaptive     X
 12. bridge network | ValuenetNoPS | Causal Reciprocity MEAN| adaptive     X
 
-## 2025.12.22
-**Establish a new method**
+## 2025.12.22 **Establish a new method**
 1. When calculating causal intrinsic rewards, use factual reward instead of predictions.
 2. Also consider factual action when calculating baseline:
     * Before: $\delta^i_t = \hat{\boldsymbol r}^{-i}(\mathbf{o}^{-i}_t,a^i_t) - \mathbb E_{a\sim\pi^i,{a}\neq{a^i_t}}[\hat{\boldsymbol r}(\mathbf{o}^{-i}_t,a)]$
@@ -284,3 +283,11 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 
 # 26.03.23
 * QMIX seems to get benefits from agent id in obs (_add_agent_id) -> remove it and test
+
+# 26.03.30
+* Set `rnn_chunk_length=10` for all algorithms and envs
+* We've checked the capability of outcome bridge network in global reward setting in SH.
+* Test SMACv2 2_vs_2, only Stalkers, negative reward activated, small map
+
+# 26.03.31
+* Now we can use SMAX. - GPU VRAM issue: maximum 2 simulations can be run at once with device=cuda.

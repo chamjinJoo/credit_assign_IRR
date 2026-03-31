@@ -4,6 +4,7 @@ from .bridge_network import OutcomeBridgeNetwork, ActionBridgeNetwork, NaivePred
 from .mlp import MLPLayer, MLPBase
 
 from .rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
+from .feedforward_compat import FeedForwardPolicyNetworkCompat, FeedForwardValueNetworkCompat
 from .coma_rnn_critic import COMARNNCritic
 from .qmix_mixer import QMixer
 
@@ -12,6 +13,8 @@ __all__ = [
     "ValueNetwork",
     "RNNPolicyNetwork",
     "RNNValueNetwork",
+    "FeedForwardPolicyNetworkCompat",
+    "FeedForwardValueNetworkCompat",
     "OutcomeBridgeNetwork", 
     "ActionBridgeNetwork",
     "NaivePredictor",
@@ -20,4 +23,3 @@ __all__ = [
     "COMARNNCritic",
     "QMixer",
 ]
-

@@ -13,7 +13,7 @@ obs_timestep_number: False
 reward_death_value: 10
 reward_defeat: 0
 reward_negative_scale: 0.5
-reward_only_positive: True
+reward_only_positive: False
 reward_scale: True
 reward_scale_rate: 20
 reward_sparse: False
@@ -35,15 +35,15 @@ capability_config:
       - "zealot"
       - "colossus"
     weights:
-      - 0.45
-      - 0.45
-      - 0.1
+      - 1.0
+      - 0.0
+      - 0.0
     observe: True
   start_positions:
     dist_type: "surrounded_and_reflect"
     p: 0.5
-    map_x: 32
-    map_y: 32
+    map_x: 16
+    map_y: 16
 
   # enemy_mask:
   #   dist_type: "mask"

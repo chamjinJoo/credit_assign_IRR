@@ -78,6 +78,7 @@ class StagHuntEnv(MultiAgentEnv):
         stag_follows: bool = False,
         run_away_after_maul: bool = False,
         forage_quantity: int = None,
+        global_reward: bool = False,
         forage_reward: float = 3.0,
         stag_reward: float = 5.0,
         mauling_punishment: float = 0.0,
@@ -143,6 +144,7 @@ class StagHuntEnv(MultiAgentEnv):
         self.hare_alive = {}  # {hare_id: bool} - hare 생존 상태 추적
               
         # Rewards
+        self.global_reward = global_reward
         self.forage_reward = forage_reward
         self.stag_reward = stag_reward
         self.mauling_punishment = mauling_punishment
@@ -304,6 +306,11 @@ class StagHuntEnv(MultiAgentEnv):
         rewards = {agent_id: 0.0 for agent_id in self.agents}
         hunting_info = self._process_hunting(rewards)
         
+        if self.global_reward: # all agents share the same reward
+            g_reward = sum(rewards.values())
+            for agent_id in self.agents:
+                rewards[agent_id] = g_reward
+
         # 에피소드 종료 조건 확인
         alive_stags = sum(1 for alive in self.stag_alive.values() if alive)
         alive_hares = sum(1 for alive in self.hare_alive.values() if alive)
@@ -1574,3 +1581,738 @@ class MPESimpleSpreadEnv(MultiAgentEnv):
 
     def close(self):
         self._env.close()
+
+
+class SMAXWrapper(MultiAgentEnv):
+    """
+    JaxMARL의 SMAX(HeuristicEnemySMAX) 환경을 위한 Wrapper.
+    
+    SC2 바이너리 없이 JAX로 완전히 구현된 StarCraft-like MARL 환경.
+    ally 팀(학습 에이전트)이 heuristic enemy 팀과 대전하는 구도.
+    
+    기존 SMACv2Wrapper와 동일한 MultiAgentEnv 인터페이스를 제공:
+        - reset() -> Dict[int, np.ndarray]
+        - step(actions: Dict[int, int]) -> (obs, rewards, dones, info)
+        - get_avail_actions() -> List[List[int]]
+        - get_obs_dim() -> int
+        - get_action_dim() -> int
+    
+    지원 시나리오 (map_name 파라미터):
+        "3m"               : 3 Marine vs 3 Marine
+        "8m"               : 8 Marine vs 8 Marine
+        "2s3z"             : 2 Stalker + 3 Zealot vs 같음
+        "smacv2_5_units"   : 5 units (SMACv2 위치/타입 생성)
+        "smacv2_10_units"  : 10 units
+        None               : num_allies/num_enemies 직접 지정
+    
+    Args:
+        num_allies: 아군 에이전트 수 (map_name 없을 때 사용)
+        num_enemies: 적군 수 (heuristic policy 사용)
+        map_name: 내장 시나리오 이름. 지정 시 num_allies/num_enemies 무시.
+        seed: 랜덤 시드
+        max_steps: 에피소드 최대 스텝 수
+        use_individual_rewards: True면 팀 보상을 개별로 분리 (현재 SMAX는 팀 보상)
+        enemy_shoots: heuristic enemy가 공격할지 여부
+        attack_mode: heuristic enemy 공격 모드 ("closest" or "random")
+    """
+
+    @staticmethod
+    def _build_smax_env_kwargs(
+        map_name: Optional[str],
+        max_steps: int,
+        map_width: int,
+        map_height: int,
+        world_steps_per_env_step: int,
+        time_per_step: float,
+        see_enemy_actions: bool,
+        won_battle_bonus: float,
+        walls_cause_death: bool,
+        observation_type: str,
+        smacv2_position_generation: bool,
+        smacv2_unit_type_generation: bool,
+    ) -> Dict[str, Any]:
+        if observation_type not in {"unit_list", "conic"}:
+            raise ValueError(
+                f"Unsupported SMAX observation_type: {observation_type}. "
+                "Expected 'unit_list' or 'conic'."
+            )
+
+        env_kwargs: Dict[str, Any] = {}
+        if map_name is not None:
+            try:
+                from jaxmarl.environments.smax.smax_env import map_name_to_scenario
+
+                scenario = map_name_to_scenario(map_name)
+                env_kwargs["scenario"] = scenario
+                env_kwargs["num_allies"] = scenario.num_allies
+                env_kwargs["num_enemies"] = scenario.num_enemies
+                env_kwargs["smacv2_position_generation"] = scenario.smacv2_position_generation
+                env_kwargs["smacv2_unit_type_generation"] = scenario.smacv2_unit_type_generation
+                print(
+                    f"[SMAXWrapper] 시나리오 '{map_name}': "
+                    f"{scenario.num_allies} allies vs {scenario.num_enemies} enemies"
+                )
+            except KeyError:
+                print(
+                    f"[SMAXWrapper] 경고: 알 수 없는 map_name '{map_name}', "
+                    f"num_allies={num_allies}, num_enemies={num_enemies} 사용"
+                )
+                env_kwargs["num_allies"] = num_allies
+                env_kwargs["num_enemies"] = num_enemies
+                env_kwargs["smacv2_position_generation"] = smacv2_position_generation
+                env_kwargs["smacv2_unit_type_generation"] = smacv2_unit_type_generation
+        else:
+            env_kwargs["num_allies"] = num_allies
+            env_kwargs["num_enemies"] = num_enemies
+            env_kwargs["smacv2_position_generation"] = smacv2_position_generation
+            env_kwargs["smacv2_unit_type_generation"] = smacv2_unit_type_generation
+
+        env_kwargs["max_steps"] = max_steps
+        env_kwargs["map_width"] = map_width
+        env_kwargs["map_height"] = map_height
+        env_kwargs["world_steps_per_env_step"] = world_steps_per_env_step
+        env_kwargs["time_per_step"] = time_per_step
+        env_kwargs["see_enemy_actions"] = see_enemy_actions
+        env_kwargs["won_battle_bonus"] = won_battle_bonus
+        env_kwargs["walls_cause_death"] = walls_cause_death
+        env_kwargs["observation_type"] = observation_type
+        return env_kwargs
+
+    def __init__(
+        self,
+        num_allies: int = 5,
+        num_enemies: int = 5,
+        map_name: str = None,
+        seed: int = None,
+        max_steps: int = 100,
+        use_individual_rewards: bool = False,
+        enemy_shoots: bool = True,
+        attack_mode: str = "closest",
+        map_width: int = 32,
+        map_height: int = 32,
+        world_steps_per_env_step: int = 8,
+        time_per_step: float = 1.0 / 16,
+        see_enemy_actions: bool = True,
+        won_battle_bonus: float = 1.0,
+        walls_cause_death: bool = True,
+        observation_type: str = "unit_list",
+        smacv2_position_generation: bool = False,
+        smacv2_unit_type_generation: bool = False,
+        **kwargs
+    ):
+        try:
+            import jax
+            import jax.numpy as jnp
+            from jaxmarl.environments.smax import HeuristicEnemySMAX
+        except ImportError:
+            raise ImportError(
+                "JaxMARL이 설치되지 않았습니다. 다음 명령으로 설치하세요:\n"
+                "  pip install jaxmarl"
+            )
+
+        self._jax = jax
+        self._jnp = jnp
+
+        env_kwargs = self._build_smax_env_kwargs(
+            map_name=map_name,
+            num_allies=num_allies,
+            num_enemies=num_enemies,
+            max_steps=max_steps,
+            map_width=map_width,
+            map_height=map_height,
+            world_steps_per_env_step=world_steps_per_env_step,
+            time_per_step=time_per_step,
+            see_enemy_actions=see_enemy_actions,
+            won_battle_bonus=won_battle_bonus,
+            walls_cause_death=walls_cause_death,
+            observation_type=observation_type,
+            smacv2_position_generation=smacv2_position_generation,
+            smacv2_unit_type_generation=smacv2_unit_type_generation,
+        )
+
+        # HeuristicEnemySMAX 생성
+        self._env = HeuristicEnemySMAX(
+            enemy_shoots=enemy_shoots,
+            attack_mode=attack_mode,
+            **env_kwargs
+        )
+
+        # 에이전트 수 설정
+        _num_allies = self._env.num_allies
+        _num_enemies = self._env.num_enemies
+
+        super().__init__(num_agents=_num_allies, seed=seed)
+
+        self.num_enemies = _num_enemies
+        self.use_individual_rewards = use_individual_rewards
+        self.map_name = map_name
+        self.max_steps = max_steps
+
+        # 에이전트 키 매핑: int id <-> str "ally_{i}"
+        self._agent_keys = [f"ally_{i}" for i in range(_num_allies)]
+        self._id_to_key = {i: f"ally_{i}" for i in range(_num_allies)}
+        self._key_to_id = {f"ally_{i}": i for i in range(_num_allies)}
+
+        # obs_dim, action_dim 계산
+        self.obs_dim = self._env.obs_size
+        # ally의 action 수 = num_movement_actions + num_enemies
+        self.action_dim = self._env.num_ally_actions
+
+        # JAX PRNGKey 초기화
+        _seed_val = seed if seed is not None else 0
+        self._rng = jax.random.PRNGKey(_seed_val)
+        self._state = None
+
+        print(f"[SMAXWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
+        print(f"[SMAXWrapper] {_num_allies} allies vs {_num_enemies} enemies (heuristic)")
+
+        # JAX JIT 컴파일 사전 수행 (warm-up)
+        # 학습 루프 진입 전에 미리 컴파일해야 첫 iteration에서 멈추지 않음
+        self._warmup()
+
+    def _warmup(self):
+        """JAX JIT 함수들을 미리 컴파일합니다.
+        
+        SMAX의 reset/step/get_avail_actions는 @jax.jit으로 감싸져 있어
+        첫 호출 시 XLA 컴파일이 발생합니다 (수십 초 소요).
+        
+        중요: 단순히 한 번 호출하는 것으로는 부족합니다.
+        HeuristicEnemySMAX의 heuristic enemy action, jax.lax.scan 내부의
+        여러 코드 경로까지 컴파일하려면 실제 에피소드를 끝까지 실행해야 합니다.
+        에피소드 2~3회를 실행하면 모든 JAX 경로가 컴파일됩니다.
+        """
+        import time
+        import numpy as np
+
+        print("[SMAXWrapper] JAX JIT warm-up 시작...")
+        print("[SMAXWrapper]   (JIT 컴파일을 위해 더미 에피소드를 실행합니다)")
+        t0 = time.time()
+
+        for episode_idx in range(3):
+            print(f"[SMAXWrapper]   에피소드 {episode_idx+1}/3 실행 중... ({time.time()-t0:.1f}s 경과)")
+            self._rng, reset_key = self._jax.random.split(self._rng)
+            obs_dict, warmup_state = self._env.reset(reset_key)
+            self._jax.block_until_ready(list(obs_dict.values()))
+
+            for step_idx in range(self._env.max_steps + 5):
+                # avail_actions 컴파일
+                avail = self._env.get_avail_actions(warmup_state)
+                self._jax.block_until_ready(list(avail.values()))
+
+                # 유효한 액션 선택 (stop=4 대신 실제 avail 사용)
+                dummy_actions = {}
+                for key in self._agent_keys:
+                    avail_arr = np.array(avail[key])
+                    valid = np.where(avail_arr > 0)[0]
+                    chosen = int(valid[0]) if len(valid) > 0 else 4
+                    dummy_actions[key] = self._jnp.int32(chosen)
+
+                self._rng, step_key = self._jax.random.split(self._rng)
+                obs2, warmup_state2, rew2, done2, _ = self._env.step_env(
+                    step_key, warmup_state, dummy_actions
+                )
+                self._jax.block_until_ready(list(obs2.values()))
+                warmup_state = warmup_state2
+
+                # 에피소드 종료 체크
+                all_done = bool(np.array(done2.get("__all__", False)))
+                if all_done:
+                    break
+
+        print(f"[SMAXWrapper] JAX JIT warm-up 완료! (총 {time.time()-t0:.1f}초)")
+        # warmup 후 state는 None으로 초기화 (reset()이 시작점)
+        self._state = None
+
+    def reset(self) -> Dict[int, np.ndarray]:
+        """환경을 리셋하고 초기 관찰을 반환합니다."""
+        self._rng, reset_key = self._jax.random.split(self._rng)
+        obs_dict, self._state = self._env.reset(reset_key)
+
+        # Dict[str, jax.Array] → Dict[int, np.ndarray]
+        observations = {}
+        for i, key in enumerate(self._agent_keys):
+            observations[i] = np.array(obs_dict[key], dtype=np.float32)
+
+        return observations
+
+    def step(self, actions: Dict[int, int]) -> Tuple[
+        Dict[int, np.ndarray],
+        Dict[int, float],
+        Dict[int, bool],
+        Dict[str, Any]
+    ]:
+        """환경에서 한 스텝을 진행합니다."""
+        assert self._state is not None, "step() 전에 reset()을 호출하세요."
+
+        # Dict[int, int] → Dict[str, jnp.int32]
+        jax_actions = {
+            self._id_to_key[i]: self._jnp.int32(a)
+            for i, a in actions.items()
+        }
+        
+        self._rng, step_key = self._jax.random.split(self._rng)
+        obs_dict, self._state, rewards_dict, dones_dict, infos = \
+            self._env.step_env(step_key, self._state, jax_actions)
+        # 관찰 변환
+        observations = {}
+        for i, key in enumerate(self._agent_keys):
+            observations[i] = np.array(obs_dict[key], dtype=np.float32)
+
+        # 보상 변환 (SMAX는 팀 보상이므로 ally에만 동일 보상)
+        rewards = {}
+        for i, key in enumerate(self._agent_keys):
+            rewards[i] = float(rewards_dict[key])
+
+        # done 변환
+        # SMAX (SMAC과 동일): 개별 에이전트가 죽어도 에피소드는 계속됨.
+        # 오직 __all__ 신호만 에피소드 종료로 사용 (모든 ally/enemy가 죽거나 시간 초과).
+        # 개별 agent_done을 에피소드 done으로 전파하면 첫 사망 시 에피소드가 1스텝에 끝남.
+        all_done_raw = dones_dict.get("__all__", False)
+        all_done = bool(np.array(all_done_raw).item() if hasattr(all_done_raw, '__array__') else all_done_raw)
+
+        dones = {i: all_done for i in range(self.num_agents)}
+
+        # battle_won 계산: 모든 enemy가 죽으면 승리
+        enemies_alive = self._state.state.unit_alive[self._env.num_allies:]
+        battle_won = bool(np.array(~self._jnp.any(enemies_alive)).item())
+
+        info = {
+            'battle_won': battle_won,
+            'episode_done': all_done,
+        }
+        return observations, rewards, dones, info
+
+    def get_avail_actions(self) -> List[List[int]]:
+        """
+        각 에이전트의 사용 가능한 액션 마스크를 반환합니다.
+
+        Returns:
+            List[List[int]]: shape (num_agents, action_dim), 값은 0 또는 1
+        """
+        assert self._state is not None, "get_avail_actions() 전에 reset()을 호출하세요."
+
+        avail_dict = self._env.get_avail_actions(self._state)
+
+        avail_list = []
+        for i, key in enumerate(self._agent_keys):
+            avail_list.append(np.array(avail_dict[key], dtype=np.int32).tolist())
+
+        return avail_list
+
+    def get_obs_dim(self) -> int:
+        """관찰 차원을 반환합니다."""
+        return self.obs_dim
+
+    def get_action_dim(self) -> int:
+        """액션 차원을 반환합니다."""
+        return self.action_dim
+
+    def get_env_info(self) -> Dict[str, Any]:
+        """환경 정보를 반환합니다 (SMACv2Wrapper 호환)."""
+        return {
+            'obs_shape': self.obs_dim,
+            'n_actions': self.action_dim,
+            'n_agents': self.num_agents,
+            'episode_limit': self.max_steps,
+        }
+
+    def close(self):
+        """환경을 닫습니다."""
+        pass
+
+
+# ============================================================================
+# SMAXBatchWrapper: jax.vmap 기반 병렬 SMAX 환경
+# ============================================================================
+
+class SMAXBatchWrapper(MultiAgentEnv):
+    """
+    JAX vmap을 사용해 N개의 SMAX 환경을 GPU/CPU에서 병렬 실행합니다.
+
+    fork 기반 multiprocessing 없이 ParallelEnvWrapper와 동일한 인터페이스를 제공합니다:
+      - reset() → (obs_list, avail_list)
+      - step(actions_batch) → (obs_list, rewards_list, dones_list, infos_list, avail_list)
+      - 에피소드 종료 시 자동 리셋 (jnp.where 사용)
+
+    Args:
+        n_envs: 병렬 환경 수 (vmap batchsize)
+        map_name: SMAX 시나리오 이름 ('smacv2_5_units', '3m' 등)
+        seed: 랜덤 시드
+        ... (SMAXWrapper와 동일한 나머지 파라미터)
+    """
+
+    def __init__(
+        self,
+        n_envs: int = 4,
+        map_name: Optional[str] = None,
+        num_allies: int = 5,
+        num_enemies: int = 5,
+        seed: Optional[int] = None,
+        max_steps: int = 100,
+        use_individual_rewards: bool = False,
+        enemy_shoots: bool = True,
+        attack_mode: str = 'closest',
+        map_width: int = 32,
+        map_height: int = 32,
+        world_steps_per_env_step: int = 8,
+        time_per_step: float = 1.0 / 16,
+        see_enemy_actions: bool = True,
+        won_battle_bonus: float = 1.0,
+        walls_cause_death: bool = True,
+        observation_type: str = "unit_list",
+        smacv2_position_generation: bool = False,
+        smacv2_unit_type_generation: bool = False,
+    ):
+        try:
+            import jax
+            import jax.numpy as jnp
+            from jaxmarl.environments.smax import HeuristicEnemySMAX
+        except ImportError as e:
+            raise ImportError(f"jax/jaxmarl 설치 필요: {e}")
+
+        self._jax = jax
+        self._jnp = jnp
+
+        # n_envs 저장 (ParallelEnvWrapper 호환)
+        self.n_envs = n_envs
+        self.n_rollout_threads = n_envs
+
+        env_kwargs = SMAXWrapper._build_smax_env_kwargs(
+            map_name=map_name,
+            max_steps=max_steps,
+            map_width=map_width,
+            map_height=map_height,
+            world_steps_per_env_step=world_steps_per_env_step,
+            time_per_step=time_per_step,
+            see_enemy_actions=see_enemy_actions,
+            won_battle_bonus=won_battle_bonus,
+            walls_cause_death=walls_cause_death,
+            observation_type=observation_type,
+            smacv2_position_generation=smacv2_position_generation,
+            smacv2_unit_type_generation=smacv2_unit_type_generation,
+        )
+        if map_name is not None and "scenario" in env_kwargs:
+            print(
+                f"[SMAXBatchWrapper] '{map_name}': "
+                f"{env_kwargs['num_allies']}v{env_kwargs['num_enemies']}, n_envs={n_envs}"
+            )
+
+        self._env = HeuristicEnemySMAX(
+            enemy_shoots=enemy_shoots,
+            attack_mode=attack_mode,
+            **env_kwargs
+        )
+
+        _num_allies = self._env.num_allies
+        _num_enemies = self._env.num_enemies
+        super().__init__(num_agents=_num_allies, seed=seed)
+
+        self.num_enemies = _num_enemies
+        self.map_name = map_name
+        self.max_steps = max_steps
+        self.use_individual_rewards = use_individual_rewards
+        self._agent_keys = [f"ally_{i}" for i in range(_num_allies)]
+        self._id_to_key = {i: f"ally_{i}" for i in range(_num_allies)}
+
+        self.obs_dim = self._env.obs_size
+        self.action_dim = self._env.num_ally_actions
+
+        _seed_val = seed if seed is not None else 0
+        self._rng = jax.random.PRNGKey(_seed_val)
+        self._batch_states = None  # 배치 상태 (n_envs, ...)
+
+        # vmap + JIT 컴파일된 함수
+        self._batch_reset = jax.jit(jax.vmap(self._env.reset))
+        self._batch_step = jax.jit(jax.vmap(self._env.step_env))
+        self._batch_avail = jax.jit(jax.vmap(self._env.get_avail_actions))
+
+        def _single_env_step_auto_reset(step_key, reset_key, env_state, env_actions):
+            obs, new_state, rewards, dones, infos = self._env.step_env(step_key, env_state, env_actions)
+            del infos
+
+            all_done = dones["__all__"]
+            battle_won = ~jnp.any(new_state.state.unit_alive[self._env.num_allies:])
+
+            def _reset_branch(_):
+                reset_obs, reset_state = self._env.reset(reset_key)
+                return reset_obs, reset_state
+
+            def _keep_branch(_):
+                return obs, new_state
+
+            final_obs, final_state = jax.lax.cond(all_done, _reset_branch, _keep_branch, operand=None)
+            avail = self._env.get_avail_actions(final_state)
+            return final_obs, final_state, rewards, dones, avail, battle_won
+
+        self._batch_step_auto_reset = jax.jit(jax.vmap(_single_env_step_auto_reset))
+
+        print(f"[SMAXBatchWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
+        print(f"[SMAXBatchWrapper] {_num_allies}v{_num_enemies} × {n_envs} 환경 (vmap 병렬)")
+
+        # JIT 사전 컴파일
+        self._warmup()
+
+    # ------------------------------------------------------------------
+    # Warm-up
+    # ------------------------------------------------------------------
+
+    def _warmup(self):
+        """배치 vmap 함수들을 사전 JIT 컴파일합니다."""
+        import time
+        import numpy as np
+
+        print("[SMAXBatchWrapper] 배치 JIT warm-up 시작...")
+        t0 = time.time()
+
+        for ep in range(3):
+            print(f"[SMAXBatchWrapper]   에피소드 {ep+1}/3 ({time.time()-t0:.1f}s)")
+            self._rng, *env_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+            keys_arr = self._jnp.stack(env_keys)
+
+            obs_b, batch_st = self._batch_reset(keys_arr)
+            self._jax.block_until_ready(obs_b)
+
+            for _ in range(self._env.max_steps + 5):
+                avail_b = self._batch_avail(batch_st)
+                self._jax.block_until_ready(avail_b)
+
+                # 유효한 첫 번째 액션 선택
+                dummy_actions = {}
+                for key in self._agent_keys:
+                    avail_np = np.array(avail_b[key])          # (n_envs, action_dim)
+                    chosen = np.argmax(avail_np, axis=1)        # (n_envs,)
+                    dummy_actions[key] = self._jnp.array(chosen, dtype=self._jnp.int32)
+
+                self._rng, *step_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+                step_keys_arr = self._jnp.stack(step_keys)
+
+                obs_b2, batch_st2, _, dones_b, _ = self._batch_step(
+                    step_keys_arr, batch_st, dummy_actions
+                )
+                self._jax.block_until_ready(obs_b2)
+                batch_st = batch_st2
+
+                if np.all(np.array(dones_b["__all__"])):
+                    break
+
+        print(f"[SMAXBatchWrapper] warm-up 완료! (총 {time.time()-t0:.1f}초)")
+        self._batch_states = None
+
+    # ------------------------------------------------------------------
+    # ParallelEnvWrapper 인터페이스
+    # ------------------------------------------------------------------
+
+    def reset(self):
+        """
+        모든 환경을 리셋합니다.
+        Returns:
+            obs_list:   List[Dict[int, np.ndarray]]   길이 n_envs
+            avail_list: List[Dict[int, List[int]]]    길이 n_envs
+        """
+        self._rng, *env_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+        keys_arr = self._jnp.stack(env_keys)
+
+        obs_b, self._batch_states = self._batch_reset(keys_arr)
+        self._jax.block_until_ready(obs_b)
+
+        avail_b = self._batch_avail(self._batch_states)
+        return self._obs_to_list(obs_b), self._avail_to_list(avail_b)
+
+    def step(self, actions_batch):
+        """
+        모든 환경을 한 스텝 진행합니다. 에피소드 종료 시 자동 리셋.
+
+        Args:
+            actions_batch: List[Dict[int, int]]    길이 n_envs
+
+        Returns: (obs, rewards, dones, infos, avail) 각각 길이 n_envs인 리스트
+            obs: 에피소드 종료 환경은 새 에피소드의 첫 관찰 반환
+        """
+        import numpy as np
+
+        jax_actions = self._actions_to_jax(actions_batch)
+
+        self._rng, *step_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+        step_keys_arr = self._jnp.stack(step_keys)
+
+        obs_b, new_states, rew_b, dones_b, _ = self._batch_step(
+            step_keys_arr, self._batch_states, jax_actions
+        )
+        self._jax.block_until_ready(obs_b)
+
+        all_done_np = np.array(dones_b["__all__"])   # (n_envs,) bool
+
+        # 에피소드 종료 환경 자동 리셋 ─────────────────────────────
+        if np.any(all_done_np):
+            self._rng, *reset_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+            reset_keys_arr = self._jnp.stack(reset_keys)
+            reset_obs_b, reset_states = self._batch_reset(reset_keys_arr)
+            self._jax.block_until_ready(reset_obs_b)
+
+            done_flags = self._jnp.array(all_done_np)   # (n_envs,)
+
+            def _select(new, reset):
+                # done=True → reset 선택, done=False → new 유지
+                cond = done_flags.reshape((-1,) + (1,) * (new.ndim - 1))
+                return self._jnp.where(cond, reset, new)
+
+            self._batch_states = self._jax.tree_map(_select, new_states, reset_states)
+            final_obs_b = self._jax.tree_map(_select, obs_b, reset_obs_b)
+        else:
+            self._batch_states = new_states
+            final_obs_b = obs_b
+        # ──────────────────────────────────────────────────────────
+
+        avail_b = self._batch_avail(self._batch_states)
+
+        return (
+            self._obs_to_list(final_obs_b),
+            self._rew_to_list(rew_b),
+            self._dones_to_list(all_done_np),
+            self._infos_to_list(new_states, all_done_np),
+            self._avail_to_list(avail_b),
+        )
+
+    def get_avail_actions_batch(self):
+        """사용 가능한 액션 마스크를 모든 환경에서 가져옵니다."""
+        avail_b = self._batch_avail(self._batch_states)
+        return self._avail_to_list(avail_b)
+
+    def _stack_agent_dict(self, data_b):
+        return self._jnp.stack([data_b[key] for key in self._agent_keys], axis=1)
+
+    def reset_jax(self):
+        self._rng, *env_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+        keys_arr = self._jnp.stack(env_keys)
+        obs_b, self._batch_states = self._batch_reset(keys_arr)
+        avail_b = self._batch_avail(self._batch_states)
+        return self._stack_agent_dict(obs_b), self._stack_agent_dict(avail_b)
+
+    def reset_jax_pure(self, rng):
+        rng, *env_keys = self._jax.random.split(rng, self.n_envs + 1)
+        keys_arr = self._jnp.stack(env_keys)
+        obs_b, batch_states = self._batch_reset(keys_arr)
+        avail_b = self._batch_avail(batch_states)
+        return rng, batch_states, self._stack_agent_dict(obs_b), self._stack_agent_dict(avail_b)
+
+    def step_jax(self, actions):
+        jax_actions = {
+            self._id_to_key[i]: actions[:, i].astype(self._jnp.int32)
+            for i in range(self.num_agents)
+        }
+
+        self._rng, *step_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+        step_keys_arr = self._jnp.stack(step_keys)
+        self._rng, *reset_keys = self._jax.random.split(self._rng, self.n_envs + 1)
+        reset_keys_arr = self._jnp.stack(reset_keys)
+
+        obs_b, self._batch_states, rew_b, dones_b, avail_b, battle_won = self._batch_step_auto_reset(
+            step_keys_arr,
+            reset_keys_arr,
+            self._batch_states,
+            jax_actions,
+        )
+
+        return (
+            self._stack_agent_dict(obs_b),
+            self._stack_agent_dict(avail_b),
+            self._stack_agent_dict(rew_b),
+            self._stack_agent_dict(dones_b),
+            dones_b["__all__"],
+            battle_won,
+        )
+
+    def step_jax_pure(self, rng, batch_states, actions):
+        jax_actions = {
+            self._id_to_key[i]: actions[:, i].astype(self._jnp.int32)
+            for i in range(self.num_agents)
+        }
+
+        rng, *step_keys = self._jax.random.split(rng, self.n_envs + 1)
+        step_keys_arr = self._jnp.stack(step_keys)
+        rng, *reset_keys = self._jax.random.split(rng, self.n_envs + 1)
+        reset_keys_arr = self._jnp.stack(reset_keys)
+
+        obs_b, batch_states, rew_b, dones_b, avail_b, battle_won = self._batch_step_auto_reset(
+            step_keys_arr,
+            reset_keys_arr,
+            batch_states,
+            jax_actions,
+        )
+
+        return (
+            rng,
+            batch_states,
+            self._stack_agent_dict(obs_b),
+            self._stack_agent_dict(avail_b),
+            self._stack_agent_dict(rew_b),
+            self._stack_agent_dict(dones_b),
+            dones_b["__all__"],
+            battle_won,
+        )
+
+    # ------------------------------------------------------------------
+    # 변환 헬퍼
+    # ------------------------------------------------------------------
+
+    def _obs_to_list(self, obs_b) -> List:
+        import numpy as np
+        obs_np = {k: np.array(obs_b[k]) for k in self._agent_keys}
+        return [
+            {i: obs_np[k][e].astype(np.float32) for i, k in enumerate(self._agent_keys)}
+            for e in range(self.n_envs)
+        ]
+
+    def _rew_to_list(self, rew_b) -> List:
+        import numpy as np
+        rew_np = {k: np.array(rew_b[k]) for k in self._agent_keys}
+        return [
+            {i: float(rew_np[k][e]) for i, k in enumerate(self._agent_keys)}
+            for e in range(self.n_envs)
+        ]
+
+    def _dones_to_list(self, all_done_np) -> List:
+        return [{i: bool(all_done_np[e]) for i in range(self.num_agents)}
+                for e in range(self.n_envs)]
+
+    def _infos_to_list(self, new_states, all_done_np) -> List:
+        import numpy as np
+        enemies_alive = np.array(
+            new_states.state.unit_alive[:, self._env.num_allies:]  # (n_envs, n_enemies)
+        )
+        battle_won = ~np.any(enemies_alive, axis=1)   # (n_envs,)
+        return [
+            {'battle_won': bool(battle_won[e]), 'episode_done': bool(all_done_np[e])}
+            for e in range(self.n_envs)
+        ]
+
+    def _avail_to_list(self, avail_b) -> List:
+        import numpy as np
+        avail_np = {k: np.array(avail_b[k]) for k in self._agent_keys}
+        return [
+            {i: avail_np[k][e].tolist() for i, k in enumerate(self._agent_keys)}
+            for e in range(self.n_envs)
+        ]
+
+    def _actions_to_jax(self, actions_batch):
+        """List[Dict[int, int]] → Dict[str, jnp.ndarray (n_envs,)]"""
+        return {
+            key: self._jnp.array(
+                [int(actions_batch[e][agent_id]) for e in range(self.n_envs)],
+                dtype=self._jnp.int32,
+            )
+            for agent_id, key in self._id_to_key.items()
+        }
+
+    # ------------------------------------------------------------------
+    # MultiAgentEnv 인터페이스
+    # ------------------------------------------------------------------
+
+    def get_obs_dim(self) -> int:
+        return self.obs_dim
+
+    def get_action_dim(self) -> int:
+        return self.action_dim
+
+    def close(self):
+        pass

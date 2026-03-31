@@ -76,14 +76,22 @@ class Trainer:
         
         # Setup environment (single or parallel)
         if n_rollout_threads > 1:
-            # Use parallel environment wrapper for training
-            if env_fn is None:
-                raise ValueError("env_fn must be provided when n_rollout_threads > 1")
-            from envs.parallel_env import ParallelEnvWrapper
-            self.env = ParallelEnvWrapper(env_fn, n_rollout_threads)
-            self.is_parallel = True
-            # Keep a single environment for evaluation
-            self.eval_env = env
+            if env_fn is not None:
+                # 기존: fork 기반 ParallelEnvWrapper
+                from envs.parallel_env import ParallelEnvWrapper
+                self.env = ParallelEnvWrapper(env_fn, n_rollout_threads)
+                self.is_parallel = True
+                self.eval_env = env
+            elif hasattr(env, 'n_envs') and getattr(env, 'n_envs', 1) > 1:
+                # JAX vmap 기반 배치 env (SMAXBatchWrapper 등)
+                # fork 없이 이미 병렬화되어 있음
+                self.env = env
+                self.is_parallel = True
+                self.eval_env = env  # 평가도 동일 env 사용
+            else:
+                raise ValueError(
+                    "n_rollout_threads > 1 시 env_fn 또는 SMAXBatchWrapper가 필요합니다."
+                )
         else:
             # Use single environment
             self.env = env
@@ -350,11 +358,9 @@ class Trainer:
         with tqdm(total=self.max_iterations, desc="Training Progress", unit="iter") as pbar:
             for iteration in range(self.max_iterations):
                 self.iteration = iteration
-                
                 # Data Collection Phase
                 rollout_data = self.collect_rollouts()
                 self.total_steps += rollout_data['step_count']
-                
                 # Training Phase
                 update_info = self.algorithm.update(
                     num_episodes_collected=rollout_data.get('episode_count', 1)
@@ -477,18 +483,18 @@ class Trainer:
             self.algorithm.reset_agents()
             # Convert observations to tensors
             observations = dict_to_tensor(observations, device=self.algorithm.device)
-            # if enabled, add agent ID to observations 
+            # if enabled, add agent ID to observations
             observations = self._add_agent_id_to_obs(observations)
 
             # Initialize previous components (for first step, use zero vector since no previous observation exists)
             prev_observations = {agent_id: torch.zeros_like(obs) for agent_id, obs in observations.items()}
             prev_rewards = {agent_id: 0.0 for agent_id in observations.keys()}
             prev_actions = {agent_id: 0 for agent_id in observations.keys()}
-            
+
             episode_reward = defaultdict(float)
             episode_length = 0
             done = False
-            
+
             # Inner loop: Run until episode is done.
             # If NOT using episode limit (i.e. using step limit), also break if max steps reached.
             while not done and (use_ep_limit or step_count < self.max_steps_per_iteration):
@@ -823,10 +829,24 @@ class Trainer:
         eval_rewards = defaultdict(list)
         eval_lengths = []
         eval_successes = []
-        
+
+        # SMAXBatchWrapper는 reset()이 (obs_list, avail_list) 튜플을 반환하고
+        # step()은 (obs, rew, done, info, avail) 5-튜플을 반환함.
+        # 평가 시에는 첫 번째 환경만 사용하여 단일 에피소드 평가.
+        is_batch_env = hasattr(self.eval_env, 'n_envs') and getattr(self.eval_env, 'n_envs', 1) > 1
+
         for episode in range(self.eval_episodes):
             # Reset environment and agents (use eval_env for evaluation)
             observations = self.eval_env.reset()
+
+            if is_batch_env:
+                # SMAXBatchWrapper: (obs_list, avail_list) → 첫 번째 env만 사용
+                obs_list, avail_list_reset = observations
+                observations = obs_list[0]           # Dict[int, np.ndarray]
+                _eval_avail_cache = avail_list_reset[0]  # Dict[int, List[int]]
+            else:
+                _eval_avail_cache = None
+
             self.algorithm.reset_agents()
             observations = dict_to_tensor(observations, device=self.algorithm.device)
             # Add agent ID to observations if enabled
@@ -840,7 +860,11 @@ class Trainer:
             while not done and episode_length < 1000:
                 # Get availability of actions
                 available_actions = None
-                if hasattr(self.eval_env, "get_avail_actions"):
+                if is_batch_env:
+                    # SMAXBatchWrapper: 캐시된 avail 사용 (첫 env)
+                    if _eval_avail_cache is not None:
+                        available_actions = _eval_avail_cache
+                elif hasattr(self.eval_env, "get_avail_actions"):
                     avail = self.eval_env.get_avail_actions()
                     # Convert to Dict[int, List[int]]
                     # SMAC returns List[List[int]] where index is agent_id
@@ -868,19 +892,34 @@ class Trainer:
                         actions[agent_id] = action
                 
                 # Take step
-                next_observations, rewards, dones, info = self.eval_env.step(actions)
+                if is_batch_env:
+                    # SMAXBatchWrapper: 첫 번째 env에 액션 전달
+                    actions_batch = [actions] + [
+                        {i: 0 for i in range(self.eval_env.num_agents)}
+                        for _ in range(self.eval_env.n_envs - 1)
+                    ]
+                    step_result = self.eval_env.step(actions_batch)
+                    next_obs_list, rew_list, done_list, info_list, avail_list_next = step_result
+                    next_observations = next_obs_list[0]
+                    rewards = rew_list[0]
+                    dones = done_list[0]
+                    info = info_list[0]
+                    _eval_avail_cache = avail_list_next[0]
+                else:
+                    next_observations, rewards, dones, info = self.eval_env.step(actions)
+
                 next_observations = dict_to_tensor(next_observations, device=self.algorithm.device)
                 # Add agent ID to observations if enabled
                 next_observations = self._add_agent_id_to_obs(next_observations)
 
                 # Check success (Evaluate)
-                if self.eval_env.__class__.__name__ == "StagHuntEnv":
+                if self.eval_env.__class__.__name__ in ("StagHuntEnv",):
                     stag_alive = info.get('stag_alive', {})
                     hare_alive = info.get('hare_alive', {})
                     if not any(stag_alive.values()) and not any(hare_alive.values()):
                         episode_success = 1.0
                         
-                if info.get('battle_won', False): # for SMAC and SMACv2
+                if info.get('battle_won', False): # for SMAC, SMACv2, SMAX
                     episode_success = 1.0
 
                 # Update statistics

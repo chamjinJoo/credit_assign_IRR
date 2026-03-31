@@ -7,7 +7,7 @@ config="configs/smacv2.yaml"
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
 causal_lambda=0.5 # 0.1 for SMAC, SMACv2 | # NOTE: for additive formulation, set to negative.
-clip_delta=0.0
+clip_delta=0.001
 use_centralized_critic=false  # true: MAPPO-style centralized critic, false: IPPO-style individual critic
 
 use_value_parameter_sharing=true

@@ -8,7 +8,7 @@ config="configs/stag_hunt.yaml"
  
 # model setting
 model="q-pci" 
-causal_lambda=1.0
+causal_lambda=0.5
 clip_delta=0.0
 recurrent_N=1
 train_naivepredictor=true

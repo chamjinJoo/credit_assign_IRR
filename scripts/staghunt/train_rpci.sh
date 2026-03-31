@@ -19,7 +19,7 @@ episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically
 n_rollout_threads=4
 log_interval=2
 device="cpu"
-seeds=(42 1 2 31 32)
+seeds=(42)
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
@@ -43,7 +43,7 @@ for seed in ${seeds[@]}; do
         --causal-lambda ${causal_lambda} \
         --log-interval ${log_interval} --device ${device} --seed ${seed} \
         --use-wandb --wandb-project pci-marl-staghunt \
-        & # deactivate for sequential training
+        # & # deactivate for sequential training
     echo "[seed=${seed}] PID: $!"
 done
 

@@ -12,9 +12,52 @@ import os
 import torch
 from utils import parse_args, create_config_from_args, Logger, get_causal_evaluator
 from utils.seed_utils import set_global_seed, ensure_reproducible_environment, log_reproducibility_info
-from envs import create_environment, get_available_environments
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm, rQMIXAlgorithm, PCIQMIXAlgorithm
-from runner import Trainer
+
+
+def configure_jax_runtime(device: str):
+    """Pin JAX backend before any JAX-dependent modules are imported."""
+    if str(device).lower() != "cpu":
+        return
+
+    os.environ["JAX_PLATFORMS"] = "cpu"
+    os.environ["JAX_PLATFORM_NAME"] = "cpu"
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
+
+    try:
+        import jax
+        jax.config.update("jax_platforms", "cpu")
+        jax.config.update("jax_platform_name", "cpu")
+    except Exception:
+        # JAX may not be installed for non-JAX runs, or may be imported later.
+        pass
+
+
+def import_runtime_modules():
+    """Import env/algorithm/trainer modules after runtime backend configuration."""
+    global create_environment, get_available_environments
+    global PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm
+    global X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm
+    global rQMIXAlgorithm, PCIQMIXAlgorithm, JAXPPOAlgorithm, JAXRPCIAlgorithm
+    global Trainer, JAXTrainer
+
+    from envs import create_environment, get_available_environments
+    from algorithms import (
+        PCIMAPPOAlgorithm,
+        MAPPOAlgorithm,
+        rMAPPOAlgorithm,
+        IPPOAlgorithm,
+        rIPPOAlgorithm,
+        X_PCIAlgorithm,
+        COMAAlgorithm,
+        rCOMAAlgorithm,
+        rPCIAlgorithm,
+        qPCIAlgorithm,
+        rQMIXAlgorithm,
+        PCIQMIXAlgorithm,
+        JAXPPOAlgorithm,
+        JAXRPCIAlgorithm,
+    )
+    from runner import Trainer, JAXTrainer
 
 def create_algorithm(env, config):
     """Create algorithm based on config.algorithm.type."""
@@ -120,6 +163,7 @@ def create_algorithm(env, config):
             use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', False),
             use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
             train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
+            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
         )
     elif algorithm_type in ['q_pci', 'qpci']:
         algorithm = qPCIAlgorithm(
@@ -210,6 +254,7 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             global_reward=getattr(algorithm_config, 'global_reward', True),
+            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
         )
     elif algorithm_type == 'ippo':
         algorithm = IPPOAlgorithm(
@@ -229,6 +274,67 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
+        )
+    elif algorithm_type in ['jax_ppo', 'jax_ippo', 'jax_mappo']:
+        algorithm = JAXPPOAlgorithm(
+            num_agents=env.num_agents,
+            obs_dim=base_obs_dim,
+            action_dim=env.get_action_dim(),
+            hidden_dim=network_config.hidden_dim,
+            lr_actor=network_config.lr_actor,
+            lr_critic=network_config.lr_critic,
+            gamma=algorithm_config.gamma,
+            gae_lambda=algorithm_config.gae_lambda,
+            clip_epsilon=algorithm_config.clip_epsilon,
+            entropy_coef=algorithm_config.entropy_coef,
+            value_coef=algorithm_config.value_coef,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            ppo_epochs=algorithm_config.ppo_epochs,
+            batch_size=algorithm_config.batch_size,
+            num_batches=algorithm_config.num_batches,
+            device=config.training.device,
+            global_reward=getattr(algorithm_config, 'global_reward', True),
+            use_centralized_critic=(algorithm_type == 'jax_mappo') or getattr(algorithm_config, 'use_centralized_critic', False),
+            add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
+            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
+            seed=getattr(config.training, 'seed', 42),
+        )
+    elif algorithm_type in ['jax_rpci', 'jax_rippo', 'jax_rmappo', 'jax_rppo']:
+        algorithm = JAXRPCIAlgorithm(
+            env=env,
+            num_agents=env.num_agents,
+            obs_dim=base_obs_dim,
+            action_dim=env.get_action_dim(),
+            hidden_dim=network_config.hidden_dim,
+            recurrent_N=getattr(network_config, 'recurrent_N', 1),
+            lr_actor=network_config.lr_actor,
+            lr_critic=network_config.lr_critic,
+            lr_bridge=getattr(network_config, 'lr_bridge', network_config.lr_critic),
+            gamma=algorithm_config.gamma,
+            gae_lambda=algorithm_config.gae_lambda,
+            clip_epsilon=algorithm_config.clip_epsilon,
+            entropy_coef=algorithm_config.entropy_coef,
+            value_coef=algorithm_config.value_coef,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            ppo_epochs=algorithm_config.ppo_epochs,
+            batch_size=algorithm_config.batch_size,
+            num_batches=algorithm_config.num_batches,
+            device=config.training.device,
+            global_reward=getattr(algorithm_config, 'global_reward', True),
+            add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
+            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
+            use_centralized_critic=(algorithm_type == 'jax_rmappo') or getattr(algorithm_config, 'use_centralized_critic', False),
+            causal_lambda=(0.0 if algorithm_type in ['jax_rippo', 'jax_rmappo', 'jax_rppo'] else getattr(algorithm_config, 'causal_lambda', 0.1)),
+            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
+            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
+            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', getattr(algorithm_config, 'causal_lambda', 0.1)),
+            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
+            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
+            bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
+            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
+            lse_temperature=getattr(algorithm_config, 'lse_temperature', 1.0),
+            normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
+            seed=getattr(config.training, 'seed', 42),
         )
     elif algorithm_type == 'coma':
         algorithm = COMAAlgorithm(
@@ -287,6 +393,7 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             global_reward=getattr(algorithm_config, 'global_reward', True),
+            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
         )
     elif algorithm_type in ['ippo_rnn', 'r_ippo']:
         algorithm = rIPPOAlgorithm(
@@ -421,7 +528,7 @@ def create_algorithm(env, config):
             bridge_update_interval=getattr(algorithm_config, 'bridge_update_interval', 1),
         )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
     
     return algorithm
 
@@ -432,6 +539,10 @@ def main():
     
     # Create config
     config = create_config_from_args(args)
+
+    # Configure JAX backend before importing JAX-dependent runtime modules.
+    configure_jax_runtime(config.training.device)
+    import_runtime_modules()
     
     # Set up reproducibility
     ensure_reproducible_environment()
@@ -473,7 +584,40 @@ def main():
             env_config.seed = actual_seed
         else:
             env_config['seed'] = actual_seed
-        env = create_environment(env_config)
+
+        env_name = getattr(env_config, 'env_name', '').upper()
+        n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
+        algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo').lower().replace('-', '_')
+
+        # For SMAX batched runs and the new JAX learning path, create the vmap wrapper directly.
+        # This avoids instantiating a single SMAXWrapper first, which would
+        # trigger an extra warm-up/JIT compile pass before the real batch env.
+        if env_name == 'SMAX' and (n_rollout_threads > 1 or algorithm_type.startswith('jax_')):
+            from envs import SMAXBatchWrapper
+            env = SMAXBatchWrapper(
+                n_envs=max(1, n_rollout_threads),
+                map_name=getattr(env_config, 'map_name', None),
+                num_allies=getattr(env_config, 'num_allies', 5),
+                num_enemies=getattr(env_config, 'num_enemies', 5),
+                seed=actual_seed,
+                max_steps=getattr(env_config, 'max_steps', 100),
+                use_individual_rewards=getattr(env_config, 'use_individual_rewards', False),
+                enemy_shoots=getattr(env_config, 'enemy_shoots', True),
+                attack_mode=getattr(env_config, 'attack_mode', 'closest'),
+                map_width=getattr(env_config, 'map_width', 32),
+                map_height=getattr(env_config, 'map_height', 32),
+                world_steps_per_env_step=getattr(env_config, 'world_steps_per_env_step', 8),
+                time_per_step=getattr(env_config, 'time_per_step', 1.0 / 16),
+                see_enemy_actions=getattr(env_config, 'see_enemy_actions', True),
+                won_battle_bonus=getattr(env_config, 'won_battle_bonus', 1.0),
+                walls_cause_death=getattr(env_config, 'walls_cause_death', True),
+                observation_type=getattr(env_config, 'observation_type', 'unit_list'),
+                smacv2_position_generation=getattr(env_config, 'smacv2_position_generation', False),
+                smacv2_unit_type_generation=getattr(env_config, 'smacv2_unit_type_generation', False),
+            )
+        else:
+            env = create_environment(env_config)
+
         logger.info(f"Environment created: {env.__class__.__name__}")
         logger.info(f"Number of agents: {env.num_agents}")
         logger.info(f"Observation dimension: {env.get_obs_dim()}")
@@ -506,6 +650,15 @@ def main():
                 n_units = config.environment.capability_config["n_units"]
                 n_enemies = config.environment.capability_config["n_enemies"] 
                 config.wandb.run_name = f"{race}_{n_units}_vs_{n_enemies}"
+            # For SMAX (JaxMARL)
+            elif env_class_name in ['SMAXWrapper', 'SMAXBatchWrapper']:
+                map_name = getattr(config.environment, 'map_name', None)
+                if map_name:
+                    config.wandb.run_name = f"smax_{map_name}"
+                else:
+                    n_allies = env.num_agents
+                    n_enemies = env.num_enemies
+                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}"
             else:
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()
@@ -539,6 +692,9 @@ def main():
                 wandb_algo_name = 'PCI_rMAPPO'
             else:
                 wandb_algo_name = 'PCI_rIPPO'
+        normalized_algorithm_type = algorithm_type.lower().replace('-', '_')
+        if normalized_algorithm_type.startswith('jax_') and not getattr(config.network, 'use_recurrent_policy', True):
+            wandb_algo_name = f"{wandb_algo_name}_FFAgent"
         wandb_run_name = config.wandb.run_name
         if wandb_run_name:
             wandb_run_name = f"{wandb_algo_name}_{wandb_run_name}_seed{actual_seed}"
@@ -547,23 +703,39 @@ def main():
         
         # Create env_fn for parallel environments
         n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
-        env_fn = None
-        if n_rollout_threads > 1:
-            # Create a function that creates a new environment instance
-            def env_fn(rank=0):
-                env_config_copy = config.environment
-                # Add rank to seed for diversity
-                seed = actual_seed + rank * 1000
-                
-                if hasattr(env_config_copy, '__dict__'):
-                    env_config_copy.seed = seed
-                else:
-                    env_config_copy['seed'] = seed
-                return create_environment(env_config_copy)
-        
-        trainer = Trainer(
+
+        env_name = getattr(config.environment, 'env_name', '').upper()
+
+        # SMAX + n_rollout_threads > 1: JAX vmap 기반 SMAXBatchWrapper 사용
+        # fork 기반 multiprocessing 대신 vmap으로 N환경을 병렬 실행
+        if env_name == 'SMAX' and n_rollout_threads > 1:
+            print(f"[INFO] SMAX + n_rollout_threads={n_rollout_threads}: SMAXBatchWrapper (vmap) 사용")
+            # env is already created above as SMAXBatchWrapper, so reuse it.
+            env_fn = None
+            _trainer_env = env
+        else:
+            # 기존 로직: fork 기반 또는 단일 환경
+            if env_name == 'SMAX':
+                pass  # n_rollout_threads=1일 때는 단일 SMAXWrapper 그대로 사용
+            _trainer_env = env
+            env_fn = None
+            if n_rollout_threads > 1:
+                # Create a function that creates a new environment instance
+                def env_fn(rank=0):
+                    env_config_copy = config.environment
+                    # Add rank to seed for diversity
+                    seed = actual_seed + rank * 1000
+
+                    if hasattr(env_config_copy, '__dict__'):
+                        env_config_copy.seed = seed
+                    else:
+                        env_config_copy['seed'] = seed
+                    return create_environment(env_config_copy)
+
+        trainer_cls = JAXTrainer if getattr(algorithm, 'requires_jax_trainer', False) else Trainer
+        trainer = trainer_cls(
             config=config,
-            env=env,
+            env=_trainer_env,
             algorithm=algorithm,
             max_iterations=config.training.max_iterations,
             max_steps_per_iteration=config.training.max_steps_per_iteration,
@@ -577,7 +749,7 @@ def main():
             wandb_project=config.wandb.project,
             wandb_run_name=wandb_run_name,
             device=device,
-            n_rollout_threads=n_rollout_threads, 
+            n_rollout_threads=n_rollout_threads,
             env_fn=env_fn
         )
         # Check for evaluation or test mode
