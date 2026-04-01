@@ -213,6 +213,76 @@ class JAXRPCIAlgorithm:
     def _augment_obs(self, obs: jnp.ndarray) -> jnp.ndarray:
         return add_agent_id_features(obs) if self.add_agent_id else obs
 
+    def _normalize_advantage_signal(self, signal: jnp.ndarray) -> jnp.ndarray:
+        if signal.size <= 1:
+            return jnp.zeros_like(signal)
+        std = jnp.clip(signal.std(), a_min=1.0e-8)
+        return (signal - signal.mean()) / std
+
+    def _orthogonalize_advantage_signal(
+        self,
+        base_signal: jnp.ndarray,
+        aux_signal: jnp.ndarray,
+    ) -> jnp.ndarray:
+        base_centered = base_signal - base_signal.mean()
+        aux_centered = aux_signal - aux_signal.mean()
+        denom = jnp.dot(base_centered, base_centered)
+        projection = jnp.where(
+            denom > 1.0e-8,
+            jnp.dot(aux_centered, base_centered) / (denom + 1.0e-8),
+            0.0,
+        )
+        return aux_centered - projection * base_centered
+
+    def _combine_env_and_pci_advantages(
+        self,
+        env_advantages: jnp.ndarray,
+        pci_signal: jnp.ndarray,
+        causal_lambda: float,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        env_norm = self._normalize_advantage_signal(env_advantages)
+        pci_norm = self._normalize_advantage_signal(pci_signal)
+        pci_residual = self._orthogonalize_advantage_signal(env_norm, pci_norm)
+        combined = env_norm + causal_lambda * pci_residual
+        return combined, env_norm, pci_residual
+
+    def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
+        if env_advantages.ndim == 2:
+            return jnp.repeat(env_advantages[..., None], self.num_agents, axis=-1)
+        return env_advantages
+
+    def _combine_actor_advantages(
+        self,
+        env_advantages: jnp.ndarray,
+        pci_advantages: jnp.ndarray,
+        causal_lambda: float,
+    ) -> tuple[jnp.ndarray, Dict[str, float]]:
+        env_for_actor = self._env_advantages_for_actor(env_advantages)
+        combined_agents = []
+        env_norm_agents = []
+        pci_res_agents = []
+
+        for agent_id in range(self.num_agents):
+            combined, env_norm, pci_res = self._combine_env_and_pci_advantages(
+                env_for_actor[..., agent_id].reshape(-1),
+                pci_advantages[..., agent_id].reshape(-1),
+                causal_lambda,
+            )
+            combined_agents.append(combined.reshape(env_for_actor.shape[:2]))
+            env_norm_agents.append(env_norm.reshape(env_for_actor.shape[:2]))
+            pci_res_agents.append(pci_res.reshape(env_for_actor.shape[:2]))
+
+        combined_adv = jnp.stack(combined_agents, axis=-1)
+        env_norm = jnp.stack(env_norm_agents, axis=-1)
+        pci_res = jnp.stack(pci_res_agents, axis=-1)
+        info = {
+            "env_adv_mean": float(jnp.mean(env_norm)),
+            "pci_adv_res_mean": float(jnp.mean(pci_res)),
+            "combined_adv_mean": float(jnp.mean(combined_adv)),
+            "combined_adv_std": float(jnp.std(combined_adv)),
+        }
+        return combined_adv, info
+
     @partial(jax.jit, static_argnums=0)
     def _policy_step(
         self,
@@ -784,42 +854,6 @@ class JAXRPCIAlgorithm:
         }
         return c_matrix, info
 
-    def _compute_shaped_rewards(self, rollout: Dict[str, jnp.ndarray]) -> tuple[jnp.ndarray, Dict[str, float]]:
-        rewards = rollout["rewards"]
-        team_sum = rewards.sum(axis=-1, keepdims=True)
-        current_lambda = self.get_current_causal_lambda()
-
-        if self.bridge_state is None or current_lambda == 0.0:
-            if self.global_reward:
-                if self.use_centralized_critic:
-                    return (team_sum / self.num_agents).squeeze(-1), {
-                        "causal_lambda": current_lambda,
-                        "delta_mean": 0.0,
-                        "delta_std": 0.0,
-                    }
-                return jnp.repeat(team_sum / self.num_agents, self.num_agents, axis=-1), {
-                    "causal_lambda": current_lambda,
-                    "delta_mean": 0.0,
-                    "delta_std": 0.0,
-                }
-            return rewards, {
-                "causal_lambda": current_lambda,
-                "delta_mean": 0.0,
-                "delta_std": 0.0,
-            }
-
-        c_matrix, info = self.compute_causal_rewards(rollout, baseline_type="weighted")
-        delta = c_matrix.sum(axis=-1)
-        delta = jnp.where(jnp.abs(delta) < self.clip_delta, 0.0, delta)
-
-        if self.global_reward:
-            shaped_all = ((1.0 - current_lambda) * team_sum + current_lambda * delta) / self.num_agents
-            if self.use_centralized_critic:
-                return shaped_all.mean(axis=-1), info
-            return shaped_all, info
-
-        return rewards + current_lambda * delta, info
-
     def _update_actor_critic(
         self,
         rollout: Dict[str, jnp.ndarray],
@@ -855,20 +889,22 @@ class JAXRPCIAlgorithm:
         bridge_metrics = self.update_causal_networks(rollout)
         metrics.update(bridge_metrics)
 
-        shaped_rewards, shaping_metrics = self._compute_shaped_rewards(rollout)
-        metrics.update(shaping_metrics)
+        c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="weighted")
+        delta = c_matrix.sum(axis=-1)
+        delta = jnp.where(jnp.abs(delta) < self.clip_delta, 0.0, delta)
+        metrics.update(pci_metrics)
 
+        raw_team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
         values = rollout["values"]
         last_value = rollout["last_value"]
-        rewards_for_gae = shaped_rewards
 
-        if rewards_for_gae.ndim != values.ndim:
-            rewards_for_gae = rewards_for_gae.mean(axis=-1)
-        if last_value.ndim != values.ndim - 1:
-            last_value = last_value.mean(axis=-1)
+        if self.use_centralized_critic:
+            env_rewards = raw_team_rewards
+        else:
+            env_rewards = jnp.repeat(raw_team_rewards[..., None], self.num_agents, axis=-1)
 
-        advantages, returns = compute_gae(
-            rewards_for_gae,
+        env_advantages, returns = compute_gae(
+            env_rewards,
             values,
             last_value,
             rollout["dones"],
@@ -876,7 +912,25 @@ class JAXRPCIAlgorithm:
             self.gae_lambda,
         )
 
-        metrics.update(self._update_actor_critic(rollout, advantages, returns))
+        zero_values = jnp.zeros_like(delta)
+        zero_last_value = jnp.zeros_like(delta[0])
+        pci_advantages, _ = compute_gae(
+            delta,
+            zero_values,
+            zero_last_value,
+            rollout["dones"],
+            self.gamma,
+            self.gae_lambda,
+        )
+
+        combined_advantages, combine_metrics = self._combine_actor_advantages(
+            env_advantages,
+            pci_advantages,
+            self.get_current_causal_lambda(),
+        )
+        metrics.update(combine_metrics)
+
+        metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])
         self.latest_rollout = None
         return metrics

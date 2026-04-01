@@ -22,7 +22,6 @@ algorithm:
   num_batches: 4
   global_reward: true
   use_centralized_critic: false
-  use_recurrent_policy: true
   add_agent_id: true
   causal_lambda: 1.0
   causal_lambda_schedule: false
