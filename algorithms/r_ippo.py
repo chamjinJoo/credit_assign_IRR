@@ -229,6 +229,7 @@ class rIPPOAlgorithm:
             else FeedForwardValueNetworkCompat(
                 obs_dim=obs_dim,
                 hidden_dim=hidden_dim,
+                recurrent_N=recurrent_N,
                 out_dim=1,
             )
         )

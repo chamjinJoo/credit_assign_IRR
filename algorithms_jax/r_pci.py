@@ -64,7 +64,6 @@ class JAXRPCIAlgorithm:
         causal_mini_batch_size: int = 256,
         tikhonov_gamma: float = 1.0e-4,
         stabilizer_lambda: float = 1.0,
-        lse_temperature: float = 1.0,
         normalize_returns: bool = True,
         use_recurrent_policy: bool = True,
         seed: int = 42,
@@ -106,7 +105,6 @@ class JAXRPCIAlgorithm:
         self.causal_mini_batch_size = causal_mini_batch_size
         self.tikhonov_gamma = tikhonov_gamma
         self.stabilizer_lambda = stabilizer_lambda
-        self.lse_temperature = lse_temperature
         self.training_steps = 0
         self.latest_rollout: Optional[Dict[str, Any]] = None
         self._rollout_fns: Dict[int, Any] = {}
@@ -757,7 +755,7 @@ class JAXRPCIAlgorithm:
                 "delta_std": 0.0,
             }
 
-        local_obs, others_obs, hidden_others, actions, _, probs, avail_actions = self._bridge_inputs(rollout)
+        local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions = self._bridge_inputs(rollout)
         actual_pred, baseline, _ = self._bridge_predictions(
             self.bridge_state.params,
             local_obs,
@@ -767,7 +765,9 @@ class JAXRPCIAlgorithm:
             actions,
             avail_actions,
         )
-        raw_effects = actual_pred - baseline
+        actual_team_reward = reward_targets
+        # raw_effects = actual_pred - baseline
+        raw_effects = actual_team_reward - baseline
         c_matrix = raw_effects.reshape(rollout["actions"].shape + (self.num_agents,))
 
         if self.action_dim > 1:

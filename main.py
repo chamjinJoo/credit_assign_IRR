@@ -37,7 +37,7 @@ def import_runtime_modules():
     global create_environment, get_available_environments
     global PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm
     global X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm
-    global rQMIXAlgorithm, PCIQMIXAlgorithm, JAXPPOAlgorithm, JAXRPCIAlgorithm
+    global rQMIXAlgorithm, JAXPPOAlgorithm, JAXQPCIAlgorithm, JAXRPCIAlgorithm
     global Trainer, JAXTrainer
 
     from envs import create_environment, get_available_environments
@@ -53,8 +53,8 @@ def import_runtime_modules():
         rPCIAlgorithm,
         qPCIAlgorithm,
         rQMIXAlgorithm,
-        PCIQMIXAlgorithm,
         JAXPPOAlgorithm,
+        JAXQPCIAlgorithm,
         JAXRPCIAlgorithm,
     )
     from runner import Trainer, JAXTrainer
@@ -152,7 +152,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             max_buffer_size=getattr(algorithm_config, 'max_buffer_size', 10000),
             device=config.training.device,
@@ -299,6 +298,43 @@ def create_algorithm(env, config):
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
             seed=getattr(config.training, 'seed', 42),
         )
+    elif algorithm_type in ['jax_qpci', 'jax_q_pci']:
+        algorithm = JAXQPCIAlgorithm(
+            env=env,
+            num_agents=env.num_agents,
+            obs_dim=base_obs_dim,
+            action_dim=env.get_action_dim(),
+            hidden_dim=network_config.hidden_dim,
+            recurrent_N=getattr(network_config, 'recurrent_N', 1),
+            lr_actor=network_config.lr_actor,
+            lr_critic=network_config.lr_critic,
+            lr_bridge=getattr(network_config, 'lr_bridge', network_config.lr_critic),
+            gamma=algorithm_config.gamma,
+            gae_lambda=algorithm_config.gae_lambda,
+            clip_epsilon=algorithm_config.clip_epsilon,
+            entropy_coef=algorithm_config.entropy_coef,
+            value_coef=algorithm_config.value_coef,
+            max_grad_norm=algorithm_config.max_grad_norm,
+            ppo_epochs=algorithm_config.ppo_epochs,
+            batch_size=algorithm_config.batch_size,
+            num_batches=algorithm_config.num_batches,
+            device=config.training.device,
+            global_reward=getattr(algorithm_config, 'global_reward', True),
+            add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
+            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
+            use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
+            causal_lambda=getattr(algorithm_config, 'causal_lambda', 0.1),
+            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
+            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
+            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', getattr(algorithm_config, 'causal_lambda', 0.1)),
+            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
+            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
+            bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
+            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
+            lse_temperature=getattr(algorithm_config, 'lse_temperature', 1.0),
+            normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
+            seed=getattr(config.training, 'seed', 42),
+        )
     elif algorithm_type in ['jax_rpci', 'jax_rippo', 'jax_rmappo', 'jax_rppo']:
         algorithm = JAXRPCIAlgorithm(
             env=env,
@@ -332,7 +368,6 @@ def create_algorithm(env, config):
             causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
             bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
-            lse_temperature=getattr(algorithm_config, 'lse_temperature', 1.0),
             normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
             seed=getattr(config.training, 'seed', 42),
         )
@@ -528,7 +563,7 @@ def create_algorithm(env, config):
             bridge_update_interval=getattr(algorithm_config, 'bridge_update_interval', 1),
         )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_qpci', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
     
     return algorithm
 
@@ -565,6 +600,8 @@ def main():
             display_algorithm_type = 'PCI_rMAPPO'
         else:
             display_algorithm_type = 'PCI_rIPPO'
+    elif algorithm_type in ['JAX_QPCI', 'JAX_Q_PCI']:
+        display_algorithm_type = 'JAX_qPCI'
     
     # Create logger
     logger = Logger(name=display_algorithm_type)
@@ -685,17 +722,21 @@ def main():
         
         # wandb run name에 알고리즘 타입 추가
         algorithm_type = getattr(config.algorithm, 'type', 'pci_mappo')
-        # R-PCI: use display name for wandb
+        
+        # set wandb logging name
+        wandb_project_name = config.wandb.project
+        wandb_run_name = config.wandb.run_name
         wandb_algo_name = algorithm_type
         if algorithm_type.lower().replace('-', '_') in ['r_pci', 'pci_rnn']:
             if getattr(config.algorithm, 'use_centralized_critic', False):
-                wandb_algo_name = 'PCI_rMAPPO'
+                wandb_algo_name = 'PCI_rmappo'
             else:
-                wandb_algo_name = 'PCI_rIPPO'
-        normalized_algorithm_type = algorithm_type.lower().replace('-', '_')
-        if normalized_algorithm_type.startswith('jax_') and not getattr(config.network, 'use_recurrent_policy', True):
+                wandb_algo_name = 'PCI_rippo'
+        elif algorithm_type.lower().replace('-', '_') in ['jax_qpci', 'jax_q_pci']:
+            wandb_algo_name = 'JAX_qpci'
+        if not getattr(config.network, 'use_recurrent_policy', True):
             wandb_algo_name = f"{wandb_algo_name}_FFAgent"
-        wandb_run_name = config.wandb.run_name
+        
         if wandb_run_name:
             wandb_run_name = f"{wandb_algo_name}_{wandb_run_name}_seed{actual_seed}"
         else:
@@ -746,7 +787,7 @@ def main():
             eval_episodes=config.training.eval_episodes,
             save_dir=trainer_save_dir,
             use_wandb=config.wandb.use_wandb,
-            wandb_project=config.wandb.project,
+            wandb_project=wandb_project_name,
             wandb_run_name=wandb_run_name,
             device=device,
             n_rollout_threads=n_rollout_threads,

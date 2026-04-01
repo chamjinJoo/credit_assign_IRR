@@ -217,6 +217,7 @@ class rMAPPOAlgorithm:
             else FeedForwardValueNetworkCompat(
                 obs_dim=obs_dim * num_agents,
                 hidden_dim=hidden_dim,
+                recurrent_N=recurrent_N,
                 out_dim=1 if global_reward else num_agents,
             )
         )

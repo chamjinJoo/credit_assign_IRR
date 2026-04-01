@@ -343,7 +343,7 @@ def parse_args() -> argparse.Namespace:
                         help='Path to config YAML file')
     
     # Environment
-    parser.add_argument('--env', type=str, default='simple_cooperative',
+    parser.add_argument('--env', type=str, default=None,
                         help='Environment name')
     parser.add_argument('--num-agents', type=int, default=None,
                         help='Number of agents')
@@ -357,13 +357,13 @@ def parse_args() -> argparse.Namespace:
                         help='Map name for SMAC environment')
     
     # Training
-    parser.add_argument('--max-iterations', type=int, default=1000,
+    parser.add_argument('--max-iterations', type=int, default=None,
                         help='Maximum number of training iterations')
-    parser.add_argument('--max-steps', type=int, default=2048,
+    parser.add_argument('--max-steps', type=int, default=None,
                         help='Maximum steps per iteration')
-    parser.add_argument('--device', type=str, default='cpu',
+    parser.add_argument('--device', type=str, default=None,
                         help='Training device (cpu/cuda)')
-    parser.add_argument('--n-rollout-threads', type=int, default=1,
+    parser.add_argument('--n-rollout-threads', type=int, default=None,
                         help='Number of parallel environments for rollout collection')  # [ADDED]
     parser.add_argument('--episodes-per-iteration', type=int, default=None,
                         help='Number of episodes to collect per iteration')  # [ADDED]
@@ -420,21 +420,21 @@ def parse_args() -> argparse.Namespace:
                         help='Number of episodes to sample for training')
 
     # Logging
-    parser.add_argument('--save-dir', type=str, default='./save_checkpoints',
+    parser.add_argument('--save-dir', type=str, default=None,
                         help='Save directory for checkpoints')
-    parser.add_argument('--log-interval', type=int, default=10,
+    parser.add_argument('--log-interval', type=int, default=None,
                         help='Logging interval')
     
     # Wandb
     parser.add_argument('--use-wandb', action='store_true',
                         help='Use Weights & Biases logging')
-    parser.add_argument('--wandb-project', type=str, default='pci-mappo',
+    parser.add_argument('--wandb-project', type=str, default=None,
                         help='Wandb project name')
     parser.add_argument('--wandb-run-name', type=str, default=None,
                         help='Wandb run name')
     
     # Reproducibility
-    parser.add_argument('--seed', type=int, default=42,
+    parser.add_argument('--seed', type=int, default=None,
                         help='Random seed for reproducibility')
     parser.add_argument('--deterministic', action='store_true', default=True,
                         help='Use deterministic algorithms (slower but reproducible)')

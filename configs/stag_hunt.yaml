@@ -14,6 +14,7 @@ network:
 algorithm:
   gamma: 0.99
   rnn_chunk_length: 10 # originally, 50
+  use_recurrent_policy: true
   gae_lambda: 0.95
   clip_epsilon: 0.2
   entropy_coef: 0.01
@@ -21,7 +22,7 @@ algorithm:
   max_grad_norm: 0.5
   ppo_epochs: 4
   bridge_epoch: 4
-  batch_size: 64
+  num_batches: 1
   use_value_parameter_sharing: false
   add_agent_id: false
 
@@ -34,9 +35,9 @@ algorithm:
   causal_lambda_adaptive_max: 1.0  # Maximum lambda value
   causal_lambda_adaptive_error_threshold: 0.5  # Error threshold for lambda adjustment
   causal_lambda_start: 0.0      # Starting causal lambda value
-  causal_lambda_final: 0.8     # Final causal lambda value
-  causal_lambda_warmup_steps: 1000  # Steps to reach final value
-  causal_lambda_startingpoint: 200    # Starting iteration for causal lambda scheduling
+  causal_lambda_final: 0.5     # Final causal lambda value
+  causal_lambda_warmup_steps: 500000  # Steps to reach final value
+  causal_lambda_startingpoint: 0    # Starting iteration for causal lambda scheduling
   num_batches: 2  # Number of batches K for training
 
   # Buffer size limits for FIFO queue behavior

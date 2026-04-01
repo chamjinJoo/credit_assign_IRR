@@ -7,7 +7,7 @@ set -euo pipefail
 
 config="configs_jax/smax_mappo.yaml"
 model="jax-mappo"
-use_recurrent_policy=false # true: RNN-agent, false: FF-agent
+use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 seed=42
 n_rollout_threads=4

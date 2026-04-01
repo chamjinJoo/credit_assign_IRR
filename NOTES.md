@@ -291,3 +291,6 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 
 # 26.03.31
 * Now we can use SMAX. - GPU VRAM issue: maximum 2 simulations can be run at once with device=cuda.
+
+# 26.04.01
+* Find that during update_causal_networks(), we do not input prev_actions for rnn hidden state to policy_net. -> fix it.

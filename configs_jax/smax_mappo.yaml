@@ -20,6 +20,7 @@ algorithm:
   num_batches: 4
   global_reward: true
   use_centralized_critic: true
+  use_recurrent_policy: true
   add_agent_id: true
 
 training:
@@ -36,7 +37,7 @@ training:
 
 environment:
   env_name: "SMAX"
-  map_name: "smacv2_10_units"
+  map_name: "smacv2_5_units"
   # maps: [2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
   max_steps: 100
   use_individual_rewards: false

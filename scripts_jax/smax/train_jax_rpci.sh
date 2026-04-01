@@ -7,10 +7,10 @@ set -euo pipefail
 
 config="configs_jax/smax_rpci.yaml"
 model="jax-rpci"
-use_recurrent_policy=false # true: RNN-agent, false: FF-agent
+use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
-causal_lambda=0.1
+causal_lambda=0.5
 clip_delta=0.001
 
 seed=42
@@ -18,7 +18,7 @@ n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
-device="cpu"
+device="cuda"
 seed=42
 
 if command -v conda >/dev/null 2>&1; then

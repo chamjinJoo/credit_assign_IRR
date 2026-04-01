@@ -1,15 +1,10 @@
 import numpy as np
-import torch
-import random
-import math
 from typing import Dict, Tuple, List, Any, Optional
 from abc import ABC, abstractmethod
-import lbforaging
+
+# import lbforaging
 import gymnasium as gym
 import matplotlib.pyplot as plt
-import matplotlib.patches as patches
-from matplotlib.animation import FuncAnimation
-import matplotlib.colors as mcolors
 import copy
 MATPLOTLIB_AVAILABLE = True
 

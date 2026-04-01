@@ -93,7 +93,12 @@ class rPCIAgent:
         self.value_net = (
             RNNValueNetwork(obs_dim, hidden_dim, recurrent_N, action_dim=action_dim, num_agents=1)
             if use_recurrent_policy
-            else FeedForwardValueNetworkCompat(obs_dim=obs_dim, hidden_dim=hidden_dim, out_dim=1)
+            else FeedForwardValueNetworkCompat(
+                obs_dim=obs_dim,
+                hidden_dim=hidden_dim,
+                recurrent_N=recurrent_N,
+                out_dim=1,
+            )
         )
         
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
@@ -282,7 +287,6 @@ class rPCIAlgorithm:
         value_coef: float = 0.5,
         max_grad_norm: float = 0.5,
         ppo_epochs: int = 4,
-        batch_size: int = 64,
         num_batches: int = 4,
         max_buffer_size: int = 10000,
         device: str = "cpu",
@@ -341,7 +345,6 @@ class rPCIAlgorithm:
         self.value_coef = value_coef
         self.max_grad_norm = max_grad_norm
         self.ppo_epochs = ppo_epochs
-        self.batch_size = batch_size
         self.num_batches = num_batches
         
         if self.use_episode_buffer:
@@ -380,6 +383,7 @@ class rPCIAlgorithm:
                 else FeedForwardValueNetworkCompat(
                     obs_dim=obs_dim * num_agents,
                     hidden_dim=hidden_dim,
+                    recurrent_N=recurrent_N,
                     out_dim=num_agents,
                 )
             )
@@ -394,7 +398,12 @@ class rPCIAlgorithm:
             self.shared_value_net = (
                 RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, action_dim=action_dim, num_agents=1)
                 if use_recurrent_policy
-                else FeedForwardValueNetworkCompat(obs_dim=obs_dim, hidden_dim=hidden_dim, out_dim=1)
+                else FeedForwardValueNetworkCompat(
+                    obs_dim=obs_dim,
+                    hidden_dim=hidden_dim,
+                    recurrent_N=recurrent_N,
+                    out_dim=1,
+                )
             )
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
@@ -413,7 +422,6 @@ class rPCIAlgorithm:
         
         ## option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N if use_recurrent_policy else obs_dim
-        
         ## option 2. x = (o^i_t, \mathbf{h}_{t-1})
         # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N 
         
@@ -532,11 +540,16 @@ class rPCIAlgorithm:
         # === 1. Data Preparation (Vectorized) ===
         joint_o_prev = torch.stack([self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data]).to(device) # Default Z
         joint_r_prev = torch.tensor([[t['bold_r_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device) # [SWITCH] prev rewards
-        # joint_a_prev = torch.tensor([[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
+        prev_action_batch = torch.tensor(
+            [[t['bold_a_t_minus_1'][i] for i in range(num_agents)] for t in batch_data],
+            dtype=torch.long,
+            device=device,
+        )
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
         action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         reward_batch = torch.tensor([[t['bold_r_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
         dones_batch = torch.tensor([[t['dones'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
+        prev_actions_onehot_batch = F.one_hot(prev_action_batch, self.action_dim).float()
 
         # Extract hidden states
         hidden_states_batch = {}
@@ -609,19 +622,32 @@ class rPCIAlgorithm:
             for i in range(num_agents):
                 obs_i = obs_batch[:, i, :]
                 act_i = action_batch[:, i]
+                prev_actions_i = prev_actions_onehot_batch[:, i, :]
                 
                 # Handling RNN states
                 if i in hidden_states_batch:                    
                     p_state = hidden_states_batch[i]
                     # Construct masks
                     masks_i = torch.ones_like(dones_batch[:, i]).unsqueeze(1) # (Batch, 1)
-                    lp, _ = self.agents[i].policy_net.evaluate_actions(obs_i, p_state, act_i, masks_i)
+                    lp, _ = self.agents[i].policy_net.evaluate_actions(
+                        obs_i,
+                        p_state,
+                        act_i,
+                        masks_i,
+                        prev_actions=prev_actions_i,
+                    )
                 else:
                     # Fallback to zeros if no state
                     bs = obs_i.size(0)
                     dummy_state = torch.zeros(bs, self.recurrent_N, self.hidden_dim, device=device)
                     dummy_mask = torch.ones(bs, 1, device=device)
-                    lp, _ = self.agents[i].policy_net.evaluate_actions(obs_i, dummy_state, act_i, dummy_mask)
+                    lp, _ = self.agents[i].policy_net.evaluate_actions(
+                        obs_i,
+                        dummy_state,
+                        act_i,
+                        dummy_mask,
+                        prev_actions=prev_actions_i,
+                    )
 
                 log_probs_list.append(lp)
             
@@ -766,7 +792,6 @@ class rPCIAlgorithm:
             K_z = (self.kernel_z_block(z_mb_norm)
                    * self.kernel_a_block(action_onehot_mb)
                    * self.kernel_xobs_block(x_obs_mb)
-                   #* self.kernel_xact_block(x_act_mb_raw)
                    )
             if x_hid_mb.size(1) > 0:
                 K_z = K_z * self.kernel_xhid_block(x_hid_mb)
@@ -1241,8 +1266,39 @@ class rPCIAlgorithm:
             
             advantages.insert(0, gae)
             returns.insert(0, gae + values[step])
-        
+
         return advantages, returns
+
+    def _normalize_advantage_signal(self, signal: torch.Tensor) -> torch.Tensor:
+        if signal.numel() <= 1:
+            return torch.zeros_like(signal)
+        std = signal.std(unbiased=False).clamp_min(1e-8)
+        return (signal - signal.mean()) / std
+
+    def _orthogonalize_advantage_signal(
+        self,
+        base_signal: torch.Tensor,
+        aux_signal: torch.Tensor,
+    ) -> torch.Tensor:
+        base_centered = base_signal - base_signal.mean()
+        aux_centered = aux_signal - aux_signal.mean()
+        denom = torch.dot(base_centered, base_centered)
+        if denom.abs() < 1e-8:
+            return aux_centered
+        projection = torch.dot(aux_centered, base_centered) / (denom + 1e-8)
+        return aux_centered - projection * base_centered
+
+    def _combine_env_and_pci_advantages(
+        self,
+        env_advantages: torch.Tensor,
+        pci_signal: torch.Tensor,
+        causal_lambda: float,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        env_norm = self._normalize_advantage_signal(env_advantages)
+        pci_norm = self._normalize_advantage_signal(pci_signal)
+        pci_residual = self._orthogonalize_advantage_signal(env_norm, pci_norm)
+        combined = env_norm + causal_lambda * pci_residual
+        return combined, env_norm, pci_residual
     
     def _classify_delta_scenario(self, transition: Dict, agent_id: int) -> str:
         """
@@ -1327,22 +1383,22 @@ class rPCIAlgorithm:
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
-                # Expand x for all actions
-                # X construction for inference _inf: inference
-                h_list_inf = []
-                for k in range(num_agents):
-                    if hidden_states_batch is not None and k in hidden_states_batch:
-                         # hidden_states_batch[k][0][i:end] is (curr_bs, RecN, H)
-                        h_list_inf.append(hidden_states_batch[k][0][i:end].view(curr_bs, -1))
-                    else:
-                        h_list_inf.append(torch.zeros(curr_bs, self.recurrent_N * self.hidden_dim, device=self.device))
-                H_all_inf = torch.stack(h_list_inf, dim=1) # (curr_bs, N, RecN*H)
-
                 # get others hiddens
                 ########################################################################
                 ## Option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
                 obs_flat = obs_b.view(-1, self.obs_dim)
                 if self.use_recurrent_policy:
+                    # Expand x for all actions
+                    # X construction for inference _inf: inference
+                    h_list_inf = []
+                    for k in range(num_agents):
+                        if hidden_states_batch is not None and k in hidden_states_batch:
+                            # hidden_states_batch[k][0][i:end] is (curr_bs, RecN, H)
+                            h_list_inf.append(hidden_states_batch[k][0][i:end].view(curr_bs, -1))
+                        else:
+                            h_list_inf.append(torch.zeros(curr_bs, self.recurrent_N * self.hidden_dim, device=self.device))
+                    H_all_inf = torch.stack(h_list_inf, dim=1) # (curr_bs, N, RecN*H)
+
                     expanded_H_inf = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
                     mask_H_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, self.recurrent_N * self.hidden_dim)
                     H_others_inf = expanded_H_inf[mask_H_inf].view(curr_bs * num_agents, -1)
@@ -1469,9 +1525,9 @@ class rPCIAlgorithm:
                 if avail_mask_flat is not None:
                     r_hat_all = r_hat_all * avail_mask_flat.unsqueeze(2)  # 불가능한 action의 예측값 제거
 
-                # r_factual = rewards_flat
-                # raw_effects = r_factual - baseline
-                raw_effects = r_hat_factual - baseline
+                r_factual = rewards_flat
+                raw_effects = r_factual - baseline
+                # raw_effects = r_hat_factual - baseline
                 # ------------ print for debugging ------------
                 # for idx, r in enumerate(r_factual):
                 #     if (r > 0).any():
@@ -1520,67 +1576,6 @@ class rPCIAlgorithm:
                 C_matrix[i:end] = C_chunk
             
         return C_matrix
-
-    def causal_intrinsic_reward(
-        self, 
-        agent_id: int, 
-        w_t: torch.Tensor, 
-        z_t: torch.Tensor, 
-        o_t: torch.Tensor, 
-        current_actions: Dict[int, int], 
-        current_rewards: Dict[int, float],
-        hidden_states: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None
-    ) -> Tuple[float, float]:
-        """
-        Wrapper for compute_causal_rewards to be used by evaluation scripts.
-        Returns:
-            delta: The calculated intrinsic reward (causal effect sum).
-            dummy: A placeholder return value.
-        """
-        with torch.no_grad():
-            # Actions to tensor
-            actions_list = [current_actions[i] for i in range(self.num_agents)]
-            actions_batch = torch.tensor([actions_list], dtype=torch.long, device=self.device) # (1, N)
-            
-            # Rewards to tensor
-            rewards_list = [current_rewards[i] for i in range(self.num_agents)]
-            rewards_batch = torch.tensor([rewards_list], dtype=torch.float32, device=self.device) # (1, N)
-            
-            # Reconstruct full observations batch (1, N, D)
-            # Assuming w_t is concatenation of N observations of obs_dim
-            full_obs_batch = w_t.view(1, self.num_agents, -1)
-            B, N, D = full_obs_batch.shape
-
-            # Prepare w_t_batch (1, N, (N-1)*D) - Confounders (other agents' observations)
-            expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
-            mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
-            w_t_batch = expanded_obs[mask].view(B, N, (N-1)*D)
-
-            z_t_batch = z_t.unsqueeze(0) # (1, z_dim) - This might need similar processing if used, but currently z_t is just passed through or unused if Z=prev_obs.
-            # Actually compute_causal_rewards uses z_t_batch. Line 598: z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(...)
-            # If z_t is prev joint obs, then (1, N*D). 
-            # z_t_repeated becomes (1, N, N*D) -> (N, N*D).
-            # Wrapper for hidden_states
-            hidden_states_batch = None
-            if hidden_states is not None:
-                hidden_states_batch = {}
-                for k, v in hidden_states.items():
-                    # v is (h, c) or (h, v_h). h is (RecN, H). Need (1, RecN, H)
-                    h_unsqueezed = v[0].unsqueeze(0)
-                    c_unsqueezed = v[1].unsqueeze(0)
-                    hidden_states_batch[k] = (h_unsqueezed, c_unsqueezed)
-
-            C_matrix = self.compute_causal_rewards(
-                w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, 
-                hidden_states_batch=hidden_states_batch,
-                baseline_type='weighted'
-            )
-            
-            # Calculate delta for the specific agent (sum of effects this agent has on others)
-            # C_matrix[0, agent_id, :] contains effects of agent_id on others
-            delta = C_matrix[0, agent_id].sum().item()
-            
-            return delta, 0.0
 
     def _chunk_sequence(self, tensor: torch.Tensor, chunk_len: int) -> torch.Tensor:
         """
@@ -1961,6 +1956,7 @@ class rPCIAlgorithm:
         self._update_call_count += 1
         _do_causal_debug = (self._update_call_count % 50 == 1)
         _do_causal_debug = False # deactivate
+        current_causal_lambda = self.get_current_causal_lambda()
 
         # Compute GAE on full trajectories before chunking
         # 2. Compute causal rewards for each trajectory
@@ -2047,29 +2043,28 @@ class rPCIAlgorithm:
                 # delta = torch.clamp(delta, min=0.0) # same as ReLU
                 delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
-                team_rewards = rewards_batch.sum(dim=1, keepdim=True) # (B, 1) Sum of rewards for all agents
-                lambda_c = self.get_current_causal_lambda()
-                shaped_rewards_all = (1-lambda_c) * team_rewards + (lambda_c) * delta
-                
-                shaped_rewards_all = shaped_rewards_all / N # normalized with num_agents
-
-                # Store shaped rewards and delta in transitions
+                # Store delta for later advantage-level PCI construction
                 for t_idx, t in enumerate(traj):
-                    t['shaped_rewards'] = {agent_id: shaped_rewards_all[t_idx, agent_id].item() for agent_id in range(N)}
-                    # Store delta for logging
                     if 'delta' not in t:
                         t['delta'] = {}
                     for agent_id in range(N):
                         t['delta'][agent_id] = delta[t_idx, agent_id].item()
 
-        # 3. Compute GAE for each trajectory using shaped rewards
+        # 3. Compute raw-return GAE for critic and PCI-augmented advantages for actor
         for traj in trajectories:
             if len(traj) == 0:
                 continue
+
+            T = len(traj)
+            N = self.num_agents
+            raw_team_rewards = torch.tensor(
+                [sum(t['bold_r_t'].values()) / N for t in traj],
+                dtype=torch.float32,
+                device=self.device,
+            )
             
             if self.use_centralized_critic:
                 # === Centralized critic GAE (N-output) ===
-                T = len(traj)
                 # Optimized: Stack on CPU first, then single GPU transfer
                 global_obs_list = [self._concatenate_observations(t['bold_o_t']) for t in traj]
                 global_obs_seq = torch.stack(global_obs_list).to(self.device, non_blocking=True)
@@ -2110,29 +2105,46 @@ class rPCIAlgorithm:
                     if agent_id not in traj[0]['bold_o_t']:
                         continue
                     
-                    agent_rewards_seq = torch.tensor(
-                        [t['shaped_rewards'][agent_id] for t in traj],
-                        dtype=torch.float32, device=self.device
+                    pci_delta_seq = torch.tensor(
+                        [t['delta'][agent_id] for t in traj],
+                        dtype=torch.float32,
+                        device=self.device,
                     )
                     agent_dones_seq = torch.tensor(
                         [t['dones'][agent_id] for t in traj],
                         dtype=torch.float32, device=self.device
                     )
                     
-                    # 에이전트별 value를 사용하여 GAE 계산 (value-return 일관성)
-                    advantages, returns = self.compute_gae(
-                        agent_rewards_seq.tolist(),
+                    env_advantages, returns = self.compute_gae(
+                        raw_team_rewards.tolist(),
                         values[:, agent_id].tolist(),
                         next_val[agent_id].item(),
                         agent_dones_seq.tolist()
+                    )
+
+                    pci_advantages, _ = self.compute_gae(
+                        pci_delta_seq.tolist(),
+                        torch.zeros(T, device=self.device).tolist(),
+                        0.0,
+                        agent_dones_seq.tolist(),
+                    )
+
+                    combined_advantages, env_adv_norm, pci_adv_residual = self._combine_env_and_pci_advantages(
+                        torch.tensor(env_advantages, dtype=torch.float32, device=self.device),
+                        torch.tensor(pci_advantages, dtype=torch.float32, device=self.device),
+                        current_causal_lambda,
                     )
                     
                     for t_idx, t in enumerate(traj):
                         if 'advantages' not in t:
                             t['advantages'] = {}
                             t['returns'] = {}
-                        t['advantages'][agent_id] = advantages[t_idx]
+                            t['env_advantages'] = {}
+                            t['pci_advantages'] = {}
+                        t['advantages'][agent_id] = combined_advantages[t_idx].item()
                         t['returns'][agent_id] = returns[t_idx]
+                        t['env_advantages'][agent_id] = env_adv_norm[t_idx].item()
+                        t['pci_advantages'][agent_id] = pci_adv_residual[t_idx].item()
             else:
                 # === IPPO-style per-agent GAE ===
                 for agent_id in range(self.num_agents):
@@ -2143,8 +2155,12 @@ class rPCIAlgorithm:
                     agent_obs_list = [t['bold_o_t'][agent_id] for t in traj]
                     agent_obs_seq = torch.stack(agent_obs_list).to(self.device, non_blocking=True)
                     agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
-                    agent_rewards_seq = torch.tensor([t['shaped_rewards'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
                     agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                    pci_delta_seq = torch.tensor(
+                        [t['delta'][agent_id] for t in traj],
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
 
                     # Initial hidden state for value network
                     _, v_h0 = traj[0]['hidden_states'][agent_id]
@@ -2170,12 +2186,24 @@ class rPCIAlgorithm:
                         values = all_values[:-1].view(-1) # value of agent_id
                         next_val = all_values[-1].item() * last_mask # next value
                         
-                        # Compute GAE
-                        advantages, returns = self.compute_gae(
-                            agent_rewards_seq.tolist(),
+                        env_advantages, returns = self.compute_gae(
+                            raw_team_rewards.tolist(),
                             values.tolist(),
                             next_val,
                             agent_dones_seq.tolist()
+                        )
+
+                        pci_advantages, _ = self.compute_gae(
+                            pci_delta_seq.tolist(),
+                            torch.zeros(T, device=self.device).tolist(),
+                            0.0,
+                            agent_dones_seq.tolist(),
+                        )
+
+                        combined_advantages, env_adv_norm, pci_adv_residual = self._combine_env_and_pci_advantages(
+                            torch.tensor(env_advantages, dtype=torch.float32, device=self.device),
+                            torch.tensor(pci_advantages, dtype=torch.float32, device=self.device),
+                            current_causal_lambda,
                         )
                         
                         # Store in transitions
@@ -2183,8 +2211,12 @@ class rPCIAlgorithm:
                             if 'advantages' not in t:
                                 t['advantages'] = {}
                                 t['returns'] = {}
-                            t['advantages'][agent_id] = advantages[t_idx]
+                                t['env_advantages'] = {}
+                                t['pci_advantages'] = {}
+                            t['advantages'][agent_id] = combined_advantages[t_idx].item()
                             t['returns'][agent_id] = returns[t_idx]
+                            t['env_advantages'][agent_id] = env_adv_norm[t_idx].item()
+                            t['pci_advantages'][agent_id] = pci_adv_residual[t_idx].item()
         
         # 4. Create chunks from trajectories with Padding
         all_chunks = []
@@ -2254,7 +2286,7 @@ class rPCIAlgorithm:
         for batch_data in batches:
             if not batch_data: continue
             
-            if self.get_current_causal_lambda() != 0.0:
+            if current_causal_lambda != 0.0:
                 causal_losses = self.update_causal_networks(batch_data)
             else:
                 causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
@@ -2295,8 +2327,71 @@ class rPCIAlgorithm:
                     final_losses[k] = v / num
                  else:
                     final_losses[k] = v
+        final_losses['causal_lambda'] = current_causal_lambda
         
         return final_losses
+
+    def causal_intrinsic_reward(
+        self, 
+        agent_id: int, 
+        w_t: torch.Tensor, 
+        z_t: torch.Tensor, 
+        o_t: torch.Tensor, 
+        current_actions: Dict[int, int], 
+        current_rewards: Dict[int, float],
+        hidden_states: Optional[Dict[int, Tuple[torch.Tensor, torch.Tensor]]] = None
+    ) -> Tuple[float, float]:
+        """
+        Wrapper for compute_causal_rewards to be used by evaluation scripts.
+        Returns:
+            delta: The calculated intrinsic reward (causal effect sum).
+            dummy: A placeholder return value.
+        """
+        with torch.no_grad():
+            # Actions to tensor
+            actions_list = [current_actions[i] for i in range(self.num_agents)]
+            actions_batch = torch.tensor([actions_list], dtype=torch.long, device=self.device) # (1, N)
+            
+            # Rewards to tensor
+            rewards_list = [current_rewards[i] for i in range(self.num_agents)]
+            rewards_batch = torch.tensor([rewards_list], dtype=torch.float32, device=self.device) # (1, N)
+            
+            # Reconstruct full observations batch (1, N, D)
+            # Assuming w_t is concatenation of N observations of obs_dim
+            full_obs_batch = w_t.view(1, self.num_agents, -1)
+            B, N, D = full_obs_batch.shape
+
+            # Prepare w_t_batch (1, N, (N-1)*D) - Confounders (other agents' observations)
+            expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
+            mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, D)
+            w_t_batch = expanded_obs[mask].view(B, N, (N-1)*D)
+
+            z_t_batch = z_t.unsqueeze(0) # (1, z_dim) - This might need similar processing if used, but currently z_t is just passed through or unused if Z=prev_obs.
+            # Actually compute_causal_rewards uses z_t_batch. Line 598: z_t_repeated = z_b.unsqueeze(1).repeat(1, num_agents, 1).view(...)
+            # If z_t is prev joint obs, then (1, N*D). 
+            # z_t_repeated becomes (1, N, N*D) -> (N, N*D).
+            # Wrapper for hidden_states
+            hidden_states_batch = None
+            if hidden_states is not None:
+                hidden_states_batch = {}
+                for k, v in hidden_states.items():
+                    # v is (h, c) or (h, v_h). h is (RecN, H). Need (1, RecN, H)
+                    h_unsqueezed = v[0].unsqueeze(0)
+                    c_unsqueezed = v[1].unsqueeze(0)
+                    hidden_states_batch[k] = (h_unsqueezed, c_unsqueezed)
+
+            C_matrix = self.compute_causal_rewards(
+                w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, 
+                hidden_states_batch=hidden_states_batch,
+                baseline_type='weighted'
+            )
+            
+            # Calculate delta for the specific agent (sum of effects this agent has on others)
+            # C_matrix[0, agent_id, :] contains effects of agent_id on others
+            delta = C_matrix[0, agent_id].sum().item()
+            
+            return delta, 0.0
+
 
     def _debug_causal_effects(
         self,

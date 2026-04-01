@@ -11,7 +11,9 @@ model="q-pci"
 causal_lambda=0.5
 clip_delta=0.0
 recurrent_N=1
-train_naivepredictor=true
+use_centralized_critic=true
+use_recurrent_policy=true
+train_naivepredictor=false
 
 # training and logging 
 max_iterations=1500
@@ -32,6 +34,8 @@ for seed in ${seeds[@]}; do
     echo "[seed=${seed}] start]"
     python main.py --env ${env} --num-agents ${num_agents} \
         --config ${config} --model ${model} \
+        --use-recurrent-policu ${use_recurrent_policy}\
+        --use-centralized-critic ${use_centralized_critic}\
         --recurrent-N ${recurrent_N} \
         --train-naivepredictor ${train_naivepredictor} \
         --n-rollout-threads ${n_rollout_threads} \

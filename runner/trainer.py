@@ -11,7 +11,7 @@ from datetime import datetime
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm, rQMIXAlgorithm, PCIQMIXAlgorithm
+from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm, rQMIXAlgorithm
 from envs import MultiAgentEnv, dict_to_tensor
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
@@ -1197,7 +1197,7 @@ class Trainer:
                 state['agents'][agent_id] = {
                     'policy_net': agent.policy_net.state_dict(),
                 }
-        elif isinstance(self.algorithm, (rQMIXAlgorithm, PCIQMIXAlgorithm)):
+        elif isinstance(self.algorithm, (rQMIXAlgorithm)):
             # QMIX: shared Q-network, mixer, target networks, single optimizer
             state['shared_q_network'] = self.algorithm.shared_q_network.state_dict()
             state['target_q_network'] = self.algorithm.target_q_network.state_dict()
@@ -1215,7 +1215,7 @@ class Trainer:
                 }
         
         # Save algorithm-specific states
-        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, qPCIAlgorithm, PCIQMIXAlgorithm)):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, rPCIAlgorithm, qPCIAlgorithm)):
             # PCI-MAPPO specific states
             state['outcome_bridge_net'] = self.algorithm.outcome_bridge_net.state_dict()
             state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
@@ -1278,7 +1278,7 @@ class Trainer:
             state['critic'] = self.algorithm.critic.state_dict()
             state['target_critic'] = self.algorithm.target_critic.state_dict()
             state['critic_optimizer'] = self.algorithm.critic_optimizer.state_dict()
-        elif isinstance(self.algorithm, (rQMIXAlgorithm, PCIQMIXAlgorithm)):
+        elif isinstance(self.algorithm, (rQMIXAlgorithm)):
             pass  # QMIX states already saved in the agent block above
         else:
             # MAPPO and IPPO: save shared value network
@@ -1307,7 +1307,7 @@ class Trainer:
                 self.algorithm.shared_policy.load_state_dict(algorithm_state['shared_policy'])
             if 'policy_optimizer' in algorithm_state:
                 self.algorithm.policy_optimizer.load_state_dict(algorithm_state['policy_optimizer'])
-        elif isinstance(self.algorithm, (rQMIXAlgorithm, PCIQMIXAlgorithm)):
+        elif isinstance(self.algorithm, (rQMIXAlgorithm)):
             # QMIX: load shared Q-network, mixer, target networks, optimizer
             if 'shared_q_network' in algorithm_state:
                 self.algorithm.shared_q_network.load_state_dict(algorithm_state['shared_q_network'])
@@ -1364,7 +1364,7 @@ class Trainer:
                 self.algorithm.reward_predictor_optimizer.load_state_dict(algorithm_state['reward_predictor_optimizer'])
         
         # Load value networks and optimizers for algorithms that support individual value networks
-        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, X_PCIAlgorithm, PCIQMIXAlgorithm)):
+        if isinstance(self.algorithm, (PCIMAPPOAlgorithm, X_PCIAlgorithm)):
             if 'value_nets' in algorithm_state:
                 # Individual value networks
                 if hasattr(self.algorithm, 'value_nets'):

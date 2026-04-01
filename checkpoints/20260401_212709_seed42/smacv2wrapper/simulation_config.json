@@ -1,0 +1,163 @@
+{
+  "simulation_info": {
+    "timestamp": "2026-04-01T21:27:09.549960",
+    "environment": "SMACv2Wrapper",
+    "num_agents": 2,
+    "obs_dim": 38,
+    "action_dim": 8
+  },
+  "config": {
+    "network": {
+      "hidden_dim": 64,
+      "lr_actor": 0.0005,
+      "lr_bridge": 0.001,
+      "lr_critic": 0.0005,
+      "lr": 0.0005,
+      "rkhs_gamma": 1.0,
+      "recurrent_N": 1,
+      "use_recurrent_policy": true
+    },
+    "algorithm": {
+      "type": "r_ippo",
+      "gamma": 0.99,
+      "gae_lambda": 0.95,
+      "rnn_chunk_length": 10,
+      "clip_epsilon": 0.1,
+      "entropy_coef": 0.01,
+      "value_coef": 0.5,
+      "max_grad_norm": 10,
+      "ppo_epochs": 10,
+      "batch_size": 1,
+      "clip_delta": 0.2,
+      "causal_lambda": 1.0,
+      "causal_lambda_schedule": false,
+      "causal_lambda_adaptive_per_agent": false,
+      "causal_lambda_adaptive_alpha": 0.9,
+      "causal_lambda_adaptive_min": 0.1,
+      "causal_lambda_adaptive_max": 1.0,
+      "causal_lambda_adaptive_error_threshold": 0.5,
+      "causal_lambda_start": 0.0,
+      "causal_lambda_final": 0.8,
+      "causal_lambda_warmup_steps": 1000,
+      "causal_lambda_startingpoint": 200,
+      "bridge_epoch": 10,
+      "bridge_update_interval": 1,
+      "num_batches": 2,
+      "causal_mini_batch_size": 50,
+      "use_value_parameter_sharing": true,
+      "use_centralized_critic": false,
+      "train_naivepredictor": false,
+      "use_episode_buffer": false,
+      "max_buffer_size": 5000,
+      "global_reward": true,
+      "lse_temperature": 1.0,
+      "normalize_returns": true,
+      "add_agent_id": false,
+      "target_update_interval": 200,
+      "epsilon_start": 1.0,
+      "epsilon_finish": 0.05,
+      "epsilon_anneal_time": 100000,
+      "double_q": true,
+      "mixing_embed_dim": 32,
+      "hypernet_layers": 2,
+      "hypernet_embed": 64,
+      "replay_buffer_size": 5000,
+      "train_batch_size": 128
+    },
+    "training": {
+      "max_iterations": 1500,
+      "max_steps_per_iteration": 6400,
+      "log_interval": 2,
+      "save_interval": 100,
+      "eval_interval": 50,
+      "eval_episodes": 32,
+      "save_dir": "./checkpoints",
+      "device": "cpu",
+      "n_rollout_threads": 4,
+      "episodes_per_iteration": null,
+      "seed": 42,
+      "deterministic": true
+    },
+    "environment": {
+      "env_name": "SMACv2",
+      "name": "simple_cooperative",
+      "num_agents": 2,
+      "seed": 42,
+      "map_name": "10gen_protoss",
+      "capability_config": {
+        "n_units": 2,
+        "n_enemies": 2,
+        "team_gen": {
+          "dist_type": "weighted_teams",
+          "unit_types": [
+            "stalker",
+            "zealot",
+            "colossus"
+          ],
+          "weights": [
+            1.0,
+            0.0,
+            0.0
+          ],
+          "observe": true
+        },
+        "start_positions": {
+          "dist_type": "surrounded_and_reflect",
+          "p": 0.5,
+          "map_x": 16,
+          "map_y": 16
+        }
+      },
+      "use_visualization": true,
+      "visualize_freq": 1,
+      "save_animations": true,
+      "animation_interval": 100,
+      "env_args": {
+        "continuing_episode": false,
+        "difficulty": "7",
+        "game_version": null,
+        "move_amount": 2,
+        "obs_all_health": true,
+        "obs_instead_of_state": false,
+        "obs_last_action": false,
+        "obs_own_health": true,
+        "obs_pathing_grid": false,
+        "obs_terrain_height": false,
+        "obs_timestep_number": false,
+        "reward_death_value": 10,
+        "reward_defeat": 0,
+        "reward_negative_scale": 0.5,
+        "reward_only_positive": false,
+        "reward_scale": true,
+        "reward_scale_rate": 20,
+        "reward_sparse": false,
+        "reward_win": 200,
+        "replay_dir": "",
+        "replay_prefix": "",
+        "conic_fov": false,
+        "use_unit_ranges": true,
+        "min_attack_range": 2,
+        "obs_own_pos": true,
+        "num_fov_actions": 12,
+        "state_last_action": true,
+        "state_timestep_number": false,
+        "step_mul": 8,
+        "heuristic_ai": false,
+        "debug": false,
+        "prob_obs_enemy": 1.0,
+        "action_mask": false
+      }
+    },
+    "wandb": {
+      "use_wandb": true,
+      "project": "pci-marl-smacv2",
+      "run_name": "protoss_2_vs_2",
+      "tags": [
+        "pci",
+        "mappo",
+        "multi-agent",
+        "smac"
+      ]
+    }
+  }
+}

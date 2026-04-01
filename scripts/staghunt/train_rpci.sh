@@ -6,11 +6,14 @@ config="configs/stag_hunt.yaml"
  
 # model setting
 model="r-pci" 
-causal_lambda=0.5
-clip_delta=0.005
+use_recurrent_policy=true
+use_centralized_critic=false
 use_value_parameter_sharing=true
+train_naivepredictor=false
 recurrent_N=1
-train_naivepredictor=true
+
+causal_lambda=0.2
+clip_delta=0.0
 
 # training and logging 
 max_iterations=1500
@@ -32,6 +35,8 @@ for seed in ${seeds[@]}; do
     echo "[seed=${seed}] start]"
     python main.py --env ${env} --num-agents ${num_agents} \
         --config ${config} --model ${model} \
+        --use-recurrent-policy ${use_recurrent_policy} \
+        --use-centralized-critic ${use_centralized_critic} \
         --use-value-parameter-sharing ${use_value_parameter_sharing} \
         --recurrent-N ${recurrent_N} \
         --train-naivepredictor ${train_naivepredictor} \
@@ -42,7 +47,8 @@ for seed in ${seeds[@]}; do
         --clip-delta ${clip_delta} \
         --causal-lambda ${causal_lambda} \
         --log-interval ${log_interval} --device ${device} --seed ${seed} \
-        --use-wandb --wandb-project pci-marl-staghunt \
+        --use-wandb \
+        --wandb-project pci-marl-staghunt \
         # & # deactivate for sequential training
     echo "[seed=${seed}] PID: $!"
 done

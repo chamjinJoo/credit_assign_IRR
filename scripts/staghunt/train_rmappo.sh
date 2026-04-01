@@ -8,6 +8,7 @@ config="configs/stag_hunt.yaml"
 
 # model setting
 model="r-mappo" # [pci-rnn, pci-mappo, mappo, ippo, ippo-rnn, mappo-rnn]
+use_recurrent_policy=false
 use_value_parameter_sharing=true
 recurrent_N=1
 global_reward=true
@@ -18,7 +19,7 @@ max_steps_per_iteration=2000
 n_rollout_threads=4
 log_interval=2
 device="cpu"
-seeds=(42 2 31 32)
+seeds=(42)
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
@@ -33,6 +34,7 @@ for seed in ${seeds[@]}; do
         --forage-quantity ${forage_quantity} \
         --grid-observation ${grid_observation} \
         --config ${config} --model ${model} \
+        --use-recurrent-policy ${use_recurrent_policy} \
         --global-reward ${global_reward} \
         --use-value-parameter-sharing ${use_value_parameter_sharing} \
         --recurrent-N ${recurrent_N} \
@@ -43,6 +45,6 @@ for seed in ${seeds[@]}; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb --wandb-project pci-marl-staghunt \
-        & # deactivate for sequential training
+        # & # deactivate for sequential training
     echo "[seed=${seed}] PID: $!"
 done
