@@ -294,3 +294,5 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 
 # 26.04.01
 * Find that during update_causal_networks(), we do not input prev_actions for rnn hidden state to policy_net. -> fix it.
+* Find that FFAgent-methods cannot solve 5x5 observation SH-domain well, need more training?
+* SH CoordObs needs over 5M steps to test an algorithm.

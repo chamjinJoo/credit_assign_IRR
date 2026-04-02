@@ -163,6 +163,7 @@ def create_algorithm(env, config):
             use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
             train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
+            global_reward=getattr(algorithm_config, 'global_reward', True),
         )
     elif algorithm_type in ['q_pci', 'qpci']:
         algorithm = qPCIAlgorithm(

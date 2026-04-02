@@ -192,3 +192,87 @@ def move_modules_to_device(device: torch.device, *modules) -> None:
     for module in modules:
         if module is not None:
             module.to(device)
+
+
+def get_episode_done(transition: Dict) -> bool:
+    info = transition.get('info', {})
+    if isinstance(info, dict) and 'episode_done' in info:
+        return bool(info['episode_done'])
+
+    dones = transition.get('dones', {})
+    if isinstance(dones, dict) and len(dones) > 0:
+        return bool(all(bool(done) for done in dones.values()))
+    return False
+
+
+def resolve_step_episode_done(
+    dones: Dict[int, bool],
+    info: Optional[Dict] = None,
+) -> bool:
+    if isinstance(info, dict) and 'episode_done' in info:
+        return bool(info['episode_done'])
+    if isinstance(dones, dict) and len(dones) > 0:
+        return bool(all(bool(done) for done in dones.values()))
+    return False
+
+
+def build_team_done_sequence(transitions: List[Dict]) -> List[bool]:
+    return [get_episode_done(t) for t in transitions]
+
+
+def infer_agent_alive_from_transition(
+    transition: Dict,
+    agent_id: int,
+    noop_action_index: int = 0,
+) -> float:
+    available_actions = transition.get('available_actions', {})
+    if isinstance(available_actions, dict) and agent_id in available_actions:
+        avail = available_actions[agent_id]
+        if torch.is_tensor(avail):
+            avail_flat = avail.reshape(-1).float()
+            if avail_flat.numel() > noop_action_index + 1:
+                return float((avail_flat[noop_action_index + 1:].sum() > 0).item())
+            return float((avail_flat.sum() > 0).item())
+        if avail is not None:
+            avail_list = list(avail)
+            if len(avail_list) > noop_action_index + 1:
+                return 1.0 if float(sum(avail_list[noop_action_index + 1:])) > 0.0 else 0.0
+            return 1.0 if float(sum(avail_list)) > 0.0 else 0.0
+    return 1.0
+
+
+def build_agent_active_masks(
+    batch_data: List[Dict],
+    agent_id: int,
+    device: torch.device,
+    noop_action_index: int = 0,
+) -> torch.Tensor:
+    active_mask_list = []
+    for transition in batch_data:
+        pad_mask = float(transition.get('active_mask', 1.0))
+        alive_mask = infer_agent_alive_from_transition(
+            transition,
+            agent_id,
+            noop_action_index=noop_action_index,
+        )
+        active_mask_list.append(pad_mask * alive_mask)
+    return torch.tensor(active_mask_list, dtype=torch.float32, device=device)
+
+
+def build_alive_mask_matrix(
+    batch_data: List[Dict],
+    num_agents: int,
+    device: torch.device,
+    noop_action_index: int = 0,
+) -> torch.Tensor:
+    alive_rows: List[List[float]] = []
+    for transition in batch_data:
+        alive_rows.append([
+            infer_agent_alive_from_transition(
+                transition,
+                agent_id,
+                noop_action_index=noop_action_index,
+            )
+            for agent_id in range(num_agents)
+        ])
+    return torch.tensor(alive_rows, dtype=torch.float32, device=device)

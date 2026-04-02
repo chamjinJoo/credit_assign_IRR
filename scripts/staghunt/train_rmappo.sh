@@ -8,7 +8,7 @@ config="configs/stag_hunt.yaml"
 
 # model setting
 model="r-mappo" # [pci-rnn, pci-mappo, mappo, ippo, ippo-rnn, mappo-rnn]
-use_recurrent_policy=false
+use_recurrent_policy=true
 use_value_parameter_sharing=true
 recurrent_N=1
 global_reward=true

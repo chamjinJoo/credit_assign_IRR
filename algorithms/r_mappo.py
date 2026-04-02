@@ -13,13 +13,17 @@ from algorithms.networks import (
 )
 from algorithms.agent_common import RecurrentPolicyAgent
 from algorithms.common import (
+    build_agent_active_masks,
+    build_alive_mask_matrix,
     build_available_actions_batch,
+    build_team_done_sequence,
     build_transition_kwargs,
     chunk_sequence,
     compute_gae,
     concatenate_agent_observations,
     prepare_env_info,
     normalize_advantages,
+    resolve_step_episode_done,
     split_action_and_log_probs,
 )
 from utils.buffer import TransitionBuffer, EpisodeBuffer
@@ -197,11 +201,11 @@ class rMAPPOAlgorithm:
             global_prev_actions_list.append(self.agents[i].prev_actions_batch)
         global_prev_action_onehot_batch = torch.cat(global_prev_actions_list, dim=-1) # (n_envs, num_agents * action_dim)
         
-        # 2. Masks based on last done status
-        # Using agent 0's done status for central critic mask (similar to implementation plan)
+        # 2. Masks based on episode done status
         masks_list = []
         for i in range(n_envs):
-            mask = 1.0 if not self.last_dones_batch[i].get(0, False) else 0.0
+            episode_done = all(self.last_dones_batch[i].get(agent_id, False) for agent_id in range(self.num_agents))
+            mask = 1.0 if not episode_done else 0.0
             masks_list.append(mask)
         masks_batch = torch.tensor(masks_list, dtype=torch.float32, device=self.device).unsqueeze(1)
         
@@ -306,6 +310,7 @@ class rMAPPOAlgorithm:
         """Store transition from a specific parallel environment."""
         actions_only, log_probs_dict = split_action_and_log_probs(actions)
         info = prepare_env_info(info, env_idx)
+        episode_done = resolve_step_episode_done(dones, info)
         kwargs = build_transition_kwargs(
             prev_observations=prev_observations,
             prev_rewards=prev_rewards,
@@ -325,7 +330,7 @@ class rMAPPOAlgorithm:
         self.buffer_manager.store_transition(**kwargs)
         
         if self.use_episode_buffer:
-            if any(dones.values()):
+            if episode_done:
                 self.buffer_manager.finish_episode(env_id=env_idx)
         
         # Update done status and reset RNN if done
@@ -341,7 +346,7 @@ class rMAPPOAlgorithm:
                 )
                 
         # Central Value RNN Reset (if global done)
-        if any(dones.values()):
+        if episode_done:
              self.rnn_states_value_batch[env_idx] = torch.zeros(
                  self.recurrent_N, self.hidden_dim, device=self.device
              )
@@ -357,7 +362,8 @@ class rMAPPOAlgorithm:
         self.temp_masks = {}
         self.temp_log_probs = {}
         
-        mask0 = 1.0 if not self.last_dones.get(0, False) else 0.0
+        episode_done = bool(all(self.last_dones.values())) if len(self.last_dones) > 0 else False
+        mask0 = 1.0 if not episode_done else 0.0
         mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
         
         # Central Value Step
@@ -459,7 +465,7 @@ class rMAPPOAlgorithm:
                 active_masks_chunked = chunk_sequence(active_masks, chunk_len) # (L, B, 1)
                 active_masks_batch = active_masks_chunked.reshape(-1)
             else:
-                active_masks = torch.ones(T, 1, device=self.device)
+                active_masks = torch.ones(T_total, 1, device=self.device)
                 active_masks_chunked = chunk_sequence(active_masks, chunk_len)
                 active_masks_batch = active_masks_chunked.reshape(-1)
             if self.global_reward:
@@ -471,6 +477,13 @@ class rMAPPOAlgorithm:
             
             chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
             v_h0_batch = v_states_all[chunk_indices] 
+            if self.global_reward:
+                value_alive_masks_batch = None
+            else:
+                value_alive_masks_batch = chunk_sequence(
+                    build_alive_mask_matrix(batch_data, self.num_agents, self.device),
+                    chunk_len,
+                ).reshape(-1, self.num_agents)
         else:
             global_obs_batch = global_obs_seq.unsqueeze(1)
             global_masks_batch = global_masks_seq
@@ -480,14 +493,23 @@ class rMAPPOAlgorithm:
                 active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
                 active_masks_batch = active_masks.squeeze(1)
             else:
-                active_masks_batch = torch.ones(T, device=self.device)
+                active_masks_batch = torch.ones(T_total, device=self.device)
             global_ret_batch = all_returns
             global_adv_batch = global_adv_norm
             v_h0_batch = v_states_all[0].unsqueeze(0)
+            if self.global_reward:
+                value_alive_masks_batch = None
+            else:
+                value_alive_masks_batch = build_alive_mask_matrix(
+                    batch_data,
+                    self.num_agents,
+                    self.device,
+                )
 
         # === Policy Updates (Per Agent) ===
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
+            agent_active_masks = build_agent_active_masks(batch_data, agent_id, self.device)
             
             agent_obs = torch.stack([t['bold_o_t'][agent_id] for t in batch_data]).to(self.device)
             masks_batch = torch.tensor([t['masks'][agent_id] for t in batch_data], device=self.device).unsqueeze(1)
@@ -499,6 +521,7 @@ class rMAPPOAlgorithm:
                 rnn_masks_batch = chunk_sequence(masks_batch, chunk_len)
                 my_actions_batch = chunk_sequence(my_actions, chunk_len).reshape(-1)
                 p_h0_batch = p_states_all[chunk_indices]
+                agent_active_masks_batch = chunk_sequence(agent_active_masks, chunk_len).reshape(-1)
                 
                 # Construct prev_actions one-hot sequence from buffer
                 prev_actions_raw = torch.tensor(
@@ -517,6 +540,7 @@ class rMAPPOAlgorithm:
                 rnn_masks_batch = masks_batch
                 my_actions_batch = my_actions
                 p_h0_batch = p_states_all[0].unsqueeze(0)
+                agent_active_masks_batch = agent_active_masks
                 
                 # Construct prev_actions for single batch
                 prev_actions_raw = torch.tensor(
@@ -554,11 +578,11 @@ class rMAPPOAlgorithm:
                 
                 # Masked Policy Loss
                 policy_loss = -torch.min(surr1, surr2)
-                policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                policy_loss = (policy_loss * agent_active_masks_batch).sum() / (agent_active_masks_batch.sum() + 1e-8)
                 
                 # Masked Entropy Loss
                 entropy_loss = -entropy # entropy is (T)
-                entropy_loss = (entropy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                entropy_loss = (entropy_loss * agent_active_masks_batch).sum() / (agent_active_masks_batch.sum() + 1e-8)
                 
                 loss = policy_loss + self.entropy_coef * entropy_loss
                 
@@ -598,7 +622,7 @@ class rMAPPOAlgorithm:
              
              # Masked Value Loss
              if not self.global_reward:
-                 active_masks_batch_val = active_masks_batch.unsqueeze(1)
+                 active_masks_batch_val = active_masks_batch.unsqueeze(1) * value_alive_masks_batch
              else:
                  active_masks_batch_val = active_masks_batch
 
@@ -666,7 +690,8 @@ class rMAPPOAlgorithm:
                     rewards_seq = torch.tensor(rewards_list, dtype=torch.float32, device=self.device)
 
                 # Dones
-                dones_seq = torch.tensor([any(t['dones'].values()) for t in traj], dtype=torch.float32, device=self.device)
+                team_dones = build_team_done_sequence(traj)
+                dones_seq = torch.tensor(team_dones, dtype=torch.float32, device=self.device)
 
                 # Initial hidden state for value network
                 v_h0 = traj[0]['hidden_states'][0][1].to(self.device, non_blocking=True).unsqueeze(0)
@@ -679,7 +704,7 @@ class rMAPPOAlgorithm:
                         self.obs_dim,
                         self.device,
                     ).to(self.device, non_blocking=True)
-                    last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
+                    last_mask = 1.0 - (1.0 if team_dones[-1] else 0.0)
                     
                     extended_obs = torch.cat([global_obs_seq.unsqueeze(1), 
                                             last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)

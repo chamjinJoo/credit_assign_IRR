@@ -33,7 +33,7 @@ training:
   save_interval: 100
   eval_interval: 50
   eval_episodes: 10
-  save_dir: "./checkpoints"
+  save_dir: "./save_checkpoints"
   device: "cpu"
 
 # Environment Configuration

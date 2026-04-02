@@ -195,6 +195,7 @@ class NaivePredictor(nn.Module):
         num_agents: int,
         x_dim: int,
         w_dim: int,
+        output_dim: int = None,
         hidden_dim: int = 64,
         action_embedding_dim: int = 8  # kept for API compat but unused
     ):
@@ -204,6 +205,7 @@ class NaivePredictor(nn.Module):
         self.hidden_dim = hidden_dim
         self.x_dim = x_dim
         self.w_dim = w_dim
+        self.output_dim = output_dim if output_dim is not None else num_agents
         
         # Use one-hot encoding instead of nn.Embedding
         # Input is action one-hot and x
@@ -219,7 +221,7 @@ class NaivePredictor(nn.Module):
             use_ReLU=True,
             use_layer_norm=True
         )
-        self.output_layer = nn.Linear(hidden_dim, num_agents)
+        self.output_layer = nn.Linear(hidden_dim, self.output_dim)
 
         self.full_network = nn.Sequential(
             self.mlp,

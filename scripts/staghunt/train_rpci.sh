@@ -12,7 +12,7 @@ use_value_parameter_sharing=true
 train_naivepredictor=false
 recurrent_N=1
 
-causal_lambda=0.2
+causal_lambda=1.0
 clip_delta=0.0
 
 # training and logging 

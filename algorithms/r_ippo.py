@@ -13,12 +13,15 @@ from algorithms.networks import (
 )
 from algorithms.agent_common import RecurrentPolicyAgent
 from algorithms.common import (
+    build_agent_active_masks,
     build_available_actions_batch,
+    build_team_done_sequence,
     build_transition_kwargs,
     chunk_sequence,
     compute_gae,
     normalize_advantages,
     prepare_env_info,
+    resolve_step_episode_done,
     split_action_and_log_probs,
 )
 from utils.buffer import TransitionBuffer, EpisodeBuffer
@@ -296,6 +299,7 @@ class rIPPOAlgorithm:
         """Store transition from a specific parallel environment."""
         actions_only, log_probs_dict = split_action_and_log_probs(actions)
         info = prepare_env_info(info, env_idx)
+        episode_done = resolve_step_episode_done(dones, info)
 
         kwargs = build_transition_kwargs(
             prev_observations=prev_observations,
@@ -316,7 +320,7 @@ class rIPPOAlgorithm:
         self.buffer_manager.store_transition(**kwargs)
         
         if self.use_episode_buffer:
-            if any(dones.values()):
+            if episode_done:
                 self.buffer_manager.finish_episode(env_id=env_idx)
         
         # Update done status and reset RNN if done
@@ -453,6 +457,7 @@ class rIPPOAlgorithm:
                 T_total = agent_obs.size(0)
                 chunk_len = self.rnn_chunk_length
                 num_chunks = T_total // chunk_len
+                agent_active_masks = build_agent_active_masks(batch_data, agent_id, self.device)
                 
                 if num_chunks > 0:
                     rnn_obs_batch = chunk_sequence(agent_obs, chunk_len)
@@ -461,12 +466,7 @@ class rIPPOAlgorithm:
                     ret_batch = chunk_sequence(agent_returns, chunk_len).reshape(-1)
                     adv_batch = chunk_sequence(adv, chunk_len).reshape(-1)
                     
-                    if 'active_mask' in batch_data[0]:
-                        active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
-                        active_masks_batch = chunk_sequence(active_masks, chunk_len).reshape(-1)
-                    else:
-                        active_masks = torch.ones(T_total, 1, device=self.device)
-                        active_masks_batch = chunk_sequence(active_masks, chunk_len).reshape(-1)
+                    active_masks_batch = chunk_sequence(agent_active_masks, chunk_len).reshape(-1)
                     
                     chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
                     p_h0_batch = p_states_all[chunk_indices] 
@@ -491,10 +491,7 @@ class rIPPOAlgorithm:
                      adv_batch = adv
                      p_h0_batch = p_states_all[0].unsqueeze(0)
                      v_h0_batch = v_states_all[0].unsqueeze(0)
-                     if 'active_mask' in batch_data[0]:
-                         active_masks_batch = torch.tensor([t['active_mask'] for t in batch_data], device=self.device)
-                     else:
-                         active_masks_batch = torch.ones(T_total, device=self.device)
+                     active_masks_batch = agent_active_masks
                      
                      prev_actions_raw = torch.tensor(
                          [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
@@ -591,6 +588,7 @@ class rIPPOAlgorithm:
             for env_id, traj in env_trajectories.items():
                 if len(traj) == 0:
                     continue
+                team_dones_seq = build_team_done_sequence(traj)
                 
                 # For each agent, compute GAE
                 for agent_id in range(self.num_agents):
@@ -618,7 +616,12 @@ class rIPPOAlgorithm:
                     # Compute values for entire trajectory
                     with torch.no_grad():
                         last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
-                        last_mask = 1.0 - traj[-1]['dones'][agent_id]
+                        if self.global_reward:
+                            last_mask = 1.0 - (1.0 if team_dones_seq[-1] else 0.0)
+                            done_signal = team_dones_seq
+                        else:
+                            last_mask = 1.0 - traj[-1]['dones'][agent_id]
+                            done_signal = agent_dones_seq.tolist()
                         
                         extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
                                                 last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
@@ -641,7 +644,7 @@ class rIPPOAlgorithm:
                             agent_rewards_seq.tolist(),
                             values.tolist(),
                             next_val,
-                            agent_dones_seq.tolist(),
+                            done_signal,
                             self.gamma,
                             self.gae_lambda,
                         )

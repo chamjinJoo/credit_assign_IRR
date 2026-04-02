@@ -1008,6 +1008,8 @@ class Trainer:
                 # Skip already logged keys
                 if key in ['epsilon', 'total_env_steps', 'replay_buffer_episodes']:
                     continue
+                if key.endswith('_count'):
+                    continue
 
                 if key.startswith('delta_'):
                     # Format delta statistics nicely
@@ -1016,14 +1018,12 @@ class Trainer:
                         count_key = f'delta_{scenario}_count'
                         if count_key in update_info:
                             count = update_info[count_key]
-                            self.logger.info(f"    {key}: {value:.6f} (n={count})")
+                            self.logger.info(f"    {key}: {value:.6f} (n={count:g})")
                         else:
                             self.logger.info(f"    {key}: {value:.6f}")
                     elif key.endswith('_std'):
                         scenario = key.replace('delta_', '').replace('_std', '')
                         self.logger.info(f"    {key}: {value:.6f}")
-                    elif key.endswith('_count'):
-                        continue  # Skip count, already shown with mean
                     else:
                         self.logger.info(f"    {key}: {value:.6f}")
                 else:

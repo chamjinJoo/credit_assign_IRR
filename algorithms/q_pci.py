@@ -6,8 +6,11 @@ from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 from algorithms.agent_common import RecurrentActorCriticAgent
 from algorithms.common import (
+    build_agent_active_masks,
     build_agent_masks_batch,
+    build_alive_mask_matrix,
     build_available_actions_batch,
+    build_team_done_sequence,
     build_transition_kwargs,
     chunk_sequence,
     compute_gae,
@@ -15,6 +18,7 @@ from algorithms.common import (
     move_modules_to_device,
     normalize_advantages,
     prepare_env_info,
+    resolve_step_episode_done,
     split_action_and_log_probs,
 )
 from algorithms.networks.rnn import RNNLayer, RNNValueNetwork
@@ -186,7 +190,7 @@ class qPCIAlgorithm:
         causal_mini_batch_size: int = 10000,
         rnn_chunk_length: int = 16,
         use_episode_buffer: bool = False,
-        normalize_returns: bool = True,
+        normalize_returns: bool = False,
         lse_temperature: float = 1.0,
         potential_type: str = 'gap',
         use_value_parameter_sharing: bool = True,
@@ -345,6 +349,7 @@ class qPCIAlgorithm:
     def _compute_trajectory_returns(self, traj: List[Dict]) -> torch.Tensor:
         """For every timestep, compute team discounted reward-to-go. Returns (T,)."""
         T = len(traj)
+        team_dones = build_team_done_sequence(traj)
         team_rewards = torch.tensor(
             [sum(traj[t]['bold_r_t'][i] for i in range(self.num_agents)) for t in range(T)],
             dtype=torch.float32, device=self.device
@@ -352,8 +357,7 @@ class qPCIAlgorithm:
         returns = torch.zeros(T, device=self.device)
         G = 0.0
         for t in reversed(range(T)):
-            done_any = any(traj[t]['dones'].values())
-            G = team_rewards[t] + self.gamma * G * (1.0 - float(done_any))
+            G = team_rewards[t] + self.gamma * G * (1.0 - float(team_dones[t]))
             returns[t] = G
         return returns
 
@@ -757,7 +761,8 @@ class qPCIAlgorithm:
         self.temp_log_probs = {}
 
         if self.use_centralized_critic:
-            mask0 = 1.0 if not self.last_dones.get(0, False) else 0.0
+            episode_done = bool(all(self.last_dones.values())) if len(self.last_dones) > 0 else False
+            mask0 = 1.0 if not episode_done else 0.0
             mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
             global_obs = concatenate_agent_observations(
                 observations,
@@ -825,7 +830,11 @@ class qPCIAlgorithm:
             global_prev_actions_list = [self.agents[i].prev_actions_batch for i in range(self.num_agents)]
             global_prev_action_onehot_batch = torch.cat(global_prev_actions_list, dim=-1)
             central_masks = torch.tensor([
-                [1.0 if not self.last_dones_batch[0][env_idx] else 0.0]
+                [
+                    1.0
+                    if not all(self.last_dones_batch[agent_id][env_idx] for agent_id in range(self.num_agents))
+                    else 0.0
+                ]
                 for env_idx in range(n_envs)
             ], dtype=torch.float32, device=self.device)
 
@@ -908,6 +917,7 @@ class qPCIAlgorithm:
                                   info=None, available_actions=None):
         actions_only, log_probs_dict = split_action_and_log_probs(actions)
         info = prepare_env_info(info, env_idx)
+        episode_done = resolve_step_episode_done(dones, info)
         kwargs = build_transition_kwargs(
             prev_observations=prev_observations,
             prev_rewards=prev_rewards,
@@ -927,7 +937,7 @@ class qPCIAlgorithm:
         self.buffer_manager.store_transition(**kwargs)
 
         if self.use_episode_buffer:
-            if any(dones.values()):
+            if episode_done:
                 self.buffer_manager.finish_episode(env_id=env_idx)
 
         for agent_id in range(self.num_agents):
@@ -941,7 +951,7 @@ class qPCIAlgorithm:
                 self.agents[agent_id].prev_actions_batch[env_idx] = torch.zeros(
                     self.action_dim, device=self.device)
 
-        if self.use_centralized_critic and any(dones.values()):
+        if self.use_centralized_critic and episode_done:
             self.rnn_states_value_batch[env_idx] = torch.zeros(
                 self.recurrent_N, self.hidden_dim, device=self.device
             )
@@ -1010,6 +1020,7 @@ class qPCIAlgorithm:
             T_total = agent_obs.size(0)
             chunk_len = self.rnn_chunk_length
             num_chunks = T_total // chunk_len
+            agent_active_masks = build_agent_active_masks(batch_data, agent_id, self.device)
 
             if num_chunks > 0:
                 rnn_obs_batch = chunk_sequence(agent_obs, chunk_len)
@@ -1022,11 +1033,7 @@ class qPCIAlgorithm:
                 prev_actions_onehot = F.one_hot(prev_actions_raw, self.action_dim).float()
                 prev_actions_batch = chunk_sequence(prev_actions_onehot, chunk_len)
 
-                if 'active_mask' in batch_data[0]:
-                    active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
-                    active_masks_batch = chunk_sequence(active_masks, chunk_len).reshape(-1)
-                else:
-                    active_masks_batch = torch.ones(num_chunks * chunk_len, device=self.device)
+                active_masks_batch = chunk_sequence(agent_active_masks, chunk_len).reshape(-1)
 
                 avail_actions_batch_merged = None
                 if avail_actions_all is not None:
@@ -1044,7 +1051,7 @@ class qPCIAlgorithm:
                 my_actions_batch = my_actions
                 adv_batch = adv
                 ret_batch = agent_returns
-                active_masks_batch = torch.ones(T_total, device=self.device)
+                active_masks_batch = agent_active_masks
                 avail_actions_batch_merged = avail_actions_all
                 prev_actions_raw = torch.tensor(
                     [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
@@ -1166,12 +1173,17 @@ class qPCIAlgorithm:
                 chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
                 v_h0_batch = v_states_all_central[chunk_indices]
                 global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
+                alive_mask_batch = chunk_sequence(
+                    build_alive_mask_matrix(batch_data, self.num_agents, self.device),
+                    chunk_len
+                ).reshape(-1, self.num_agents)
             else:
                 global_obs_batch = global_obs_seq.unsqueeze(1)
                 global_masks_batch = global_masks_seq
                 active_masks_batch = torch.ones(T_total, device=self.device)
                 v_h0_batch = v_states_all_central[0].unsqueeze(0)
                 global_ret_batch = all_returns
+                alive_mask_batch = build_alive_mask_matrix(batch_data, self.num_agents, self.device)
 
             for _ in range(self.ppo_epochs):
                 agent_prev_actions_list = []
@@ -1197,9 +1209,8 @@ class qPCIAlgorithm:
                     prev_actions=global_prev_actions_batch
                 )
                 val_error = (new_vals.squeeze(1) - global_ret_batch) ** 2
-                val_loss = (
-                    val_error * active_masks_batch.unsqueeze(1)
-                ).sum() / (active_masks_batch.sum() * self.num_agents + 1e-8)
+                value_mask = active_masks_batch.unsqueeze(1) * alive_mask_batch
+                val_loss = (val_error * value_mask).sum() / (value_mask.sum() + 1e-8)
 
                 self.value_optimizer.zero_grad()
                 (self.value_coef * val_loss).backward()
@@ -1253,6 +1264,12 @@ class qPCIAlgorithm:
             
             T = len(traj)
             N = self.num_agents
+            team_done_seq = build_team_done_sequence(traj)
+            team_done_tensor = torch.tensor(
+                team_done_seq,
+                dtype=torch.float32,
+                device=self.device,
+            )
 
             # Prepare hidden states
             hidden_states_batch = {}
@@ -1310,7 +1327,7 @@ class qPCIAlgorithm:
 
                 with torch.no_grad():
                     last_next_obs = concatenate_agent_observations(traj[-1]['next_observations'], self.num_agents, self.obs_dim, self.device,).to(self.device, non_blocking=True)
-                    last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
+                    last_mask = 1.0 - (1.0 if team_done_seq[-1] else 0.0)
 
                     extended_obs = torch.cat([
                         global_obs_seq.unsqueeze(1),
@@ -1346,14 +1363,9 @@ class qPCIAlgorithm:
                     central_values = all_values[:-1].view(-1, self.num_agents)
                     central_next_values = all_values[1:].view(-1, self.num_agents)
 
-                dones_matrix = torch.tensor(
-                    [[t['dones'][i] for i in range(N)] for t in traj],
-                    dtype=torch.float32,
-                    device=self.device,
-                )
                 team_bootstrap_target = team_rewards_tensor + self.gamma * (
-                    central_next_values * (1.0 - dones_matrix)
-                ).mean(dim=-1)
+                    central_next_values.mean(dim=-1) * (1.0 - team_done_tensor)
+                )
             else:
                 team_bootstrap_target_sum = torch.zeros(T, dtype=torch.float32, device=self.device)
                 team_bootstrap_target_count = 0
@@ -1379,11 +1391,11 @@ class qPCIAlgorithm:
                     if self.use_centralized_critic:
                         values = central_values[:, agent_id]
                         next_val = central_next_values[-1, agent_id].item() * (
-                            1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
+                            1.0 - (1.0 if team_done_seq[-1] else 0.0)
                         )
                     else:
                         last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
-                        last_mask = 1.0 - traj[-1]['dones'][agent_id]
+                        last_mask = 1.0 - (1.0 if team_done_seq[-1] else 0.0)
 
                         extended_obs = torch.cat([
                             agent_obs_seq.unsqueeze(1),
@@ -1410,7 +1422,7 @@ class qPCIAlgorithm:
                         )
                         values = all_values[:-1].view(-1)
                         next_val = all_values[-1].item() * last_mask
-                        next_value_seq = all_values[1:].view(-1) * (1.0 - agent_dones_seq)
+                        next_value_seq = all_values[1:].view(-1) * (1.0 - team_done_tensor)
 
                         team_bootstrap_target_sum += team_rewards_tensor + self.gamma * next_value_seq
                         team_bootstrap_target_count += 1
@@ -1419,7 +1431,7 @@ class qPCIAlgorithm:
                         team_rewards,
                         values.tolist(),
                         next_val,
-                        agent_dones_seq.tolist(),
+                        team_done_seq,
                         self.gamma,
                         self.gae_lambda,
                     )
