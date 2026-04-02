@@ -113,6 +113,8 @@ class JAXRPCIAlgorithm:
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
+        self.bridge_output_dim = 1 if global_reward else num_agents
+        self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
         self.rng = jax.random.PRNGKey(seed)
 
         self.actor_model = (
@@ -121,12 +123,16 @@ class JAXRPCIAlgorithm:
             else FeedForwardActor(hidden_dim=hidden_dim, action_dim=action_dim)
         )
         self.critic_model = (
-            RecurrentCritic(hidden_dim=hidden_dim)
+            RecurrentCritic(hidden_dim=hidden_dim, output_dim=self.critic_output_dim)
             if use_recurrent_policy
-            else FeedForwardCritic(hidden_dim=hidden_dim)
+            else FeedForwardCritic(hidden_dim=hidden_dim, output_dim=self.critic_output_dim)
         )
         self.bridge_model = (
-            CausalBridgeNetwork(hidden_dim=hidden_dim, action_dim=action_dim, num_agents=num_agents)
+            CausalBridgeNetwork(
+                hidden_dim=hidden_dim,
+                action_dim=action_dim,
+                num_agents=self.bridge_output_dim,
+            )
             if causal_lambda > 0.0
             else None
         )
@@ -500,6 +506,11 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(-1)
+        if self.action_dim > 1:
+            alive_masks = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32).reshape(-1)
+        else:
+            alive_masks = jnp.ones_like(actions, dtype=jnp.float32)
+        loss_masks = masks * alive_masks
 
         if advantages.ndim == 2:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
@@ -516,29 +527,48 @@ class JAXRPCIAlgorithm:
             "prev_actions": prev_actions,
             "hidden": hidden,
             "masks": masks,
+            "loss_masks": loss_masks,
             "advantages": adv,
         }
 
     def _flatten_critic_batch(self, rollout: Dict[str, jnp.ndarray], returns: jnp.ndarray):
         if self.use_centralized_critic:
             total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
+            base_masks = rollout["masks"].reshape(-1)
+            if returns.ndim == 2:
+                returns_flat = returns.reshape(-1)
+                loss_masks = base_masks
+            else:
+                returns_flat = returns.reshape(-1, self.num_agents)
+                if self.action_dim > 1:
+                    alive_masks = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32)
+                else:
+                    alive_masks = jnp.ones(rollout["actions"].shape, dtype=jnp.float32)
+                loss_masks = base_masks[:, None] * alive_masks.reshape(-1, self.num_agents)
             return {
                 "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
                 "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
                 "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
-                "masks": rollout["masks"].reshape(-1),
-                "returns": returns.reshape(-1),
+                "masks": base_masks,
+                "loss_masks": loss_masks,
+                "returns": returns_flat,
             }
 
         total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
+        per_agent_masks = jnp.broadcast_to(
+            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
+            rollout["actions"].shape,
+        ).reshape(-1)
+        if self.action_dim > 1:
+            alive_masks = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32).reshape(-1)
+        else:
+            alive_masks = jnp.ones((total_steps,), dtype=jnp.float32)
         return {
             "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
             "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
             "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
-            "masks": jnp.broadcast_to(
-                rollout["masks"].reshape(rollout["masks"].shape + (1,)),
-                rollout["actions"].shape,
-            ).reshape(-1),
+            "masks": per_agent_masks,
+            "loss_masks": per_agent_masks * alive_masks,
             "returns": returns.reshape(-1),
         }
 
@@ -559,11 +589,15 @@ class JAXRPCIAlgorithm:
             hidden_others = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
 
         actions = rollout["actions"].reshape(-1)
-        targets = jnp.repeat(
-            rollout["rewards"][:, :, None, :],
-            self.num_agents,
-            axis=2,
-        ).reshape(-1, self.num_agents)
+        if self.global_reward:
+            team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
+            targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
+        else:
+            targets = jnp.repeat(
+                rollout["rewards"][:, :, None, :],
+                self.num_agents,
+                axis=2,
+            ).reshape(-1, self.num_agents)
 
         return {
             "z": z.astype(jnp.float32),
@@ -583,11 +617,15 @@ class JAXRPCIAlgorithm:
         else:
             hidden_others = jnp.zeros((local_obs.shape[0], 0), dtype=jnp.float32)
         actions = rollout["actions"].reshape(-1)
-        reward_targets = jnp.repeat(
-            rollout["rewards"][:, :, None, :],
-            self.num_agents,
-            axis=2,
-        ).reshape(-1, self.num_agents)
+        if self.global_reward:
+            team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
+            reward_targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
+        else:
+            reward_targets = jnp.repeat(
+                rollout["rewards"][:, :, None, :],
+                self.num_agents,
+                axis=2,
+            ).reshape(-1, self.num_agents)
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
@@ -664,10 +702,12 @@ class JAXRPCIAlgorithm:
             ratio = jnp.exp(log_probs - batch["old_log_probs"])
             unclipped = ratio * batch["advantages"]
             clipped = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch["advantages"]
-            policy_loss = -jnp.mean(jnp.minimum(unclipped, clipped))
-            entropy_bonus = jnp.mean(entropy)
+            weights = batch["loss_masks"]
+            denom = jnp.sum(weights) + 1.0e-8
+            policy_loss = -jnp.sum(jnp.minimum(unclipped, clipped) * weights) / denom
+            entropy_bonus = jnp.sum(entropy * weights) / denom
             total_loss = policy_loss - self.entropy_coef * entropy_bonus
-            approx_kl = jnp.mean(batch["old_log_probs"] - log_probs)
+            approx_kl = jnp.sum((batch["old_log_probs"] - log_probs) * weights) / denom
             return total_loss, {
                 "policy_loss": policy_loss,
                 "entropy": entropy_bonus,
@@ -693,7 +733,13 @@ class JAXRPCIAlgorithm:
                 batch["hidden"],
                 batch["masks"],
             )
-            value_loss = jnp.mean(jnp.square(values - batch["returns"]))
+            weights = batch["loss_masks"]
+            if values.ndim == 1:
+                denom = jnp.sum(weights) + 1.0e-8
+                value_loss = jnp.sum(jnp.square(values - batch["returns"]) * weights) / denom
+            else:
+                denom = jnp.sum(weights) + 1.0e-8
+                value_loss = jnp.sum(jnp.square(values - batch["returns"]) * weights) / denom
             return self.value_coef * value_loss, {"value_loss": value_loss}
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(critic_state.params)
@@ -838,13 +884,20 @@ class JAXRPCIAlgorithm:
         actual_team_reward = reward_targets
         # raw_effects = actual_pred - baseline
         raw_effects = actual_team_reward - baseline
-        c_matrix = raw_effects.reshape(rollout["actions"].shape + (self.num_agents,))
 
         if self.action_dim > 1:
             alive = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32)
         else:
             alive = jnp.ones_like(rollout["actions"], dtype=jnp.float32)
-        c_matrix = c_matrix * alive[..., :, None] * alive[..., None, :]
+        if self.global_reward:
+            actor_team_effects = raw_effects.reshape(rollout["actions"].shape + (1,))
+            alive_counts = jnp.clip(alive.sum(axis=-1, keepdims=True), a_min=1.0)
+            recipient_weights = alive[..., None, :] / alive_counts[..., None, :]
+            c_matrix = actor_team_effects * recipient_weights
+            c_matrix = c_matrix * alive[..., :, None]
+        else:
+            c_matrix = raw_effects.reshape(rollout["actions"].shape + (self.num_agents,))
+            c_matrix = c_matrix * alive[..., :, None] * alive[..., None, :]
 
         delta = c_matrix.sum(axis=-1)
         info = {
@@ -898,10 +951,13 @@ class JAXRPCIAlgorithm:
         values = rollout["values"]
         last_value = rollout["last_value"]
 
-        if self.use_centralized_critic:
-            env_rewards = raw_team_rewards
+        if self.global_reward:
+            if self.use_centralized_critic:
+                env_rewards = raw_team_rewards
+            else:
+                env_rewards = jnp.repeat(raw_team_rewards[..., None], self.num_agents, axis=-1)
         else:
-            env_rewards = jnp.repeat(raw_team_rewards[..., None], self.num_agents, axis=-1)
+            env_rewards = rollout["rewards"]
 
         env_advantages, returns = compute_gae(
             env_rewards,

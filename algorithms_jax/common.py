@@ -43,6 +43,7 @@ class RecurrentActor(nn.Module):
 
 class RecurrentCritic(nn.Module):
     hidden_dim: int
+    output_dim: int = 1
 
     @nn.compact
     def __call__(
@@ -59,7 +60,9 @@ class RecurrentCritic(nn.Module):
         hidden = hidden * masks[..., None]
         gru = make_gru_cell(self.hidden_dim)
         new_hidden, core_out = gru(hidden, x)
-        values = nn.Dense(1)(core_out).squeeze(-1)
+        values = nn.Dense(self.output_dim)(core_out)
+        if self.output_dim == 1:
+            values = values.squeeze(-1)
         return new_hidden, values
 
 
@@ -86,6 +89,7 @@ class FeedForwardActor(nn.Module):
 
 class FeedForwardCritic(nn.Module):
     hidden_dim: int
+    output_dim: int = 1
 
     @nn.compact
     def __call__(
@@ -100,7 +104,9 @@ class FeedForwardCritic(nn.Module):
         x = nn.tanh(x)
         x = nn.Dense(self.hidden_dim)(x)
         x = nn.tanh(x)
-        values = nn.Dense(1)(x).squeeze(-1)
+        values = nn.Dense(self.output_dim)(x)
+        if self.output_dim == 1:
+            values = values.squeeze(-1)
         return hidden, values
 
 

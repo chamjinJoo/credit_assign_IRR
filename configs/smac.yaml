@@ -13,6 +13,7 @@ network:
 algorithm:
   gamma: 0.99
   gae_lambda: 0.95
+  global_reward: true  # false: use individual reward targets when available
   clip_epsilon: 0.2
   entropy_coef: 0.0
   value_coef: 0.5

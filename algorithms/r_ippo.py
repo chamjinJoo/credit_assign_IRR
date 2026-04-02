@@ -59,12 +59,9 @@ class rIPPOAlgorithm:
         num_batches: int = 1, 
         device: str = "cpu",
         rnn_chunk_length: int = 16,
-        global_reward: bool = True,
         use_episode_buffer: bool = False,
         use_recurrent_policy: bool = True,
     ):
-        self.global_reward = global_reward
-        print("global_reward:", self.global_reward)
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -113,8 +110,9 @@ class rIPPOAlgorithm:
                 obs_dim=obs_dim,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
+                out_dim=1,
                 action_dim=action_dim,
-                num_agents=1
+                num_agents=1, # for prev action dim
             )
             if use_recurrent_policy
             else FeedForwardValueNetworkCompat(
@@ -445,11 +443,7 @@ class rIPPOAlgorithm:
                 my_actions = torch.tensor([t['bold_a_t'][agent_id] for t in batch_data], dtype=torch.long, device=self.device)
                 
                 # Extract pre-computed Returns and Advantages
-                if self.global_reward:
-                     rewards_list = [sum(t['bold_r_t'].values()) / self.num_agents for t in batch_data]
-                     agent_returns = torch.tensor([t['returns'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
-                else:
-                     agent_returns = torch.tensor([t['returns'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+                agent_returns = torch.tensor([t['returns'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
                 agent_advantages = torch.tensor([t['advantages'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
                 
                 adv = normalize_advantages(agent_advantages)
@@ -600,14 +594,11 @@ class rIPPOAlgorithm:
                     agent_obs_seq = torch.stack(agent_obs_list).to(self.device, non_blocking=True)
                     agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
 
-                    if self.global_reward:
-                        agent_rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
-                                                        dtype=torch.float32, device=self.device)
-                    else:
-                        agent_rewards_seq = torch.tensor([t['bold_r_t'][agent_id] for t in traj],
-                                                        dtype=torch.float32, device=self.device)
-
-                    agent_dones_seq = torch.tensor([t['dones'][agent_id] for t in traj], dtype=torch.float32, device=self.device)
+                    agent_rewards_seq = torch.tensor(
+                        [sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
+                        dtype=torch.float32,
+                        device=self.device,
+                    )
 
                     # Initial hidden state for value network
                     _, v_h0 = traj[0]['hidden_states'][agent_id]
@@ -616,12 +607,8 @@ class rIPPOAlgorithm:
                     # Compute values for entire trajectory
                     with torch.no_grad():
                         last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
-                        if self.global_reward:
-                            last_mask = 1.0 - (1.0 if team_dones_seq[-1] else 0.0)
-                            done_signal = team_dones_seq
-                        else:
-                            last_mask = 1.0 - traj[-1]['dones'][agent_id]
-                            done_signal = agent_dones_seq.tolist()
+                        last_mask = 1.0 - (1.0 if team_dones_seq[-1] else 0.0)
+                        done_signal = team_dones_seq
                         
                         extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
                                                 last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)

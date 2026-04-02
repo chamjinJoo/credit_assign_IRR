@@ -293,7 +293,6 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
-            global_reward=getattr(algorithm_config, 'global_reward', True),
             use_centralized_critic=(algorithm_type == 'jax_mappo') or getattr(algorithm_config, 'use_centralized_critic', False),
             add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
@@ -357,7 +356,11 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
-            global_reward=getattr(algorithm_config, 'global_reward', True),
+            global_reward=(
+                True
+                if algorithm_type in ['jax_rippo', 'jax_rmappo']
+                else getattr(algorithm_config, 'global_reward', True)
+            ),
             add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
             use_centralized_critic=(algorithm_type == 'jax_rmappo') or getattr(algorithm_config, 'use_centralized_critic', False),
@@ -428,7 +431,6 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
-            global_reward=getattr(algorithm_config, 'global_reward', True),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
         )
     elif algorithm_type in ['ippo_rnn', 'r_ippo']:
@@ -451,7 +453,6 @@ def create_algorithm(env, config):
             batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
-            global_reward=getattr(algorithm_config, 'global_reward', True),
         )
     elif algorithm_type in ['qmix', 'r_qmix']:
         epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)

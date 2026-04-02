@@ -14,7 +14,6 @@ from algorithms.networks import (
 from algorithms.agent_common import RecurrentPolicyAgent
 from algorithms.common import (
     build_agent_active_masks,
-    build_alive_mask_matrix,
     build_available_actions_batch,
     build_team_done_sequence,
     build_transition_kwargs,
@@ -59,12 +58,9 @@ class rMAPPOAlgorithm:
         num_batches: int = 1,
         device: str = "cpu",
         rnn_chunk_length: int = 16,
-        global_reward: bool = True,
         use_episode_buffer: bool = False,
         use_recurrent_policy: bool = True,
     ):
-        self.global_reward = global_reward
-        print('global_reward: ',global_reward)
         self.num_agents = num_agents
         self.obs_dim = obs_dim
         self.action_dim = action_dim
@@ -110,7 +106,7 @@ class rMAPPOAlgorithm:
                 obs_dim=obs_dim * num_agents,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                out_dim=1 if global_reward else num_agents,
+                out_dim=1,
                 action_dim=action_dim,
                 num_agents=num_agents
             )
@@ -119,7 +115,7 @@ class rMAPPOAlgorithm:
                 obs_dim=obs_dim * num_agents,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
-                out_dim=1 if global_reward else num_agents,
+                out_dim=1,
             )
         )
 
@@ -234,7 +230,7 @@ class rMAPPOAlgorithm:
             
             # Store hidden states for buffer (prev_state)
             # We need to distribute this back to each env
-            # values_batch: (n_envs, 1) or (n_envs, num_agents) depending on global_reward
+            # values_batch shape follows centralized scalar critic output
         
         # 4. Policy Step (Per Agent)
         for agent_id in range(self.num_agents):
@@ -428,27 +424,14 @@ class rMAPPOAlgorithm:
         v_states_all = torch.stack([t['hidden_states'][0][1] for t in batch_data]).to(self.device)
         
         # === Extract Pre-computed Advantages and Returns ===
-        if self.global_reward:
-            all_returns = torch.tensor([t['returns'] for t in batch_data], dtype=torch.float32, device=self.device)
-            all_advantages = torch.tensor([t['advantages'] for t in batch_data], dtype=torch.float32, device=self.device)
-        else:
-            # Per-agent returns and advantages
-            returns_list = [[t['returns'][i] for i in range(self.num_agents)] for t in batch_data]
-            advantages_list = [[t['advantages'][i] for i in range(self.num_agents)] for t in batch_data]
-            all_returns = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
-            all_advantages = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
+        all_returns = torch.tensor([t['returns'] for t in batch_data], dtype=torch.float32, device=self.device)
+        all_advantages = torch.tensor([t['advantages'] for t in batch_data], dtype=torch.float32, device=self.device)
 
         # Normalize Advantages
-        if self.global_reward:
-            if all_advantages.numel() > 1:
-                global_adv_norm = normalize_advantages(all_advantages)
-            else:
-                global_adv_norm = torch.zeros_like(all_advantages)
+        if all_advantages.numel() > 1:
+            global_adv_norm = normalize_advantages(all_advantages)
         else:
-            if all_advantages.numel() > 1:
-                global_adv_norm = normalize_advantages(all_advantages)
-            else:
-                global_adv_norm = torch.zeros_like(all_advantages)
+            global_adv_norm = torch.zeros_like(all_advantages)
 
         # === Prepare Chunked Data for Value Update ===
         T_total = global_obs_seq.size(0)
@@ -468,22 +451,11 @@ class rMAPPOAlgorithm:
                 active_masks = torch.ones(T_total, 1, device=self.device)
                 active_masks_chunked = chunk_sequence(active_masks, chunk_len)
                 active_masks_batch = active_masks_chunked.reshape(-1)
-            if self.global_reward:
-                global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1)
-                global_adv_batch = chunk_sequence(global_adv_norm, chunk_len).reshape(-1)
-            else:
-                global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
-                global_adv_batch = chunk_sequence(global_adv_norm, chunk_len).reshape(-1, self.num_agents)
+            global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1)
+            global_adv_batch = chunk_sequence(global_adv_norm, chunk_len).reshape(-1)
             
             chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
             v_h0_batch = v_states_all[chunk_indices] 
-            if self.global_reward:
-                value_alive_masks_batch = None
-            else:
-                value_alive_masks_batch = chunk_sequence(
-                    build_alive_mask_matrix(batch_data, self.num_agents, self.device),
-                    chunk_len,
-                ).reshape(-1, self.num_agents)
         else:
             global_obs_batch = global_obs_seq.unsqueeze(1)
             global_masks_batch = global_masks_seq
@@ -497,14 +469,6 @@ class rMAPPOAlgorithm:
             global_ret_batch = all_returns
             global_adv_batch = global_adv_norm
             v_h0_batch = v_states_all[0].unsqueeze(0)
-            if self.global_reward:
-                value_alive_masks_batch = None
-            else:
-                value_alive_masks_batch = build_alive_mask_matrix(
-                    batch_data,
-                    self.num_agents,
-                    self.device,
-                )
 
         # === Policy Updates (Per Agent) ===
         for agent_id in range(self.num_agents):
@@ -566,10 +530,7 @@ class rMAPPOAlgorithm:
                     rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, 
                     available_actions=avail_actions_batch_merged, prev_actions=prev_actions_chunked
                 )
-                if self.global_reward:
-                    adv_target = global_adv_batch
-                else:
-                    adv_target = global_adv_batch[:, agent_id]
+                adv_target = global_adv_batch
 
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 
@@ -613,18 +574,10 @@ class rMAPPOAlgorithm:
         for _ in range(self.ppo_epochs):
              new_vals, _ = self.value_net(global_obs_batch, v_h0_batch, global_masks_batch, prev_actions=global_prev_actions_batch)
              
-             if self.global_reward:
-                # val_loss = F.mse_loss(new_vals.squeeze(1).squeeze(-1), global_ret_batch)
-                val_error = (new_vals.squeeze(1).squeeze(-1) - global_ret_batch) ** 2
-             else:
-                # val_loss = F.mse_loss(new_vals.squeeze(1), global_ret_batch)
-                val_error = (new_vals.squeeze(1) - global_ret_batch) ** 2
+             val_error = (new_vals.squeeze(1).squeeze(-1) - global_ret_batch) ** 2
              
              # Masked Value Loss
-             if not self.global_reward:
-                 active_masks_batch_val = active_masks_batch.unsqueeze(1) * value_alive_masks_batch
-             else:
-                 active_masks_batch_val = active_masks_batch
+             active_masks_batch_val = active_masks_batch
 
              val_loss = (val_error * active_masks_batch_val).sum() / (active_masks_batch_val.sum() + 1e-8)
              
@@ -682,12 +635,11 @@ class rMAPPOAlgorithm:
                 global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
 
                 # Rewards - Direct GPU tensor creation
-                if self.global_reward:
-                    rewards_seq = torch.tensor([sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
-                                              dtype=torch.float32, device=self.device)
-                else:
-                    rewards_list = [[t['bold_r_t'].get(i, 0.0) for i in range(self.num_agents)] for t in traj]
-                    rewards_seq = torch.tensor(rewards_list, dtype=torch.float32, device=self.device)
+                rewards_seq = torch.tensor(
+                    [sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
+                    dtype=torch.float32,
+                    device=self.device,
+                )
 
                 # Dones
                 team_dones = build_team_done_sequence(traj)
@@ -725,49 +677,22 @@ class rMAPPOAlgorithm:
                     
                     all_values, _ = self.value_net(extended_obs, v_h0, extended_masks, prev_actions=joint_prev_actions)
                     
-                    if self.global_reward:
-                        values = all_values[:-1].view(-1)
-                        next_val = all_values[-1].item() * last_mask
-                        
-                        advantages, returns = compute_gae(
-                            rewards_seq.tolist(),
-                            values.tolist(),
-                            next_val,
-                            dones_seq.tolist(),
-                            self.gamma,
-                            self.gae_lambda,
-                        )
-                        
-                        # Store in transitions
-                        for t_idx, t in enumerate(traj):
-                            t['advantages'] = advantages[t_idx]
-                            t['returns'] = returns[t_idx]
-                    else:
-                        values = all_values[:-1].view(-1, self.num_agents)
-                        next_val = all_values[-1].view(-1, self.num_agents) * last_mask
-                        
-                        # Compute per-agent GAE
-                        for agent_i in range(self.num_agents):
-                            agent_rewards = rewards_seq[:, agent_i].tolist()
-                            agent_vals = values[:, agent_i].tolist()
-                            agent_next = next_val[0, agent_i].item()
-                            
-                            adv, ret = compute_gae(
-                                agent_rewards,
-                                agent_vals,
-                                agent_next,
-                                dones_seq.tolist(),
-                                self.gamma,
-                                self.gae_lambda,
-                            )
-                            
-                            # Store in transitions
-                            for t_idx, t in enumerate(traj):
-                                if 'advantages' not in t:
-                                    t['advantages'] = {}
-                                    t['returns'] = {}
-                                t['advantages'][agent_i] = adv[t_idx]
-                                t['returns'][agent_i] = ret[t_idx]
+                    values = all_values[:-1].view(-1)
+                    next_val = all_values[-1].item() * last_mask
+
+                    advantages, returns = compute_gae(
+                        rewards_seq.tolist(),
+                        values.tolist(),
+                        next_val,
+                        dones_seq.tolist(),
+                        self.gamma,
+                        self.gae_lambda,
+                    )
+
+                    # Store in transitions
+                    for t_idx, t in enumerate(traj):
+                        t['advantages'] = advantages[t_idx]
+                        t['returns'] = returns[t_idx]
             
             # 3. Create chunks from trajectories with Padding
             all_chunks = []

@@ -4,7 +4,7 @@
 network:
   hidden_dim: 64
   lr_actor: 5.0e-4
-  lr_bridge: 1.0e-3 # default: 1e-3
+  lr_bridge: 5.0e-4 # default: 1e-3
   lr_critic: 5.0e-4 # default: 1e-3
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
@@ -15,6 +15,7 @@ algorithm:
   gamma: 0.99
   gae_lambda: 0.95
   rnn_chunk_length: 10 # 원래 50
+  global_reward: true  # false: use individual reward targets when available
   clip_epsilon: 0.1 # clip_range 0.1 as the SMACv2 paper
   entropy_coef: 0.01
   value_coef: 0.5

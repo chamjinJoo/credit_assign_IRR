@@ -22,9 +22,13 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
     def __init__(self, *args: Any, **kwargs: Any):
         super().__init__(*args, **kwargs)
 
-        # q_pci uses a scalar team-value bridge instead of the vector reward bridge.
+        # q_pci uses a team-value bridge when global_reward=True, and a vector bridge otherwise.
         self.bridge_model = (
-            CausalBridgeNetwork(hidden_dim=self.hidden_dim, action_dim=self.action_dim, num_agents=1)
+            CausalBridgeNetwork(
+                hidden_dim=self.hidden_dim,
+                action_dim=self.action_dim,
+                num_agents=self.bridge_output_dim,
+            )
             if self.causal_lambda > 0.0
             else None
         )
@@ -80,6 +84,11 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
     def _team_rewards(self, rollout: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         return rollout["rewards"].sum(axis=-1) / self.num_agents
 
+    def _reward_signal(self, rollout: Dict[str, jnp.ndarray]) -> jnp.ndarray:
+        if self.global_reward:
+            return self._team_rewards(rollout)
+        return rollout["rewards"]
+
     def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
         if env_advantages.ndim == 2:
             return jnp.repeat(env_advantages[..., None], self.num_agents, axis=-1)
@@ -93,13 +102,15 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
             return jnp.concatenate([values[1:], last_value[None, ...]], axis=0)
 
         per_agent_next = jnp.concatenate([values[1:], last_value[None, ...]], axis=0)
-        return per_agent_next.mean(axis=-1)
+        if self.global_reward:
+            return per_agent_next.mean(axis=-1)
+        return per_agent_next
 
     def _team_bootstrap_targets(self, rollout: Dict[str, jnp.ndarray]) -> jnp.ndarray:
-        team_rewards = self._team_rewards(rollout)
+        rewards = self._reward_signal(rollout)
         dones = rollout["dones"].astype(jnp.float32)
         next_values = self._team_bootstrap_values(rollout)
-        return team_rewards + self.gamma * next_values * (1.0 - dones)
+        return rewards + self.gamma * next_values * (1.0 - dones)
 
     def _q_bridge_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
         time_steps, n_envs = rollout["actions"].shape[:2]
@@ -119,12 +130,21 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
             hidden_others = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
 
         actions = rollout["actions"].reshape(-1)
-        team_targets = self._team_bootstrap_targets(rollout).reshape(-1)
-        if self.normalize_returns:
-            mean = jnp.mean(team_targets)
-            std = jnp.clip(jnp.std(team_targets), a_min=1.0e-6)
-            team_targets = (team_targets - mean) / std
-        targets = jnp.repeat(team_targets, self.num_agents, axis=0)
+        bootstrap_targets = self._team_bootstrap_targets(rollout)
+        if self.global_reward:
+            team_targets = bootstrap_targets.reshape(-1, 1)
+            if self.normalize_returns:
+                mean = jnp.mean(team_targets, axis=0, keepdims=True)
+                std = jnp.clip(jnp.std(team_targets, axis=0, keepdims=True), a_min=1.0e-6)
+                team_targets = (team_targets - mean) / std
+            targets = jnp.repeat(team_targets, self.num_agents, axis=0)
+        else:
+            team_targets = bootstrap_targets.reshape(-1, self.num_agents)
+            if self.normalize_returns:
+                mean = jnp.mean(team_targets, axis=0, keepdims=True)
+                std = jnp.clip(jnp.std(team_targets, axis=0, keepdims=True), a_min=1.0e-6)
+                team_targets = (team_targets - mean) / std
+            targets = jnp.repeat(team_targets, self.num_agents, axis=0)
 
         return {
             "z": z.astype(jnp.float32),
@@ -158,14 +178,14 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         probs: jnp.ndarray,
         actions: jnp.ndarray,
         avail_actions: jnp.ndarray,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         actual_pred = self.bridge_state.apply_fn(
             {"params": bridge_params},
             local_obs,
             others_obs,
             hidden_others,
             actions,
-        ).squeeze(-1)
+        )
 
         all_actions = jnp.arange(self.action_dim, dtype=jnp.int32)
 
@@ -177,19 +197,20 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
                 others_obs,
                 hidden_others,
                 tiled,
-            ).squeeze(-1)
+            )
 
-        q_values = jax.vmap(predict_one_action)(all_actions).transpose(1, 0)
-        v_bridge = jnp.sum(probs * q_values, axis=-1)
+        q_values = jax.vmap(predict_one_action)(all_actions).transpose(1, 0, 2)
+        v_bridge = jnp.sum(probs[..., None] * q_values, axis=1).sum(axis=-1)
 
         factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
         probs_counterfactual = probs * factual_mask * avail_actions
         renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
         renormalized_probs = probs_counterfactual / jnp.clip(renorm, a_min=1.0e-8)
-        baseline = jnp.sum(renormalized_probs * q_values, axis=-1)
-        baseline = jnp.where(renorm.squeeze(-1) <= 1.0e-8, actual_pred, baseline)
+        baseline = jnp.sum(renormalized_probs[..., None] * q_values, axis=1)
+        no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
+        baseline = jnp.where(no_valid_cf[:, None], actual_pred, baseline)
 
-        causal_advantages = actual_pred - baseline
+        causal_advantages = jnp.sum(actual_pred - baseline, axis=-1)
         return actual_pred, q_values, v_bridge, causal_advantages
 
     @partial(jax.jit, static_argnums=0)
@@ -205,7 +226,7 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
                 batch["w"],
                 batch["x_hid"],
                 batch["actions"],
-            ).squeeze(-1)
+            )
             residuals = batch["targets"] - preds
 
             z_norm = self._standardize(batch["z"])
@@ -228,8 +249,8 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
 
             eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
             reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
-            solved = jnp.linalg.solve(reg_gram, residuals[:, None])
-            per_sample_loss = (residuals[:, None] * (gram @ solved)).sum(axis=-1)
+            solved = jnp.linalg.solve(reg_gram, residuals)
+            per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
             q_bridge_loss = jnp.mean(per_sample_loss)
 
             diag = jnp.diag(gram)
@@ -361,12 +382,12 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         bridge_metrics = self.update_causal_networks(rollout)
         metrics.update(bridge_metrics)
 
-        team_rewards = self._team_rewards(rollout)
+        rewards = self._reward_signal(rollout)
         values = rollout["values"]
         last_value = rollout["last_value"]
 
         env_advantages, returns = compute_gae(
-            team_rewards,
+            rewards,
             values,
             last_value,
             rollout["dones"],

@@ -218,7 +218,8 @@ class rPCIAlgorithm:
         elif self.use_value_parameter_sharing:
             # one shared value network (IPPO-style)
             self.shared_value_net = (
-                RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, action_dim=action_dim, num_agents=1)
+                RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, 
+                                out_dim=1, action_dim=action_dim, num_agents=1)
                 if use_recurrent_policy
                 else FeedForwardValueNetworkCompat(
                     obs_dim=obs_dim,
@@ -1498,7 +1499,7 @@ class rPCIAlgorithm:
             T = len(traj)
             N = self.num_agents
             team_dones_seq_list = build_team_done_sequence(traj)
-            raw_team_rewards = torch.tensor(
+            raw_team_rewards = torch.tensor( 
                 [self._global_reward_from_dict(t['bold_r_t']) for t in traj],
                 dtype=torch.float32,
                 device=self.device,

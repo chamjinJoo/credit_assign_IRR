@@ -362,10 +362,7 @@ $$
 
 $$
 y_t^{\text{boot}}
-=
-\frac{r_t^{\text{team}}}{N}
-+
-\gamma\,\bar V_{t+1}
+=r_t^{\text{team}}+\gamma\,\bar V_{t+1}
 $$
 
 여기서 \(\bar V_{t+1}\)는 각 agent local critic의 next value를 평균낸 값이다.
