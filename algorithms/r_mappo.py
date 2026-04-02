@@ -8,130 +8,27 @@ from collections import defaultdict
 import random
 
 from algorithms.networks import (
-    FeedForwardPolicyNetworkCompat,
     FeedForwardValueNetworkCompat,
-    RNNPolicyNetwork,
     RNNValueNetwork,
+)
+from algorithms.agent_common import RecurrentPolicyAgent
+from algorithms.common import (
+    build_available_actions_batch,
+    build_transition_kwargs,
+    chunk_sequence,
+    compute_gae,
+    concatenate_agent_observations,
+    prepare_env_info,
+    normalize_advantages,
+    split_action_and_log_probs,
 )
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
-class rMAPPOAgent:
+class rMAPPOAgent(RecurrentPolicyAgent):
     """
     Single agent for MAPPO-RNN.
     """
-    def __init__(
-        self,
-        agent_id: int,
-        obs_dim: int,
-        action_dim: int,
-        hidden_dim: int = 64,
-        recurrent_N: int = 1,
-        lr_actor: float = 3e-4,
-        device: str = "cpu",
-        use_recurrent_policy: bool = True,
-    ):
-        self.agent_id = agent_id
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-        self.recurrent_N = recurrent_N
-        self.device = device
-        self.use_recurrent_policy = use_recurrent_policy
-        
-        self.policy_net = (
-            RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
-            if use_recurrent_policy
-            else FeedForwardPolicyNetworkCompat(obs_dim, action_dim, hidden_dim)
-        )
-        self.policy_net.to(device)
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
-        
-        self.rnn_state_policy = None
-        # Previous action tracking for (obs, action) history encoding
-        self.prev_action = None
-        self.prev_actions_batch = None
-        self.reset_rnn_state()
-        
-    def reset_rnn_state(self):
-        self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
-        self.prev_action = torch.zeros(self.action_dim).to(self.device)
-        
-    def reset_rnn_states_batch(self, n_envs: int):
-        """Reset RNN states for multiple environments (batch mode)"""
-        self.n_envs = n_envs
-        self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim).to(self.device)
-        self.prev_actions_batch = torch.zeros(n_envs, self.action_dim).to(self.device)
-
-    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, available_actions: torch.Tensor = None, return_rnn_state=True) -> Tuple[int, float, Optional[torch.Tensor]]:
-        with torch.no_grad():
-            obs_in = obs.unsqueeze(0) if obs.dim() == 1 else obs 
-            
-            if masks is None:
-                 # Called from trainer (evaluation)
-                 batch_size = obs_in.size(0)
-                 masks_in = torch.ones(batch_size, 1, device=self.device)
-                 return_rnn_state = False
-            else:
-                 masks_in = masks.unsqueeze(0) if masks.dim() == 1 else masks
-            
-            curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
-            
-            # Handle available actions
-            if available_actions is not None:
-                available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
-
-            # Prepare prev_action one-hot for RNN input
-            prev_action_onehot = self.prev_action.unsqueeze(0)  # (1, action_dim)
-
-            action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
-                obs_in, 
-                curr_rnn_state, 
-                masks_in,
-                available_actions,
-                prev_actions=prev_action_onehot
-            )
-            
-            self.rnn_state_policy = next_rnn_state.squeeze(0)
-            # Update prev_action for next timestep
-            self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
-        
-        if return_rnn_state:
-            return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone()
-        else:
-            return action.item(), log_prob.item()
-
-    def get_action_batch(
-        self,
-        obs_batch: torch.Tensor,
-        masks_batch: torch.Tensor,
-        available_actions_batch: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Get actions for a batch of environments.
-        """
-        with torch.no_grad():
-            # Optimized: Avoid unnecessary clone at start
-            prev_states = self.rnn_states_policy_batch
-            
-            # Prepare prev_actions one-hot for RNN input
-            prev_actions_onehot = self.prev_actions_batch  # (n_envs, action_dim)
-            
-            action, log_prob, next_states = self.policy_net.get_action_and_log_prob(
-                obs_batch,
-                prev_states,  # Pass directly
-                masks_batch,
-                available_actions_batch,
-                prev_actions=prev_actions_onehot
-            )
-
-            # Clone after network call (saves one allocation)
-            prev_states_copy = prev_states.clone()
-
-            self.rnn_states_policy_batch = next_states
-            # Update prev_actions for next timestep
-            self.prev_actions_batch = F.one_hot(action, self.action_dim).float()
-
-        return action, log_prob, prev_states_copy
+    pass
 
 
 class rMAPPOAlgorithm:
@@ -249,13 +146,6 @@ class rMAPPOAlgorithm:
         # Track done status for each agent in each environment
         self.last_dones_batch = [{i: False for i in range(self.num_agents)} for _ in range(n_envs)]
 
-    def _concatenate_observations(self, observations: Dict[int, torch.Tensor]) -> torch.Tensor:
-        sorted_obs = [observations[i] for i in range(self.num_agents) if i in observations]
-        if not sorted_obs:
-            device = next(self.agents[0].policy_net.parameters()).device
-            return torch.zeros(self.num_agents * self.obs_dim, device=device)
-        return torch.cat(sorted_obs, dim=-1)
-
     def _update_central_value(self, global_obs: torch.Tensor, mask: torch.Tensor, global_prev_action_onehot: Optional[torch.Tensor] = None) -> Tuple[float, torch.Tensor]:
         with torch.no_grad():
             curr_rnn_state = self.rnn_state_value.unsqueeze(0)
@@ -291,7 +181,14 @@ class rMAPPOAlgorithm:
         # 1. Global Observations for Central Critic
         global_obs_list = []
         for i in range(n_envs):
-            global_obs_list.append(self._concatenate_observations(observations_batch[i]))
+            global_obs_list.append(
+                concatenate_agent_observations(
+                    observations_batch[i],
+                    self.num_agents,
+                    self.obs_dim,
+                    self.device,
+                )
+            )
         global_obs_batch = torch.stack(global_obs_list).to(self.device)
         
         # Construct global prev_actions for batch
@@ -407,18 +304,9 @@ class rMAPPOAlgorithm:
         available_actions: Optional[Dict[int, List[int]]] = None
     ):
         """Store transition from a specific parallel environment."""
-        # Extract actions and log_probs separately
-        actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
-        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
-        
-        # Extract hidden states/masks for this environment
-        hidden_states = self.temp_hidden_states_batch[env_idx]
-        masks = self.temp_masks_batch[env_idx]
-        
-        if info is None: info = {}
-        info['env_id'] = env_idx
-        
-        self.buffer_manager.store_transition(
+        actions_only, log_probs_dict = split_action_and_log_probs(actions)
+        info = prepare_env_info(info, env_idx)
+        kwargs = build_transition_kwargs(
             prev_observations=prev_observations,
             prev_rewards=prev_rewards,
             prev_actions=prev_actions,
@@ -427,12 +315,14 @@ class rMAPPOAlgorithm:
             rewards=rewards,
             next_observations=next_observations,
             dones=dones,
-            masks=masks,
-            hidden_states=hidden_states,
+            masks=self.temp_masks_batch[env_idx],
+            hidden_states=self.temp_hidden_states_batch[env_idx],
             available_actions=available_actions,
             log_probs=log_probs_dict,
-            info=info
+            info=info,
+            env_id=env_idx if self.use_episode_buffer else None,
         )
+        self.buffer_manager.store_transition(**kwargs)
         
         if self.use_episode_buffer:
             if any(dones.values()):
@@ -471,7 +361,12 @@ class rMAPPOAlgorithm:
         mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
         
         # Central Value Step
-        global_obs = self._concatenate_observations(observations)
+        global_obs = concatenate_agent_observations(
+            observations,
+            self.num_agents,
+            self.obs_dim,
+            self.device,
+        )
         _, v_state = self._update_central_value(global_obs, mask_tensor0)
         
         for agent_id, obs in observations.items():
@@ -494,59 +389,34 @@ class rMAPPOAlgorithm:
     def store_transition(self, **kwargs):
         if 'dones' in kwargs:
             self.last_dones = kwargs['dones'].copy()
-        
+
         kwargs['masks'] = self.temp_masks
         kwargs['hidden_states'] = self.temp_hidden_states
-        # Extract log_probs from temp storage if not already provided
         if 'log_probs' not in kwargs:
             kwargs['log_probs'] = self.temp_log_probs
         self.buffer_manager.store_transition(**kwargs)
-
-    def compute_gae(self, rewards, values, next_value, dones):
-        advantages = []
-        returns = []
-        gae = 0
-        for step in reversed(range(len(rewards))):
-            if step == len(rewards) - 1:
-                next_non_terminal = 1.0 - dones[step]
-                next_val = next_value
-            else:
-                next_non_terminal = 1.0 - dones[step]
-                next_val = values[step + 1]
-            
-            delta = rewards[step] + self.gamma * next_val * next_non_terminal - values[step]
-            gae = delta + self.gamma * self.gae_lambda * next_non_terminal * gae
-            advantages.insert(0, gae)
-            returns.insert(0, gae + values[step])
-        return advantages, returns
-
-    def _chunk_sequence(self, tensor: torch.Tensor, chunk_len: int) -> torch.Tensor:
-        T = tensor.size(0)
-        num_chunks = T // chunk_len
-        if num_chunks == 0:
-            return tensor.unsqueeze(1)
-            
-        tensor = tensor[:num_chunks * chunk_len]
-        shape = (num_chunks, chunk_len) + tensor.shape[1:]
-        tensor = tensor.view(shape)
-        
-        permute_dims = (1, 0) + tuple(range(2, tensor.dim()))
-        return tensor.permute(permute_dims).contiguous()
 
     def update_agents(self, batch_data: List[Dict]) -> Dict[str, float]:
         agent_losses = defaultdict(float)
         
         # === Prepare Global Data ===
-        global_obs_seq = torch.stack([self._concatenate_observations(t['bold_o_t']) for t in batch_data]).to(self.device)
+        global_obs_seq = torch.stack([
+            concatenate_agent_observations(
+                t['bold_o_t'],
+                self.num_agents,
+                self.obs_dim,
+                self.device,
+            )
+            for t in batch_data
+        ]).to(self.device)
         global_masks_seq = torch.tensor([t['masks'][0] for t in batch_data], device=self.device).unsqueeze(1)
         
         # Extract available actions
-        available_actions_batch = {}
-        if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
-            for agent_id in range(self.num_agents):
-                if agent_id in batch_data[0]['available_actions']:
-                     avail_list = [t['available_actions'][agent_id] for t in batch_data]
-                     available_actions_batch[agent_id] = torch.tensor(avail_list, dtype=torch.float32, device=self.device)
+        available_actions_batch = build_available_actions_batch(
+            batch_data,
+            self.num_agents,
+            self.device,
+        )
         
         # Central Value Hidden States
         v_states_all = torch.stack([t['hidden_states'][0][1] for t in batch_data]).to(self.device)
@@ -565,12 +435,12 @@ class rMAPPOAlgorithm:
         # Normalize Advantages
         if self.global_reward:
             if all_advantages.numel() > 1:
-                global_adv_norm = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+                global_adv_norm = normalize_advantages(all_advantages)
             else:
                 global_adv_norm = torch.zeros_like(all_advantages)
         else:
             if all_advantages.numel() > 1:
-                global_adv_norm = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+                global_adv_norm = normalize_advantages(all_advantages)
             else:
                 global_adv_norm = torch.zeros_like(all_advantages)
 
@@ -580,24 +450,24 @@ class rMAPPOAlgorithm:
         num_chunks = T_total // chunk_len
         
         if num_chunks > 0:
-            global_obs_batch = self._chunk_sequence(global_obs_seq, chunk_len)
-            global_masks_batch = self._chunk_sequence(global_masks_seq, chunk_len)
+            global_obs_batch = chunk_sequence(global_obs_seq, chunk_len)
+            global_masks_batch = chunk_sequence(global_masks_seq, chunk_len)
 
             # Active Masks (Padding Mask)
             if 'active_mask' in batch_data[0]:
                 active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1) # (T, 1)
-                active_masks_chunked = self._chunk_sequence(active_masks, chunk_len) # (L, B, 1)
+                active_masks_chunked = chunk_sequence(active_masks, chunk_len) # (L, B, 1)
                 active_masks_batch = active_masks_chunked.reshape(-1)
             else:
                 active_masks = torch.ones(T, 1, device=self.device)
-                active_masks_chunked = self._chunk_sequence(active_masks, chunk_len)
+                active_masks_chunked = chunk_sequence(active_masks, chunk_len)
                 active_masks_batch = active_masks_chunked.reshape(-1)
             if self.global_reward:
-                global_ret_batch = self._chunk_sequence(all_returns, chunk_len).reshape(-1)
-                global_adv_batch = self._chunk_sequence(global_adv_norm, chunk_len).reshape(-1)
+                global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1)
+                global_adv_batch = chunk_sequence(global_adv_norm, chunk_len).reshape(-1)
             else:
-                global_ret_batch = self._chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
-                global_adv_batch = self._chunk_sequence(global_adv_norm, chunk_len).reshape(-1, self.num_agents)
+                global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
+                global_adv_batch = chunk_sequence(global_adv_norm, chunk_len).reshape(-1, self.num_agents)
             
             chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
             v_h0_batch = v_states_all[chunk_indices] 
@@ -625,9 +495,9 @@ class rMAPPOAlgorithm:
             p_states_all = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device)
             
             if num_chunks > 0:
-                rnn_obs_batch = self._chunk_sequence(agent_obs, chunk_len)
-                rnn_masks_batch = self._chunk_sequence(masks_batch, chunk_len)
-                my_actions_batch = self._chunk_sequence(my_actions, chunk_len).reshape(-1)
+                rnn_obs_batch = chunk_sequence(agent_obs, chunk_len)
+                rnn_masks_batch = chunk_sequence(masks_batch, chunk_len)
+                my_actions_batch = chunk_sequence(my_actions, chunk_len).reshape(-1)
                 p_h0_batch = p_states_all[chunk_indices]
                 
                 # Construct prev_actions one-hot sequence from buffer
@@ -636,11 +506,11 @@ class rMAPPOAlgorithm:
                     dtype=torch.long, device=self.device
                 )
                 prev_actions_onehot_seq = F.one_hot(prev_actions_raw, self.action_dim).float()
-                prev_actions_chunked = self._chunk_sequence(prev_actions_onehot_seq, chunk_len)
+                prev_actions_chunked = chunk_sequence(prev_actions_onehot_seq, chunk_len)
                 
                 avail_actions_batch_merged = None
                 if agent_id in available_actions_batch:
-                    avail_actions_chunked = self._chunk_sequence(available_actions_batch[agent_id], chunk_len)
+                    avail_actions_chunked = chunk_sequence(available_actions_batch[agent_id], chunk_len)
                     avail_actions_batch_merged = avail_actions_chunked.reshape(-1, avail_actions_chunked.size(-1))
             else:
                 rnn_obs_batch = agent_obs.unsqueeze(1)
@@ -663,7 +533,7 @@ class rMAPPOAlgorithm:
             # Use stored log_probs from rollout (not recalculated)
             old_log_probs_raw = torch.tensor([t['log_probs'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             if num_chunks > 0:
-                old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
+                old_log_probs = chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
             else:
                 old_log_probs = old_log_probs_raw
         
@@ -711,7 +581,7 @@ class rMAPPOAlgorithm:
         joint_prev_actions_batch_raw = torch.cat(agent_prev_actions_list, dim=-1) # (T_total, num_agents * action_dim)
         
         if num_chunks > 0:
-            global_prev_actions_batch = self._chunk_sequence(joint_prev_actions_batch_raw, chunk_len) # (L, B, num_agents * action_dim)
+            global_prev_actions_batch = chunk_sequence(joint_prev_actions_batch_raw, chunk_len) # (L, B, num_agents * action_dim)
         else:
             global_prev_actions_batch = joint_prev_actions_batch_raw.unsqueeze(1) # (T, 1, num_agents * action_dim)
 
@@ -775,7 +645,15 @@ class rMAPPOAlgorithm:
                 # Extract data for this trajectory
                 T = len(traj)
                 # Optimized: Stack on CPU first, then single GPU transfer
-                global_obs_list = [self._concatenate_observations(t['bold_o_t']) for t in traj]
+                global_obs_list = [
+                    concatenate_agent_observations(
+                        t['bold_o_t'],
+                        self.num_agents,
+                        self.obs_dim,
+                        self.device,
+                    )
+                    for t in traj
+                ]
                 global_obs_seq = torch.stack(global_obs_list).to(self.device, non_blocking=True)
                 global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
 
@@ -795,7 +673,12 @@ class rMAPPOAlgorithm:
 
                 # Compute values for entire trajectory
                 with torch.no_grad():
-                    last_next_obs = self._concatenate_observations(traj[-1]['next_observations']).to(self.device, non_blocking=True)
+                    last_next_obs = concatenate_agent_observations(
+                        traj[-1]['next_observations'],
+                        self.num_agents,
+                        self.obs_dim,
+                        self.device,
+                    ).to(self.device, non_blocking=True)
                     last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
                     
                     extended_obs = torch.cat([global_obs_seq.unsqueeze(1), 
@@ -821,11 +704,13 @@ class rMAPPOAlgorithm:
                         values = all_values[:-1].view(-1)
                         next_val = all_values[-1].item() * last_mask
                         
-                        advantages, returns = self.compute_gae(
+                        advantages, returns = compute_gae(
                             rewards_seq.tolist(),
                             values.tolist(),
                             next_val,
-                            dones_seq.tolist()
+                            dones_seq.tolist(),
+                            self.gamma,
+                            self.gae_lambda,
                         )
                         
                         # Store in transitions
@@ -842,11 +727,13 @@ class rMAPPOAlgorithm:
                             agent_vals = values[:, agent_i].tolist()
                             agent_next = next_val[0, agent_i].item()
                             
-                            adv, ret = self.compute_gae(
+                            adv, ret = compute_gae(
                                 agent_rewards,
                                 agent_vals,
                                 agent_next,
-                                dones_seq.tolist()
+                                dones_seq.tolist(),
+                                self.gamma,
+                                self.gae_lambda,
                             )
                             
                             # Store in transitions

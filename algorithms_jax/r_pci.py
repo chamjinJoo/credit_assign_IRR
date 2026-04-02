@@ -276,9 +276,9 @@ class JAXRPCIAlgorithm:
         env_norm = jnp.stack(env_norm_agents, axis=-1)
         pci_res = jnp.stack(pci_res_agents, axis=-1)
         info = {
-            "env_adv_mean": float(jnp.mean(env_norm)),
-            "pci_adv_res_mean": float(jnp.mean(pci_res)),
-            "combined_adv_mean": float(jnp.mean(combined_adv)),
+            "env_adv_std": float(jnp.std(env_norm)),
+            "pci_adv_res_std": float(jnp.std(pci_res)),
+            "pci_bonus_std": float(jnp.std(causal_lambda * pci_res)),
             "combined_adv_std": float(jnp.std(combined_adv)),
         }
         return combined_adv, info

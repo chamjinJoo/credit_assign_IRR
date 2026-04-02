@@ -7,7 +7,7 @@ config="configs/smacv2.yaml"
 
 # model setting
 model="q-pci"
-causal_lambda=0.5
+causal_lambda=0.1
 clip_delta=0.0
 use_centralized_critic=true
 use_value_parameter_sharing=true

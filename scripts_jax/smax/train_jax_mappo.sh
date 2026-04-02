@@ -24,6 +24,7 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
+# export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 python main.py \
   --env SMAX \

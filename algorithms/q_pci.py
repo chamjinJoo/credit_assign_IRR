@@ -2,12 +2,22 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-import numpy as np
-import random
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
-from torch.distributions import Categorical
-from algorithms.networks.rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
+from algorithms.agent_common import RecurrentActorCriticAgent
+from algorithms.common import (
+    build_agent_masks_batch,
+    build_available_actions_batch,
+    build_transition_kwargs,
+    chunk_sequence,
+    compute_gae,
+    concatenate_agent_observations,
+    move_modules_to_device,
+    normalize_advantages,
+    prepare_env_info,
+    split_action_and_log_probs,
+)
+from algorithms.networks.rnn import RNNLayer, RNNValueNetwork
 from algorithms.networks.mlp import MLPBase
 from algorithms.networks import OutcomeBridgeNetwork
 from utils.buffer import TransitionBuffer, EpisodeBuffer
@@ -113,129 +123,28 @@ class ReturnBridgeNetwork(nn.Module):
 # Agent (simplified: no value network)
 # =============================================================================
 
-class qPCIAgent:
-    def __init__(self, agent_id: int, obs_dim: int, action_dim: int, 
-                 hidden_dim: int = 64, recurrent_N: int = 1, 
-                 lr_actor: float = 3e-4, lr_critic: float = 3e-4):
-        self.agent_id = agent_id
-        self.obs_dim = obs_dim
-        self.action_dim = action_dim
-        self.hidden_dim = hidden_dim
-        self.recurrent_N = recurrent_N
-        
-        self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
-        self.value_net = RNNValueNetwork(obs_dim, hidden_dim, recurrent_N, action_dim=action_dim, num_agents=1)
-        
-        self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr_actor)
-        self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
-        
-        # Internal hidden state maintenance
-        self.rnn_state_policy = None
-        self.rnn_state_value = None
-        self.prev_action = None
-        self.prev_actions_batch = None
-        
-        self.reset_rnn_state()
-        
-        # Batch processing support
-        self.n_envs = 1
-        self.rnn_states_policy_batch = None
-        self.rnn_states_value_batch = None
-
-    def reset_rnn_state(self, device=None):
-        if device is None: device = self.policy_net.output_layer.weight.device
-        self.rnn_state_policy = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
-        self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim, device=device)
-        self.prev_action = torch.zeros(self.action_dim, device=device)
-    
-    def reset_rnn_states_batch(self, n_envs: int, device=None):
-        if device is None: device = self.policy_net.output_layer.weight.device
-        self.n_envs = n_envs
-        self.rnn_states_policy_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
-        self.rnn_states_value_batch = torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=device)
-        self.prev_actions_batch = torch.zeros(n_envs, self.action_dim, device=device)
-
-    def get_action(self, obs: torch.Tensor, masks: torch.Tensor = None, 
-                   available_actions: torch.Tensor = None) -> Tuple[int, float, Optional[torch.Tensor]]:
-        with torch.no_grad():
-            obs_in = obs.unsqueeze(0) if obs.dim() == 1 else obs
-            
-            if masks is None:
-                batch_size = obs_in.size(0)
-                masks_in = torch.ones(batch_size, 1, device=self.policy_net.output_layer.weight.device)
-                return_rnn_state = False
-            else:
-                masks_in = masks.unsqueeze(0) if masks.dim() == 1 else masks
-                return_rnn_state = True
-
-            curr_rnn_state = self.rnn_state_policy.unsqueeze(0)
-            
-            if available_actions is not None:
-                available_actions = available_actions.unsqueeze(0) if available_actions.dim() == 1 else available_actions
-
-            prev_action_onehot = self.prev_action.unsqueeze(0)
-
-            action, log_prob, next_rnn_state = self.policy_net.get_action_and_log_prob(
-                obs_in, curr_rnn_state, masks_in, available_actions,
-                prev_actions=prev_action_onehot
-            )
-            
-            self.rnn_state_policy = next_rnn_state.squeeze(0)
-            self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
-            
-        if return_rnn_state:
-            return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone()
-        else:
-            return action.item(), log_prob.item()
-
-    def get_action_batch(
+class qPCIAgent(RecurrentActorCriticAgent):
+    def __init__(
         self,
-        obs_batch: torch.Tensor,
-        masks_batch: torch.Tensor,
-        available_actions_batch: Optional[torch.Tensor] = None
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        with torch.no_grad():
-            prev_states = self.rnn_states_policy_batch
-            prev_actions_onehot = self.prev_actions_batch
-
-            actions, log_probs, next_states = self.policy_net.get_action_and_log_prob(
-                obs_batch, prev_states, masks_batch, available_actions_batch,
-                prev_actions=prev_actions_onehot
-            )
-
-            prev_states_copy = prev_states.clone()
-            self.rnn_states_policy_batch = next_states
-            self.prev_actions_batch = F.one_hot(actions, self.action_dim).float()
-
-        return actions, log_probs, prev_states_copy
-
-    def get_value(self, obs: torch.Tensor, masks: torch.Tensor, 
-                  prev_action_onehot: torch.Tensor = None) -> Tuple[float, torch.Tensor]:
-        with torch.no_grad():
-            curr_rnn_state = self.rnn_state_value.unsqueeze(0)
-            if prev_action_onehot is None:
-                prev_action_onehot = self.prev_action.unsqueeze(0)
-            value, next_rnn_state = self.value_net(
-                obs.unsqueeze(0), curr_rnn_state, masks.unsqueeze(0),
-                prev_actions=prev_action_onehot
-            )
-            self.rnn_state_value = next_rnn_state.squeeze(0)
-        return value.item(), curr_rnn_state.squeeze(0).clone()
-
-    def get_value_batch(self, obs_batch: torch.Tensor, masks_batch: torch.Tensor,
-                        prev_actions_onehot: torch.Tensor = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        with torch.no_grad():
-            prev_states = self.rnn_states_value_batch
-            if prev_actions_onehot is None:
-                prev_actions_onehot = self.prev_actions_batch
-            values, next_states = self.value_net(
-                obs_batch, prev_states, masks_batch,
-                prev_actions=prev_actions_onehot
-            )
-            prev_states_copy = prev_states.clone()
-            self.rnn_states_value_batch = next_states
-        return values.squeeze(-1), prev_states_copy
-
+        agent_id: int,
+        obs_dim: int,
+        action_dim: int,
+        hidden_dim: int = 64,
+        recurrent_N: int = 1,
+        lr_actor: float = 3e-4,
+        lr_critic: float = 3e-4,
+    ):
+        super().__init__(
+            agent_id=agent_id,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
+            hidden_dim=hidden_dim,
+            recurrent_N=recurrent_N,
+            lr_actor=lr_actor,
+            lr_critic=lr_critic,
+            device=None,
+            use_recurrent_policy=True,
+        )
 
 # =============================================================================
 # Algorithm
@@ -400,19 +309,22 @@ class qPCIAlgorithm:
     
     def _move_networks_to_device(self):
         for agent in self.agents.values():
-            agent.policy_net.to(self.device)
+            move_modules_to_device(self.device, agent.policy_net)
         if self.use_centralized_critic:
-            self.value_net.to(self.device)
+            move_modules_to_device(self.device, self.value_net)
         elif self.use_value_parameter_sharing:
-            self.shared_value_net.to(self.device)
+            move_modules_to_device(self.device, self.shared_value_net)
         else:
             for agent in self.agents.values():
-                agent.value_net.to(self.device)
-        self.outcome_bridge_net.to(self.device)
-        self.kernel_z_block.to(self.device)
-        self.kernel_a_block.to(self.device)
-        self.kernel_xobs_block.to(self.device)
-        self.kernel_xhid_block.to(self.device)
+                move_modules_to_device(self.device, agent.value_net)
+        move_modules_to_device(
+            self.device,
+            self.outcome_bridge_net,
+            self.kernel_z_block,
+            self.kernel_a_block,
+            self.kernel_xobs_block,
+            self.kernel_xhid_block,
+        )
     
     def get_current_causal_lambda(self) -> float:
         if not self.causal_lambda_schedule:
@@ -516,7 +428,13 @@ class qPCIAlgorithm:
 
         # === Data preparation ===
         joint_o_prev = torch.stack([
-            self._concatenate_observations(t['bold_o_t_minus_1']) for t in batch_data
+            concatenate_agent_observations(
+                t['bold_o_t_minus_1'],
+                self.num_agents,
+                self.obs_dim,
+                self.device,
+            )
+            for t in batch_data
         ]).to(device)
         obs_batch = torch.stack([
             torch.stack(list(t['bold_o_t'].values())) for t in batch_data
@@ -811,44 +729,9 @@ class qPCIAlgorithm:
         
         return advantages, returns
 
-    def compute_gae(
-        self,
-        rewards: List[float],
-        values: List[float],
-        next_value: float,
-        dones: List[bool],
-    ) -> Tuple[List[float], List[float]]:
-        """Standard GAE with value network."""
-        advantages = []
-        returns = []
-        gae = 0
-        
-        for step in reversed(range(len(rewards))):
-            if step == len(rewards) - 1:
-                next_non_terminal = 1.0 - dones[step]
-                next_val = next_value
-            else:
-                next_non_terminal = 1.0 - dones[step]
-                next_val = values[step + 1]
-            
-            delta = rewards[step] + self.gamma * next_val * next_non_terminal - values[step]
-            gae = delta + self.gamma * self.gae_lambda * next_non_terminal * gae
-            
-            advantages.insert(0, gae)
-            returns.insert(0, gae + values[step])
-        
-        return advantages, returns
-
     # =================================================================
     # Action interfaces
     # =================================================================
-
-    def _concatenate_observations(self, observations: Dict[int, torch.Tensor]) -> torch.Tensor:
-        sorted_obs = [observations[i] for i in range(self.num_agents) if i in observations]
-        if not sorted_obs:
-            device = next(self.agents[0].policy_net.parameters()).device
-            return torch.zeros(self.num_agents * self.obs_dim, device=device)
-        return torch.cat(sorted_obs, dim=-1)
 
     def reset_agents(self):
         for agent in self.agents.values():
@@ -876,7 +759,12 @@ class qPCIAlgorithm:
         if self.use_centralized_critic:
             mask0 = 1.0 if not self.last_dones.get(0, False) else 0.0
             mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
-            global_obs = self._concatenate_observations(observations)
+            global_obs = concatenate_agent_observations(
+                observations,
+                self.num_agents,
+                self.obs_dim,
+                self.device,
+            )
             with torch.no_grad():
                 curr_rnn_state = self.rnn_state_value.unsqueeze(0)
                 agent_prev_actions = [self.agents[i].prev_action for i in range(self.num_agents)]
@@ -925,7 +813,12 @@ class qPCIAlgorithm:
 
         if self.use_centralized_critic:
             global_obs_list = [
-                self._concatenate_observations(observations_batch[env_idx])
+                concatenate_agent_observations(
+                    observations_batch[env_idx],
+                    self.num_agents,
+                    self.obs_dim,
+                    self.device,
+                )
                 for env_idx in range(n_envs)
             ]
             global_obs_batch_tensor = torch.stack(global_obs_list).to(self.device)
@@ -992,39 +885,45 @@ class qPCIAlgorithm:
                          observations, actions, rewards, next_observations, dones,
                          info=None, available_actions=None, env_id=0):
         self.last_dones = dones.copy()
-        kwargs = {
-            'prev_observations': prev_observations, 'prev_rewards': prev_rewards,
-            'prev_actions': prev_actions, 'observations': observations,
-            'actions': actions, 'rewards': rewards, 'next_observations': next_observations,
-            'dones': dones, 'masks': self.temp_masks,
-            'hidden_states': self.temp_hidden_states,
-            'available_actions': available_actions,
-            'log_probs': self.temp_log_probs, 'info': info
-        }
-        if self.use_episode_buffer:
-            kwargs['env_id'] = env_id
+        kwargs = build_transition_kwargs(
+            prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
+            observations=observations,
+            actions=actions,
+            rewards=rewards,
+            next_observations=next_observations,
+            dones=dones,
+            masks=self.temp_masks,
+            hidden_states=self.temp_hidden_states,
+            available_actions=available_actions,
+            log_probs=self.temp_log_probs,
+            info=info,
+            env_id=env_id if self.use_episode_buffer else None,
+        )
         self.buffer_manager.store_transition(**kwargs)
 
     def store_transition_from_env(self, env_idx, prev_observations, prev_rewards, prev_actions,
                                   observations, actions, rewards, next_observations, dones,
                                   info=None, available_actions=None):
-        actions_only = {agent_id: action for agent_id, (action, _) in actions.items()}
-        log_probs_dict = {agent_id: lp for agent_id, (_, lp) in actions.items()}
-        hidden_states = self.temp_hidden_states_batch[env_idx]
-        masks = self.temp_masks_batch[env_idx]
-
-        if info is None: info = {}
-        info['env_id'] = env_idx
-
-        kwargs = {
-            'prev_observations': prev_observations, 'prev_rewards': prev_rewards,
-            'prev_actions': prev_actions, 'observations': observations,
-            'actions': actions_only, 'rewards': rewards, 'next_observations': next_observations,
-            'dones': dones, 'masks': masks, 'hidden_states': hidden_states,
-            'available_actions': available_actions, 'log_probs': log_probs_dict, 'info': info
-        }
-        if self.use_episode_buffer:
-            kwargs['env_id'] = env_idx
+        actions_only, log_probs_dict = split_action_and_log_probs(actions)
+        info = prepare_env_info(info, env_idx)
+        kwargs = build_transition_kwargs(
+            prev_observations=prev_observations,
+            prev_rewards=prev_rewards,
+            prev_actions=prev_actions,
+            observations=observations,
+            actions=actions_only,
+            rewards=rewards,
+            next_observations=next_observations,
+            dones=dones,
+            masks=self.temp_masks_batch[env_idx],
+            hidden_states=self.temp_hidden_states_batch[env_idx],
+            available_actions=available_actions,
+            log_probs=log_probs_dict,
+            info=info,
+            env_id=env_idx if self.use_episode_buffer else None,
+        )
         self.buffer_manager.store_transition(**kwargs)
 
         if self.use_episode_buffer:
@@ -1055,34 +954,6 @@ class qPCIAlgorithm:
     # Utility
     # =================================================================
 
-    def _chunk_sequence(self, tensor: torch.Tensor, chunk_len: int) -> torch.Tensor:
-        T = tensor.size(0)
-        num_chunks = T // chunk_len
-        if num_chunks == 0:
-            return tensor.unsqueeze(1)
-        tensor = tensor[:num_chunks * chunk_len]
-        shape = (num_chunks, chunk_len) + tensor.shape[1:]
-        tensor = tensor.view(shape)
-        permute_dims = (1, 0) + tuple(range(2, tensor.dim()))
-        return tensor.permute(permute_dims).contiguous()
-
-    def _classify_delta_scenario(self, transition: Dict, agent_id: int) -> str:
-        info = transition.get('info', {})
-        stag_hunts = info.get('stag_hunts', {})
-        other_stag = False
-        other_forage = False
-        for other_id in range(self.num_agents):
-            if other_id != agent_id:
-                if transition['bold_r_t'][other_id] == 5.0: other_stag = True
-                elif transition['bold_r_t'][other_id] == 3.0: other_forage = True
-        if other_stag and self.env_required_agents is not None:
-            for stag_id, participants in stag_hunts.items():
-                required = self.env_required_agents.get(stag_id, [])
-                if agent_id in required and agent_id in participants:
-                    return 'stag_reward'
-        if other_forage: return 'forage_reward'
-        return 'no_reward'
-
     # =================================================================
     # PPO policy + value update
     # =================================================================
@@ -1100,18 +971,17 @@ class qPCIAlgorithm:
             dtype=torch.long, device=self.device
         )
 
-        available_actions_batch = {}
-        if 'available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None:
-            for agent_id in range(self.num_agents):
-                if agent_id in batch_data[0]['available_actions']:
-                    available_actions_batch[agent_id] = torch.tensor(
-                        [t['available_actions'][agent_id] for t in batch_data],
-                        dtype=torch.float32, device=self.device)
+        available_actions_batch = build_available_actions_batch(
+            batch_data,
+            self.num_agents,
+            self.device,
+        )
 
-        masks_batch = {}
-        for agent_id in range(self.num_agents):
-            masks_batch[agent_id] = torch.tensor(
-                [t['masks'][agent_id] for t in batch_data], device=self.device).unsqueeze(1)
+        masks_batch = build_agent_masks_batch(
+            batch_data,
+            self.num_agents,
+            self.device,
+        )
 
         # PPO Update (policy + value)
         for agent_id in range(self.num_agents):
@@ -1124,10 +994,7 @@ class qPCIAlgorithm:
                 [t['advantages'][agent_id] for t in batch_data],
                 dtype=torch.float32, device=self.device)
             
-            if adv_raw.numel() > 1:
-                adv = (adv_raw - adv_raw.mean()) / (adv_raw.std() + 1e-8)
-            else:
-                adv = torch.zeros_like(adv_raw)
+            adv = normalize_advantages(adv_raw)
 
             # Returns for value loss
             agent_returns = torch.tensor(
@@ -1145,31 +1012,31 @@ class qPCIAlgorithm:
             num_chunks = T_total // chunk_len
 
             if num_chunks > 0:
-                rnn_obs_batch = self._chunk_sequence(agent_obs, chunk_len)
-                my_actions_batch = self._chunk_sequence(my_actions, chunk_len).reshape(-1)
-                rnn_masks_batch = self._chunk_sequence(masks_batch[agent_id], chunk_len)
+                rnn_obs_batch = chunk_sequence(agent_obs, chunk_len)
+                my_actions_batch = chunk_sequence(my_actions, chunk_len).reshape(-1)
+                rnn_masks_batch = chunk_sequence(masks_batch[agent_id], chunk_len)
                 
                 prev_actions_raw = torch.tensor(
                     [t['bold_a_t_minus_1'][agent_id] for t in batch_data[:num_chunks * chunk_len]],
                     dtype=torch.long, device=self.device)
                 prev_actions_onehot = F.one_hot(prev_actions_raw, self.action_dim).float()
-                prev_actions_batch = self._chunk_sequence(prev_actions_onehot, chunk_len)
+                prev_actions_batch = chunk_sequence(prev_actions_onehot, chunk_len)
 
                 if 'active_mask' in batch_data[0]:
                     active_masks = torch.tensor([t['active_mask'] for t in batch_data], device=self.device).unsqueeze(1)
-                    active_masks_batch = self._chunk_sequence(active_masks, chunk_len).reshape(-1)
+                    active_masks_batch = chunk_sequence(active_masks, chunk_len).reshape(-1)
                 else:
                     active_masks_batch = torch.ones(num_chunks * chunk_len, device=self.device)
 
                 avail_actions_batch_merged = None
                 if avail_actions_all is not None:
-                    avail_actions_batch_merged = self._chunk_sequence(avail_actions_all, chunk_len)\
+                    avail_actions_batch_merged = chunk_sequence(avail_actions_all, chunk_len)\
                         .reshape(-1, avail_actions_all.size(-1))
 
                 chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
                 p_h0_batch = p_states_all[chunk_indices]
-                adv_batch = self._chunk_sequence(adv, chunk_len).reshape(-1)
-                ret_batch = self._chunk_sequence(agent_returns, chunk_len).reshape(-1)
+                adv_batch = chunk_sequence(adv, chunk_len).reshape(-1)
+                ret_batch = chunk_sequence(agent_returns, chunk_len).reshape(-1)
             else:
                 rnn_obs_batch = agent_obs.unsqueeze(1)
                 rnn_masks_batch = masks_batch[agent_id]
@@ -1188,7 +1055,7 @@ class qPCIAlgorithm:
                 [t['log_probs'][agent_id] for t in batch_data],
                 dtype=torch.float32, device=self.device)
             if num_chunks > 0:
-                old_log_probs = self._chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
+                old_log_probs = chunk_sequence(old_log_probs_raw, chunk_len).reshape(-1)
             else:
                 old_log_probs = old_log_probs_raw
 
@@ -1260,7 +1127,13 @@ class qPCIAlgorithm:
 
         if self.use_centralized_critic:
             global_obs_seq = torch.stack([
-                self._concatenate_observations(t['bold_o_t']) for t in batch_data
+                concatenate_agent_observations(
+                    t['bold_o_t'],
+                    self.num_agents,
+                    self.obs_dim,
+                    self.device,
+                )
+                for t in batch_data
             ]).to(self.device, non_blocking=True)
             global_masks_seq = torch.tensor(
                 [t['masks'][0] for t in batch_data],
@@ -1280,19 +1153,19 @@ class qPCIAlgorithm:
             num_chunks = T_total // chunk_len
 
             if num_chunks > 0:
-                global_obs_batch = self._chunk_sequence(global_obs_seq, chunk_len)
-                global_masks_batch = self._chunk_sequence(global_masks_seq, chunk_len)
+                global_obs_batch = chunk_sequence(global_obs_seq, chunk_len)
+                global_masks_batch = chunk_sequence(global_masks_seq, chunk_len)
                 if 'active_mask' in batch_data[0]:
                     active_masks = torch.tensor(
                         [t['active_mask'] for t in batch_data],
                         device=self.device
                     ).unsqueeze(1)
-                    active_masks_batch = self._chunk_sequence(active_masks, chunk_len).reshape(-1)
+                    active_masks_batch = chunk_sequence(active_masks, chunk_len).reshape(-1)
                 else:
                     active_masks_batch = torch.ones(num_chunks * chunk_len, device=self.device)
                 chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
                 v_h0_batch = v_states_all_central[chunk_indices]
-                global_ret_batch = self._chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
+                global_ret_batch = chunk_sequence(all_returns, chunk_len).reshape(-1, self.num_agents)
             else:
                 global_obs_batch = global_obs_seq.unsqueeze(1)
                 global_masks_batch = global_masks_seq
@@ -1313,7 +1186,7 @@ class qPCIAlgorithm:
 
                 joint_prev_actions_batch_raw = torch.cat(agent_prev_actions_list, dim=-1)
                 if num_chunks > 0:
-                    global_prev_actions_batch = self._chunk_sequence(joint_prev_actions_batch_raw, chunk_len)
+                    global_prev_actions_batch = chunk_sequence(joint_prev_actions_batch_raw, chunk_len)
                 else:
                     global_prev_actions_batch = joint_prev_actions_batch_raw.unsqueeze(1)
 
@@ -1429,20 +1302,14 @@ class qPCIAlgorithm:
             central_values = None
             central_next_values = None
             if self.use_centralized_critic:
-                global_obs_seq = torch.stack(
-                    [self._concatenate_observations(t['bold_o_t']) for t in traj]
-                ).to(self.device, non_blocking=True)
-                global_masks_seq = torch.tensor(
-                    [t['masks'][0] for t in traj],
-                    dtype=torch.float32,
-                    device=self.device,
-                ).unsqueeze(1)
+                global_obs_seq = torch.stack([concatenate_agent_observations(t['bold_o_t'], self.num_agents, self.obs_dim, self.device,)
+                        for t in traj]).to(self.device, non_blocking=True)
+                
+                global_masks_seq = torch.tensor([t['masks'][0] for t in traj], dtype=torch.float32, device=self.device,).unsqueeze(1)
                 v_h0 = traj[0]['hidden_states'][0][1].to(self.device, non_blocking=True).unsqueeze(0)
 
                 with torch.no_grad():
-                    last_next_obs = self._concatenate_observations(
-                        traj[-1]['next_observations']
-                    ).to(self.device, non_blocking=True)
+                    last_next_obs = concatenate_agent_observations(traj[-1]['next_observations'], self.num_agents, self.obs_dim, self.device,).to(self.device, non_blocking=True)
                     last_mask = 1.0 - (1.0 if any(traj[-1]['dones'].values()) else 0.0)
 
                     extended_obs = torch.cat([
@@ -1548,11 +1415,13 @@ class qPCIAlgorithm:
                         team_bootstrap_target_sum += team_rewards_tensor + self.gamma * next_value_seq
                         team_bootstrap_target_count += 1
 
-                    env_advantages, returns_for_vloss = self.compute_gae(
+                    env_advantages, returns_for_vloss = compute_gae(
                         team_rewards,
                         values.tolist(),
                         next_val,
                         agent_dones_seq.tolist(),
+                        self.gamma,
+                        self.gae_lambda,
                     )
 
                     pci_adv = causal_advantages[agent_id]

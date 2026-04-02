@@ -8,9 +8,7 @@ import flax.linen as nn
 import optax
 from flax.training import train_state
 
-
 VERY_NEGATIVE = -1.0e9
-
 
 def make_gru_cell(hidden_dim: int) -> nn.GRUCell:
     return nn.GRUCell(
@@ -19,7 +17,6 @@ def make_gru_cell(hidden_dim: int) -> nn.GRUCell:
         recurrent_kernel_init=nn.initializers.xavier_uniform(),
         bias_init=nn.initializers.zeros_init(),
     )
-
 
 class RecurrentActor(nn.Module):
     hidden_dim: int

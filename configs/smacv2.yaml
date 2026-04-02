@@ -8,13 +8,13 @@ network:
   lr_critic: 5.0e-4 # default: 1e-3
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
-
+  use_recurrent_policy: true
+  
 # Algorithm Configuration
 algorithm:
   gamma: 0.99
   gae_lambda: 0.95
   rnn_chunk_length: 10 # 원래 50
-  use_recurrent_policy: true
   clip_epsilon: 0.1 # clip_range 0.1 as the SMACv2 paper
   entropy_coef: 0.01
   value_coef: 0.5
@@ -63,7 +63,7 @@ training:
   
 # Environment Configuration
 environment:
-  import_config: "configs/smacv2_configs_examples/sc2_gen_protoss_2_vs_2.yaml"
+  import_config: "configs/smacv2_configs/sc2_gen_protoss_epo.yaml"
   env_name: "SMACv2"
   num_agents: 2
   use_individual_rewards: false  # Enable damage-based individual rewards

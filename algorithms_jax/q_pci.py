@@ -182,9 +182,6 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         q_values = jax.vmap(predict_one_action)(all_actions).transpose(1, 0)
         v_bridge = jnp.sum(probs * q_values, axis=-1)
 
-        q_for_lse = jnp.where(avail_actions > 0, q_values, -1.0e9)
-        v_lse = self.lse_temperature * jax.nn.logsumexp(q_for_lse / self.lse_temperature, axis=-1)
-
         factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
         probs_counterfactual = probs * factual_mask * avail_actions
         renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
@@ -193,7 +190,7 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         baseline = jnp.where(renorm.squeeze(-1) <= 1.0e-8, actual_pred, baseline)
 
         causal_advantages = actual_pred - baseline
-        return actual_pred, q_values, v_bridge, v_lse, causal_advantages
+        return actual_pred, q_values, v_bridge, causal_advantages
 
     @partial(jax.jit, static_argnums=0)
     def _q_bridge_update_step(
@@ -285,7 +282,6 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
                 "bridge_adv_mean": 0.0,
                 "bridge_adv_std": 0.0,
                 "v_bridge_mean": 0.0,
-                "v_lse_mean": 0.0,
             }
 
         obs = rollout["obs"]
@@ -300,7 +296,7 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         actions = rollout["actions"].reshape(-1)
 
-        _, _, v_bridge, v_lse, causal_advantages = self._q_bridge_predictions(
+        _, _, v_bridge, causal_advantages = self._q_bridge_predictions(
             self.bridge_state.params,
             local_obs,
             others_obs,
@@ -320,7 +316,6 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
             "bridge_adv_mean": float(jnp.mean(causal_advantages)),
             "bridge_adv_std": float(jnp.std(causal_advantages)),
             "v_bridge_mean": float(jnp.mean(v_bridge)),
-            "v_lse_mean": float(jnp.mean(v_lse)),
         }
         return causal_advantages, info
 
@@ -349,9 +344,9 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         env_norm = jnp.stack(env_norm_agents, axis=-1)
         pci_res = jnp.stack(pci_res_agents, axis=-1)
         info = {
-            "env_adv_mean": float(jnp.mean(env_norm)),
-            "pci_adv_res_mean": float(jnp.mean(pci_res)),
-            "combined_adv_mean": float(jnp.mean(combined_adv)),
+            "env_adv_std": float(jnp.std(env_norm)),
+            "pci_adv_res_std": float(jnp.std(pci_res)),
+            "pci_bonus_std": float(jnp.std(causal_lambda * pci_res)),
             "combined_adv_std": float(jnp.std(combined_adv)),
         }
         return combined_adv, info

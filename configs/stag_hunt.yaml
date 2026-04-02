@@ -9,12 +9,12 @@ network:
   lr: 5.0e-4  # General learning rate (used by QMIX)
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
-
+  use_recurrent_policy: true
+  
 # Algorithm Configuration
 algorithm:
   gamma: 0.99
   rnn_chunk_length: 10 # originally, 50
-  use_recurrent_policy: true
   gae_lambda: 0.95
   clip_epsilon: 0.2
   entropy_coef: 0.01

@@ -7,10 +7,8 @@ set -euo pipefail
 
 config="configs_jax/smax_qpci.yaml"
 model="jax-qpci"
-use_recurrent_policy=true # true: RNN-agent, false: FF-agent
-
 use_centralized_critic=true # false: IPPO-critic / true: MAPPO-critic
-causal_lambda=0.5
+causal_lambda=0.1
 clip_delta=0.0
 
 seed=42
@@ -18,7 +16,7 @@ n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
-device="cuda"
+device="cpu"
 seed=42
 
 if command -v conda >/dev/null 2>&1; then
@@ -27,12 +25,12 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
+# export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 python main.py \
   --env SMAX \
   --config ${config} \
   --model ${model} \
-  --use-recurrent-policy ${use_recurrent_policy} \
   --use-centralized-critic ${use_centralized_critic} \
   --causal-lambda ${causal_lambda} \
   --n-rollout-threads ${n_rollout_threads} \
