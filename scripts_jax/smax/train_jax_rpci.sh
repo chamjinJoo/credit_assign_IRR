@@ -10,8 +10,8 @@ model="jax-rpci"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
-causal_lambda=0.5
-clip_delta=0.001
+causal_lambda=0.1
+clip_delta=0.0
 
 seed=42
 n_rollout_threads=4

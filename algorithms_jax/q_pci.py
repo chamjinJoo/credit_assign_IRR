@@ -77,9 +77,8 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         env_norm = self._normalize_advantage_signal(env_advantages)
         pci_norm = self._normalize_advantage_signal(pci_signal)
-        pci_residual = self._orthogonalize_advantage_signal(env_norm, pci_norm)
-        combined = env_norm + causal_lambda * pci_residual
-        return combined, env_norm, pci_residual
+        combined = env_norm + causal_lambda * pci_norm
+        return combined, env_norm, pci_norm
 
     def _team_rewards(self, rollout: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         return rollout["rewards"].sum(axis=-1) / self.num_agents

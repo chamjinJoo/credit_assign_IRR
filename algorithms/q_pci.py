@@ -408,9 +408,8 @@ class qPCIAlgorithm:
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         env_norm = self._normalize_advantage_signal(env_advantages)
         pci_norm = self._normalize_advantage_signal(pci_signal)
-        pci_residual = self._orthogonalize_advantage_signal(env_norm, pci_norm)
-        combined = env_norm + causal_lambda * pci_residual
-        return combined, env_norm, pci_residual
+        combined = env_norm + causal_lambda * pci_norm
+        return combined, env_norm, pci_norm
 
     # =================================================================
     # Q-Bridge training (replaces update_causal_networks)
