@@ -1415,19 +1415,17 @@ class rPCIAlgorithm:
                 agent_losses['value_loss'] += val_loss.item()
 
         for k in list(agent_losses.keys()):
-            if k.endswith('_sum'):
-                count_key = k.replace('sum', 'count')
-                if agent_losses[count_key] > 0:
-                    agent_losses[k.replace('sum', 'mean')] = agent_losses[k] / agent_losses[count_key]
-                del agent_losses[k]
-            elif k == 'value_loss':
+            if k == 'value_loss':
                 if self.use_centralized_critic or self.use_value_parameter_sharing:
                     # Centralized critic and Shared parameter critic: value_loss is already summed over ppo_epochs
                     agent_losses['value_loss'] /= self.ppo_epochs
                 else:
                     total_value_loss = sum([agent_losses.get(f'agent_{i}_value_loss', 0.0) for i in range(self.num_agents)])
                     agent_losses['value_loss'] = total_value_loss / (self.num_agents * self.ppo_epochs)
-            elif not k.endswith('_count'):
+            elif k.endswith('_sum') or k.endswith('_count'):
+                # Keep raw sum/count pairs for cross-batch aggregation in update().
+                continue
+            else:
                 agent_losses[k] /= self.ppo_epochs
         
         return dict(agent_losses)
@@ -1792,29 +1790,32 @@ class rPCIAlgorithm:
         num = len([b for b in batches if b])
         if num == 0: return {}
         final_losses = {}
+        handled_keys = set()
         for k, v in total_losses.items():
-            if 'delta_agent' in k and '_sum' in k:
-                # [FIX] Recompute global mean for delta
-                base_key = k.replace('_sum', '')
-                count_key = base_key + '_count'
-                mean_key = base_key + '_mean'
-                
-                total_count = total_losses.get(count_key, 0)
-                if total_count > 0:
-                    final_losses[mean_key] = v / total_count
-                    final_losses[count_key] = total_count
-                else:
-                    final_losses[mean_key] = 0.0
-                    final_losses[count_key] = 0.0
-            elif 'delta_agent' in k and '_count' in k:
-                # Already handled above
+            if k in handled_keys:
                 continue
+            if k.endswith('_sum'):
+                base_key = k[:-4]
+                count_key = base_key + '_count'
+                if count_key in total_losses:
+                    total_count = total_losses.get(count_key, 0.0)
+                    mean_key = base_key + '_mean'
+                    if total_count > 0:
+                        final_losses[mean_key] = v / total_count
+                        final_losses[count_key] = total_count
+                    else:
+                        final_losses[mean_key] = 0.0
+                        final_losses[count_key] = 0.0
+                    handled_keys.add(k)
+                    handled_keys.add(count_key)
+                    continue
+            if k.endswith('_count') and k in handled_keys:
+                continue
+            # Other losses: average across batches
+            if num > 0:
+                final_losses[k] = v / num
             else:
-                 # Other losses: average across batches
-                 if num > 0:
-                    final_losses[k] = v / num
-                 else:
-                    final_losses[k] = v
+                final_losses[k] = v
         final_losses['causal_lambda'] = current_causal_lambda
         
         return final_losses
@@ -2196,6 +2197,8 @@ class rPCIAlgorithm:
     ):
         if 'delta' not in transition or agent_id not in transition['delta']:
             return
+        if transition.get('active_mask', 1.0) <= 0.0:
+            return
 
         if self.env.__class__.__name__ == 'StagHuntEnv':
             scenario = classify_staghunt_delta_scenario(
@@ -2220,6 +2223,28 @@ class rPCIAlgorithm:
                 agent_losses[f'pci_bonus_abs_agent_{agent_id}_{scenario}_count'] += 1
             return
 
+        if self._is_smac_attack_reward_event(transition, agent_id):
+            scenario = 'attack_reward'
+            agent_losses[f'delta_agent_{agent_id}_{scenario}_sum'] += transition['delta'][agent_id]
+            agent_losses[f'delta_agent_{agent_id}_{scenario}_count'] += 1
+            if 'pci_raw_advantages' in transition and agent_id in transition['pci_raw_advantages']:
+                pci_raw = transition['pci_raw_advantages'][agent_id]
+                agent_losses[f'pci_raw_adv_agent_{agent_id}_{scenario}_sum'] += pci_raw
+                agent_losses[f'pci_raw_adv_agent_{agent_id}_{scenario}_count'] += 1
+            if 'pci_advantages' in transition and agent_id in transition['pci_advantages']:
+                pci_res = transition['pci_advantages'][agent_id]
+                agent_losses[f'pci_res_adv_agent_{agent_id}_{scenario}_sum'] += pci_res
+                agent_losses[f'pci_res_adv_agent_{agent_id}_{scenario}_count'] += 1
+                agent_losses[f'pci_bonus_abs_agent_{agent_id}_{scenario}_sum'] += abs(
+                    current_causal_lambda * pci_res
+                )
+                agent_losses[f'pci_bonus_abs_agent_{agent_id}_{scenario}_count'] += 1
+            damage_share = self._smac_damage_share_from_transition(transition, agent_id)
+            if damage_share is not None:
+                agent_losses[f'damage_share_agent_{agent_id}_{scenario}_sum'] += damage_share
+                agent_losses[f'damage_share_agent_{agent_id}_{scenario}_count'] += 1
+            return
+
         others_rewards_sum = sum(
             [transition['bold_r_t'][j] for j in range(self.num_agents) if j != agent_id]
         )
@@ -2229,6 +2254,118 @@ class rPCIAlgorithm:
         else:
             agent_losses[f'delta_agent{agent_id}_positive_reward_sum'] += transition['delta'][agent_id]
             agent_losses[f'delta_agent{agent_id}_positive_reward_count'] += 1
+
+    def _is_smac_attack_reward_event(
+        self,
+        transition: Dict,
+        agent_id: int,
+    ) -> bool:
+        env_name = self.env.__class__.__name__
+        if env_name not in {'SMACWrapper', 'SMACv2Wrapper', 'SMAXWrapper', 'SMAXBatchWrapper'}:
+            return False
+
+        action = transition.get('bold_a_t', {}).get(agent_id, None)
+        if action is None:
+            return False
+        attack_threshold = self._attack_action_threshold(transition)
+        if attack_threshold is None:
+            return False
+        if int(action) < int(attack_threshold):
+            return False
+
+        available_actions = transition.get('available_actions')
+        if isinstance(available_actions, dict) and agent_id in available_actions:
+            avail = available_actions.get(agent_id)
+            if torch.is_tensor(avail):
+                avail_vals = avail.detach().cpu().tolist()
+            else:
+                avail_vals = avail
+            if avail_vals is not None and len(avail_vals) > 1:
+                alive = float(sum(avail_vals[1:])) > 0.0
+                if not alive:
+                    return False
+
+        if self._global_reward_from_dict(transition['bold_r_t']) <= 1e-8:
+            return False
+
+        damage = self._smac_damage_from_transition(transition, agent_id)
+        if damage is not None and damage <= 1e-8:
+            return False
+        return True
+
+    def _attack_action_threshold(self, transition: Dict) -> Optional[int]:
+        info = transition.get('info', {})
+        threshold = None
+        if isinstance(info, dict):
+            threshold = info.get('attack_action_threshold', info.get('n_actions_no_attack'))
+            if threshold is None:
+                n_enemies = info.get('n_enemies')
+                try:
+                    if n_enemies is not None:
+                        threshold = self.action_dim - int(n_enemies)
+                except (TypeError, ValueError):
+                    threshold = None
+        if threshold is None:
+            env_n_enemies = getattr(self.env, 'num_enemies', None)
+            try:
+                if env_n_enemies is not None:
+                    threshold = self.action_dim - int(env_n_enemies)
+            except (TypeError, ValueError):
+                threshold = None
+        if threshold is None:
+            if self.action_dim <= 6:
+                return None
+            return 6
+        try:
+            threshold = int(threshold)
+            threshold = max(0, min(threshold, self.action_dim - 1))
+            return threshold
+        except (TypeError, ValueError):
+            if self.action_dim <= 6:
+                return None
+            return 6
+
+    def _smac_damage_from_transition(
+        self,
+        transition: Dict,
+        agent_id: int,
+    ) -> Optional[float]:
+        info = transition.get('info', {})
+        if not isinstance(info, dict):
+            return None
+        damages = info.get('individual_damages')
+        if damages is None:
+            return None
+        if agent_id >= len(damages):
+            return None
+        try:
+            return float(damages[agent_id])
+        except (TypeError, ValueError):
+            return None
+
+    def _smac_damage_share_from_transition(
+        self,
+        transition: Dict,
+        agent_id: int,
+    ) -> Optional[float]:
+        info = transition.get('info', {})
+        if not isinstance(info, dict):
+            return None
+        damages = info.get('individual_damages')
+        if damages is None or agent_id >= len(damages):
+            return None
+        total_damage = 0.0
+        for d in damages:
+            try:
+                total_damage += max(float(d), 0.0)
+            except (TypeError, ValueError):
+                continue
+        if total_damage <= 1e-8:
+            return None
+        try:
+            return max(float(damages[agent_id]), 0.0) / total_damage
+        except (TypeError, ValueError):
+            return None
 
     def _prepare_update_batch_tensors(self, batch_data: List[Dict]):
         full_obs_list = [torch.stack(list(t['bold_o_t'].values())) for t in batch_data]

@@ -21,6 +21,7 @@ class NetworkConfig:
 class AlgorithmConfig:
     """Algorithm configuration."""
     type: str = "r_pci"
+    use_recurrent_policy: bool = True
     gamma: float = 0.99
     gae_lambda: float = 0.95
     rnn_chunk_length: int = 50

@@ -1220,6 +1220,7 @@ class SMACv2Wrapper(MultiAgentEnv):
         self.agents = list(range(self.num_agents))
         self.obs_dim = self._env_info["obs_shape"]
         self.action_dim = self._env_info["n_actions"]
+        self.num_enemies = self._infer_num_enemies()
         self.use_individual_rewards = use_individual_rewards
 
         # Track previous ally health for individual damage calculation
@@ -1228,6 +1229,23 @@ class SMACv2Wrapper(MultiAgentEnv):
         self.prev_ally_health = None
 
         super().__init__(num_agents=self.num_agents, seed=seed)
+
+    def _infer_num_enemies(self) -> Optional[int]:
+        """Infer static enemy count for the current SMACv2 scenario."""
+        sc_env_inner = self._env.env if hasattr(self._env, 'env') else self._env
+        candidates = [
+            getattr(sc_env_inner, 'n_enemies', None),
+            getattr(sc_env_inner, 'num_enemies', None),
+            self._env_info.get("n_enemies"),
+            self._env_info.get("num_enemies"),
+        ]
+        for cand in candidates:
+            try:
+                if cand is not None and int(cand) > 0:
+                    return int(cand)
+            except (TypeError, ValueError):
+                continue
+        return None
 
     def _get_health_info(self):
         """Get current enemy and ally health from the environment."""
@@ -1449,14 +1467,47 @@ class SMACv2Wrapper(MultiAgentEnv):
         observations = {i: np.array(obs, dtype=np.float32) for i, obs in enumerate(obs_list)}
 
         # === Individual Reward Computation ===
+        individual_damages = None
         if self.use_individual_rewards:
-            rewards, d = self._compute_individual_rewards(reward, terminated, info)
+            rewards, individual_damages = self._compute_individual_rewards(reward, terminated, info)
         else:
             rewards = {i: float(reward) for i in self.agents}
+            sc_env_inner = self._env.env if hasattr(self._env, 'env') else self._env
+            has_damage_stats = (
+                hasattr(sc_env_inner, 'previous_enemy_units')
+                and sc_env_inner.previous_enemy_units is not None
+                and hasattr(sc_env_inner, 'last_action')
+                and hasattr(sc_env_inner, 'n_actions_no_attack')
+            )
+            if has_damage_stats:
+                individual_damages = self._get_agent_damage_stats()
 
         # SMAC returns a single terminated flag
         dones = {i: terminated for i in self.agents}
         
+        if individual_damages is not None:
+            info["individual_damages"] = [float(x) for x in np.asarray(individual_damages).reshape(-1)]
+
+        sc_env_inner = self._env.env if hasattr(self._env, 'env') else self._env
+        n_actions_no_attack = getattr(sc_env_inner, 'n_actions_no_attack', None)
+        if n_actions_no_attack is not None:
+            info["n_actions_no_attack"] = int(n_actions_no_attack)
+
+        n_enemies = self._infer_num_enemies()
+        if n_enemies is not None:
+            self.num_enemies = int(n_enemies)
+            info["n_enemies"] = int(n_enemies)
+
+        attack_threshold = None
+        if n_enemies is not None:
+            attack_threshold = self.action_dim - int(n_enemies)
+        elif n_actions_no_attack is not None:
+            attack_threshold = int(n_actions_no_attack)
+        if attack_threshold is not None:
+            attack_threshold = max(0, min(int(attack_threshold), self.action_dim - 1))
+            info["attack_action_threshold"] = int(attack_threshold)
+        info["team_reward"] = float(reward)
+
         # Add battle_won to info if available (SMAC specific)
         if "battle_won" in info:
             info["battle_won"] = info["battle_won"]

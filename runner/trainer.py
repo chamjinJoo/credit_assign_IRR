@@ -108,6 +108,7 @@ class Trainer:
         self.base_save_dir = save_dir
         self.use_wandb = use_wandb
         self.device = device
+        self.pci_log_interval = 50
 
         # Store reproducibility info
         self.seed = getattr(config.training, 'seed', None) if hasattr(config, 'training') else None
@@ -203,6 +204,36 @@ class Trainer:
         self.episode_rewards = defaultdict(list)
         self.episode_lengths = []
         self.recent_rewards = deque(maxlen=100)
+
+    def _is_sparse_pci_logging_env(self) -> bool:
+        """Whether PCI metrics should be sparsified for this environment."""
+        env_name = self.eval_env.__class__.__name__
+        return env_name in {"SMACv2Wrapper", "SMAXWrapper", "SMAXBatchWrapper"}
+
+    def _should_log_pci_metrics_this_iteration(self) -> bool:
+        """
+        PCI metrics are logged every `pci_log_interval` iterations on SMACv2/SMAX.
+        Other environments keep the existing behavior.
+        """
+        if not self._is_sparse_pci_logging_env():
+            return True
+        if self.iteration == self.max_iterations - 1:
+            return True
+        return (self.iteration % self.pci_log_interval) == 0
+
+    @staticmethod
+    def _is_pci_update_metric_key(key: str) -> bool:
+        """Identify PCI-specific update keys for selective logging."""
+        pci_prefixes = (
+            "delta_",
+            "pci_",
+            "outcome_bridge_",
+            "action_bridge_",
+            "Kz_",
+            "causal_",
+            "damage_share_",
+        )
+        return key.startswith(pci_prefixes)
     
     def _create_simulation_directory(self) -> str:
         """Create structured directory for this simulation."""
@@ -974,6 +1005,8 @@ class Trainer:
     
     def log_training_metrics(self, rollout_data: Dict[str, Any], update_info: Dict[str, float]):
         """Log training metrics."""
+        should_log_pci = self._should_log_pci_metrics_this_iteration()
+
         # Log to console
         self.logger.info(f"Iteration {self.iteration}")
         
@@ -1009,6 +1042,8 @@ class Trainer:
                 if key in ['epsilon', 'total_env_steps', 'replay_buffer_episodes']:
                     continue
                 if key.endswith('_count'):
+                    continue
+                if not should_log_pci and self._is_pci_update_metric_key(key):
                     continue
 
                 if key.startswith('delta_'):
@@ -1046,6 +1081,8 @@ class Trainer:
             
             # Add update info
             for key, value in update_info.items():
+                if not should_log_pci and self._is_pci_update_metric_key(key):
+                    continue
                 wandb_data[f'update/{key}'] = value
             
             # Add delta statistics for causal reward shaping
@@ -1053,20 +1090,21 @@ class Trainer:
             delta_scenarios = ['no_reward', 'forage_reward', 'stag_reward']
             num_agents = getattr(self.algorithm, 'num_agents', 0)
             
-            for agent_id in range(num_agents):
-                for scenario in delta_scenarios:
-                    mean_key = f'delta_agent_{agent_id}_{scenario}_mean'
-                    std_key = f'delta_agent_{agent_id}_{scenario}_std'
-                    count_key = f'delta_agent_{agent_id}_{scenario}_count'
-                    
-                    if mean_key in update_info:
-                        # Log with agent-specific naming
-                        wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}'] = update_info[mean_key]
-                        # Also log std and count separately for reference
-                        if std_key in update_info:
-                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_std'] = update_info[std_key]
-                        if count_key in update_info:
-                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_count'] = update_info[count_key]
+            if should_log_pci:
+                for agent_id in range(num_agents):
+                    for scenario in delta_scenarios:
+                        mean_key = f'delta_agent_{agent_id}_{scenario}_mean'
+                        std_key = f'delta_agent_{agent_id}_{scenario}_std'
+                        count_key = f'delta_agent_{agent_id}_{scenario}_count'
+                        
+                        if mean_key in update_info:
+                            # Log with agent-specific naming
+                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}'] = update_info[mean_key]
+                            # Also log std and count separately for reference
+                            if std_key in update_info:
+                                wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_std'] = update_info[std_key]
+                            if count_key in update_info:
+                                wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_count'] = update_info[count_key]
             
             wandb.log(wandb_data, step=self.iteration)
     

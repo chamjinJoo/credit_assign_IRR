@@ -94,6 +94,7 @@ class JAXRPCIAlgorithm:
         self.num_batches = max(1, num_batches)
         self.normalize_returns = normalize_returns
         self.use_recurrent_policy = use_recurrent_policy
+        self.attack_action_threshold = self._infer_attack_action_threshold(action_dim)
 
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
@@ -219,6 +220,44 @@ class JAXRPCIAlgorithm:
     def _augment_obs(self, obs: jnp.ndarray) -> jnp.ndarray:
         return add_agent_id_features(obs) if self.add_agent_id else obs
 
+    def _infer_attack_action_threshold(self, action_dim: int) -> Optional[int]:
+        env_name = self.env.__class__.__name__
+        if env_name not in {'SMACWrapper', 'SMACv2Wrapper', 'SMAXWrapper', 'SMAXBatchWrapper'}:
+            return None
+
+        n_enemies = getattr(self.env, "num_enemies", None)
+        if n_enemies is None:
+            env_inner = getattr(self.env, "_env", None)
+            if env_inner is not None:
+                n_enemies = getattr(env_inner, "num_enemies", None)
+                if n_enemies is None:
+                    nested = getattr(env_inner, "env", None)
+                    if nested is not None:
+                        n_enemies = getattr(nested, "n_enemies", None)
+
+        threshold = None
+        try:
+            if n_enemies is not None:
+                threshold = int(action_dim) - int(n_enemies)
+        except (TypeError, ValueError):
+            threshold = None
+
+        if threshold is None:
+            n_actions_no_attack = getattr(self.env, "n_actions_no_attack", None)
+            try:
+                if n_actions_no_attack is not None:
+                    threshold = int(n_actions_no_attack)
+            except (TypeError, ValueError):
+                threshold = None
+
+        if threshold is None:
+            threshold = 6 if action_dim > 6 else None
+
+        if threshold is None:
+            return None
+        threshold = max(0, min(int(threshold), int(action_dim) - 1))
+        return threshold
+
     def _normalize_advantage_signal(self, signal: jnp.ndarray) -> jnp.ndarray:
         if signal.size <= 1:
             return jnp.zeros_like(signal)
@@ -288,6 +327,72 @@ class JAXRPCIAlgorithm:
             "combined_adv_std": float(jnp.std(combined_adv)),
         }
         return combined_adv, info
+
+    def _pci_residual_tensor(
+        self,
+        env_advantages: jnp.ndarray,
+        pci_advantages: jnp.ndarray,
+        causal_lambda: float,
+    ) -> jnp.ndarray:
+        env_for_actor = self._env_advantages_for_actor(env_advantages)
+        pci_res_agents = []
+        for agent_id in range(self.num_agents):
+            _, _, pci_res = self._combine_env_and_pci_advantages(
+                env_for_actor[..., agent_id].reshape(-1),
+                pci_advantages[..., agent_id].reshape(-1),
+                causal_lambda,
+            )
+            pci_res_agents.append(pci_res.reshape(env_for_actor.shape[:2]))
+        return jnp.stack(pci_res_agents, axis=-1)
+
+    def _smac_attack_reward_event_metrics(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        delta: jnp.ndarray,
+        pci_advantages: jnp.ndarray,
+        pci_residual: jnp.ndarray,
+        causal_lambda: float,
+    ) -> Dict[str, float]:
+        if self.attack_action_threshold is None:
+            return {}
+
+        actions = rollout["actions"]  # (T, E, N)
+        team_reward = rollout["rewards"].sum(axis=-1) / self.num_agents  # (T, E)
+        reward_hit = team_reward > 1.0e-8
+
+        if self.action_dim > 1:
+            alive = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0)
+        else:
+            alive = jnp.ones_like(actions, dtype=bool)
+        attack_intent = actions >= self.attack_action_threshold
+        event_mask = attack_intent & alive & reward_hit[..., None]
+
+        metrics: Dict[str, float] = {}
+        bonus_abs = jnp.abs(causal_lambda * pci_residual)
+        for agent_id in range(self.num_agents):
+            mask_i = event_mask[..., agent_id].astype(jnp.float32)
+            count = float(jnp.sum(mask_i))
+            metrics[f"delta_agent_{agent_id}_attack_reward_count"] = count
+            if count <= 0.0:
+                metrics[f"delta_agent_{agent_id}_attack_reward_mean"] = 0.0
+                metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = 0.0
+                metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = 0.0
+                metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = 0.0
+                continue
+            denom = count + 1.0e-8
+            metrics[f"delta_agent_{agent_id}_attack_reward_mean"] = float(
+                jnp.sum(delta[..., agent_id] * mask_i) / denom
+            )
+            metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = float(
+                jnp.sum(pci_advantages[..., agent_id] * mask_i) / denom
+            )
+            metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = float(
+                jnp.sum(pci_residual[..., agent_id] * mask_i) / denom
+            )
+            metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = float(
+                jnp.sum(bonus_abs[..., agent_id] * mask_i) / denom
+            )
+        return metrics
 
     @partial(jax.jit, static_argnums=0)
     def _policy_step(
@@ -938,6 +1043,7 @@ class JAXRPCIAlgorithm:
 
         rollout = self.latest_rollout
         metrics = {}
+        causal_lambda = self.get_current_causal_lambda()
 
         bridge_metrics = self.update_causal_networks(rollout)
         metrics.update(bridge_metrics)
@@ -982,9 +1088,19 @@ class JAXRPCIAlgorithm:
         combined_advantages, combine_metrics = self._combine_actor_advantages(
             env_advantages,
             pci_advantages,
-            self.get_current_causal_lambda(),
+            causal_lambda,
         )
         metrics.update(combine_metrics)
+        pci_residual = self._pci_residual_tensor(env_advantages, pci_advantages, causal_lambda)
+        metrics.update(
+            self._smac_attack_reward_event_metrics(
+                rollout,
+                delta,
+                pci_advantages,
+                pci_residual,
+                causal_lambda,
+            )
+        )
 
         metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])
