@@ -1661,7 +1661,7 @@ class rPCIAlgorithm:
                     )
 
                     # Initial hidden state for value network
-                    _, v_h0 = traj[0]['hidden_states'][agent_id]
+                    v_h0 = traj[0]['hidden_states'][agent_id][1]
                     v_h0 = v_h0.to(self.device, non_blocking=True).unsqueeze(0)
 
                     # Compute values for entire trajectory
@@ -2510,9 +2510,9 @@ class rPCIAlgorithm:
                 "old_log_probs": old_log_probs,
             }
 
-        p_h0_batch, _ = init_hidden_states[agent_id]
+        p_h0_batch = init_hidden_states[agent_id][0]
         p_h0_batch = p_h0_batch.to(self.device).unsqueeze(0)
-        _, v_h0_batch = init_hidden_states[agent_id]
+        v_h0_batch = init_hidden_states[agent_id][1]
         v_h0_batch = v_h0_batch.to(self.device).unsqueeze(0)
         prev_actions_raw = torch.tensor(
             [t['bold_a_t_minus_1'][agent_id] for t in batch_data],

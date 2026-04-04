@@ -246,7 +246,7 @@ class rIPPOAlgorithm:
             agent_prev_actions_onehot = self.agents[agent_id].prev_actions_batch.clone()
 
             # 1. Policy Step
-            actions, log_probs, prev_p_states = self.agents[agent_id].get_action_batch(
+            actions, log_probs, prev_p_states, _ = self.agents[agent_id].get_action_batch(
                 agent_obs_batch,
                 agent_masks_batch,
                 available_actions_batch=agent_avail_tensor
@@ -361,7 +361,7 @@ class rIPPOAlgorithm:
             agent_prev_action_onehot = self.agents[agent_id].prev_action.unsqueeze(0).clone()
 
             # Policy
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
+            action, log_prob, p_state, _ = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             # Value
             _, v_state = self._get_value(
@@ -631,9 +631,7 @@ class rIPPOAlgorithm:
                             agent_rewards_seq.tolist(),
                             values.tolist(),
                             next_val,
-                            done_signal,
-                            self.gamma,
-                            self.gae_lambda,
+                            done_signal, self.gamma, self.gae_lambda,
                         )
                         
                         # Store in transitions

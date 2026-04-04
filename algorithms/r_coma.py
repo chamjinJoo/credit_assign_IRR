@@ -289,7 +289,7 @@ class rCOMAAlgorithm:
                     device=self.device
                 )
 
-            action, log_prob, p_state = self.agents[agent_id].get_action(
+            action, log_prob, p_state, _ = self.agents[agent_id].get_action(
                 obs, mask_tensor, available_actions=avail_actions_tensor
             )
             
@@ -337,7 +337,7 @@ class rCOMAAlgorithm:
             if any(x is not None for x in agent_avail_list):
                 agent_avail_tensor = torch.tensor(agent_avail_list, dtype=torch.float32, device=self.device)
             
-            actions, log_probs, prev_p_states = self.agents[agent_id].get_action_batch(
+            actions, log_probs, prev_p_states, _ = self.agents[agent_id].get_action_batch(
                 agent_obs_batch,
                 agent_masks_batch,
                 available_actions_batch=agent_avail_tensor

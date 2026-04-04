@@ -791,7 +791,7 @@ class qPCIAlgorithm:
                 avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
 
             agent_prev_action_onehot = self.agents[agent_id].prev_action.unsqueeze(0).clone()
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
+            action, log_prob, p_state, _ = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
 
             if self.use_centralized_critic:
                 v_state = central_v_state
@@ -865,7 +865,7 @@ class qPCIAlgorithm:
                 ])
 
             agent_prev_actions_onehot = self.agents[agent_id].prev_actions_batch.clone()
-            actions, log_probs, p_states = self.agents[agent_id].get_action_batch(
+            actions, log_probs, p_states, _ = self.agents[agent_id].get_action_batch(
                 obs_stacked, masks_stacked, avail_actions_stacked
             )
 

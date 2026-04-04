@@ -263,7 +263,7 @@ class rMAPPOAlgorithm:
                  agent_avail_tensor = torch.tensor(agent_avail_list, dtype=torch.float32, device=self.device)
             
             # Get actions batch
-            actions, log_probs, prev_p_states = self.agents[agent_id].get_action_batch(
+            actions, log_probs, prev_p_states, _ = self.agents[agent_id].get_action_batch(
                 agent_obs_batch,
                 agent_masks_batch,
                 available_actions_batch=agent_avail_tensor
@@ -379,7 +379,7 @@ class rMAPPOAlgorithm:
             if available_actions is not None and agent_id in available_actions:
                 avail_actions_tensor = torch.tensor(available_actions[agent_id], dtype=torch.float32, device=self.device)
 
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
+            action, log_prob, p_state, _ = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
             
             actions[agent_id] = (action, log_prob)
             self.temp_hidden_states[agent_id] = (p_state, v_state)
