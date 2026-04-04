@@ -60,7 +60,7 @@ class Trainer:
         log_interval: int = 10,
         save_interval: int = 100,
         eval_interval: int = 50,
-        eval_episodes: int = 10,
+        eval_episodes: int = 32,
         save_dir: str = "./save_checkpoints",
         use_wandb: bool = False,
         wandb_project: str = "pci-mappo",
@@ -108,7 +108,6 @@ class Trainer:
         self.base_save_dir = save_dir
         self.use_wandb = use_wandb
         self.device = device
-        self.pci_log_interval = 50
 
         # Store reproducibility info
         self.seed = getattr(config.training, 'seed', None) if hasattr(config, 'training') else None
@@ -205,35 +204,52 @@ class Trainer:
         self.episode_lengths = []
         self.recent_rewards = deque(maxlen=100)
 
-    def _is_sparse_pci_logging_env(self) -> bool:
-        """Whether PCI metrics should be sparsified for this environment."""
-        env_name = self.eval_env.__class__.__name__
-        return env_name in {"SMACv2Wrapper", "SMAXWrapper", "SMAXBatchWrapper"}
-
-    def _should_log_pci_metrics_this_iteration(self) -> bool:
-        """
-        PCI metrics are logged every `pci_log_interval` iterations on SMACv2/SMAX.
-        Other environments keep the existing behavior.
-        """
-        if not self._is_sparse_pci_logging_env():
-            return True
-        if self.iteration == self.max_iterations - 1:
-            return True
-        return (self.iteration % self.pci_log_interval) == 0
-
     @staticmethod
-    def _is_pci_update_metric_key(key: str) -> bool:
-        """Identify PCI-specific update keys for selective logging."""
-        pci_prefixes = (
-            "delta_",
-            "pci_",
-            "outcome_bridge_",
-            "action_bridge_",
-            "Kz_",
-            "causal_",
-            "damage_share_",
+    def _is_eval_only_advantage_metric(key: str) -> bool:
+        """PCI advantage diagnostics are logged only alongside evaluation snapshots."""
+        advantage_prefixes = (
+            "pci_raw_adv_",
+            "pci_res_adv_",
+            "pci_bonus_abs_",
         )
-        return key.startswith(pci_prefixes)
+        advantage_keys = {
+            "env_adv_std",
+            "pci_adv_res_std",
+            "pci_bonus_std",
+            "combined_adv_std",
+        }
+        return key in advantage_keys or key.startswith(advantage_prefixes)
+
+    def _get_eval_only_advantage_metrics(self, update_info: Optional[Dict[str, float]]) -> Dict[str, float]:
+        if not update_info:
+            return {}
+        return {
+            key: value
+            for key, value in update_info.items()
+            if self._is_eval_only_advantage_metric(key)
+        }
+
+    def _log_update_metric_line(self, key: str, value: float, update_info: Dict[str, float], indent: str = "    "):
+        """Pretty-print update metrics, attaching counts to paired mean values when available."""
+        if key.endswith('_count'):
+            return
+
+        if key.startswith('delta_') and key.endswith('_mean'):
+            scenario = key.replace('delta_', '').replace('_mean', '')
+            count_key = f'delta_{scenario}_count'
+            if count_key in update_info:
+                count = update_info[count_key]
+                self.logger.info(f"{indent}{key}: {value:.6f} (n={count:g})")
+                return
+
+        if self._is_eval_only_advantage_metric(key) and key.endswith('_mean'):
+            count_key = key.replace('_mean', '_count')
+            if count_key in update_info:
+                count = update_info[count_key]
+                self.logger.info(f"{indent}{key}: {value:.6f} (n={count:g})")
+                return
+
+        self.logger.info(f"{indent}{key}: {value:.6f}")
     
     def _create_simulation_directory(self) -> str:
         """Create structured directory for this simulation."""
@@ -404,7 +420,7 @@ class Trainer:
                 # Evaluate policy
                 if iteration % self.eval_interval == 0 or iteration == self.max_iterations - 1:
                     eval_info = self.evaluate_policy()
-                    self.log_evaluation_metrics(eval_info)
+                    self.log_evaluation_metrics(eval_info, update_info=update_info)
                 
                 # Save checkpoint
                 if iteration % self.save_interval == 0 or iteration == self.max_iterations - 1:
@@ -1005,8 +1021,6 @@ class Trainer:
     
     def log_training_metrics(self, rollout_data: Dict[str, Any], update_info: Dict[str, float]):
         """Log training metrics."""
-        should_log_pci = self._should_log_pci_metrics_this_iteration()
-
         # Log to console
         self.logger.info(f"Iteration {self.iteration}")
         
@@ -1041,28 +1055,9 @@ class Trainer:
                 # Skip already logged keys
                 if key in ['epsilon', 'total_env_steps', 'replay_buffer_episodes']:
                     continue
-                if key.endswith('_count'):
+                if self._is_eval_only_advantage_metric(key):
                     continue
-                if not should_log_pci and self._is_pci_update_metric_key(key):
-                    continue
-
-                if key.startswith('delta_'):
-                    # Format delta statistics nicely
-                    if key.endswith('_mean'):
-                        scenario = key.replace('delta_', '').replace('_mean', '')
-                        count_key = f'delta_{scenario}_count'
-                        if count_key in update_info:
-                            count = update_info[count_key]
-                            self.logger.info(f"    {key}: {value:.6f} (n={count:g})")
-                        else:
-                            self.logger.info(f"    {key}: {value:.6f}")
-                    elif key.endswith('_std'):
-                        scenario = key.replace('delta_', '').replace('_std', '')
-                        self.logger.info(f"    {key}: {value:.6f}")
-                    else:
-                        self.logger.info(f"    {key}: {value:.6f}")
-                else:
-                    self.logger.info(f"    {key}: {value:.6f}")
+                self._log_update_metric_line(key, value, update_info)
         
         # Log to wandb
         if self.use_wandb:
@@ -1081,7 +1076,7 @@ class Trainer:
             
             # Add update info
             for key, value in update_info.items():
-                if not should_log_pci and self._is_pci_update_metric_key(key):
+                if self._is_eval_only_advantage_metric(key):
                     continue
                 wandb_data[f'update/{key}'] = value
             
@@ -1090,25 +1085,24 @@ class Trainer:
             delta_scenarios = ['no_reward', 'forage_reward', 'stag_reward']
             num_agents = getattr(self.algorithm, 'num_agents', 0)
             
-            if should_log_pci:
-                for agent_id in range(num_agents):
-                    for scenario in delta_scenarios:
-                        mean_key = f'delta_agent_{agent_id}_{scenario}_mean'
-                        std_key = f'delta_agent_{agent_id}_{scenario}_std'
-                        count_key = f'delta_agent_{agent_id}_{scenario}_count'
-                        
-                        if mean_key in update_info:
-                            # Log with agent-specific naming
-                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}'] = update_info[mean_key]
-                            # Also log std and count separately for reference
-                            if std_key in update_info:
-                                wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_std'] = update_info[std_key]
-                            if count_key in update_info:
-                                wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_count'] = update_info[count_key]
+            for agent_id in range(num_agents):
+                for scenario in delta_scenarios:
+                    mean_key = f'delta_agent_{agent_id}_{scenario}_mean'
+                    std_key = f'delta_agent_{agent_id}_{scenario}_std'
+                    count_key = f'delta_agent_{agent_id}_{scenario}_count'
+                    
+                    if mean_key in update_info:
+                        # Log with agent-specific naming
+                        wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}'] = update_info[mean_key]
+                        # Also log std and count separately for reference
+                        if std_key in update_info:
+                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_std'] = update_info[std_key]
+                        if count_key in update_info:
+                            wandb_data[f'causal_effect/agent_{agent_id}/delta_{scenario}_count'] = update_info[count_key]
             
             wandb.log(wandb_data, step=self.iteration)
     
-    def log_evaluation_metrics(self, eval_info: Dict[str, float]):
+    def log_evaluation_metrics(self, eval_info: Dict[str, float], update_info: Optional[Dict[str, float]] = None):
         """Log evaluation metrics."""
         self.logger.info("Evaluation Results:")
         self.logger.info(f"  Mean Reward: {eval_info['eval_mean_reward']:.3f} ± {eval_info['eval_std_reward']:.3f}")
@@ -1117,6 +1111,12 @@ class Trainer:
         
         if eval_info['is_best']:
             self.logger.info("  *** New best performance! ***")
+
+        eval_only_adv_metrics = self._get_eval_only_advantage_metrics(update_info)
+        if eval_only_adv_metrics:
+            self.logger.info("  PCI Advantage Snapshot:")
+            for key, value in eval_only_adv_metrics.items():
+                self._log_update_metric_line(key, value, eval_only_adv_metrics, indent="    ")
         
         if self.use_wandb:
             wandb_data = {
@@ -1128,6 +1128,9 @@ class Trainer:
                 'eval/max_reward': eval_info['eval_max_reward'],
                 'eval/best_reward': self.best_eval_reward
             }
+
+            for key, value in eval_only_adv_metrics.items():
+                wandb_data[f'eval/{key}'] = value
             
             # Add causal effect metrics to wandb (only for PCI-MAPPO)
             if self.causal_evaluator is not None and 'causal_effects' in eval_info and eval_info['causal_effects'] is not None:

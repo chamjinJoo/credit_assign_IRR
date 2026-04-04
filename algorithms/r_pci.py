@@ -1261,16 +1261,26 @@ class rPCIAlgorithm:
         # Extract pre-computed advantages and returns
         agent_returns = {}
         agent_advantages = {}
-        
+        agent_env_advantages = {}  # [Direction 2] env-only advantages
+        agent_pci_advantages = {}  # [Direction 2] pci-only advantages
+
+        causal_lambda = self.get_current_causal_lambda()  # [Direction 2]
+
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
-            
+
             # Extract pre-computed values
             returns_list = [t['returns'][agent_id] for t in batch_data]
             advantages_list = [t['advantages'][agent_id] for t in batch_data]
-            
+
             agent_returns[agent_id] = torch.tensor(returns_list, dtype=torch.float32, device=self.device)
             agent_advantages[agent_id] = torch.tensor(advantages_list, dtype=torch.float32, device=self.device)
+
+            # [Direction 2] Extract env and pci advantages separately
+            agent_env_advantages[agent_id] = torch.tensor(
+                [t['env_advantages'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+            agent_pci_advantages[agent_id] = torch.tensor(
+                [t['pci_advantages'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
 
         # Log delta (causal intrinsic rewards) by scenario for StagHunt
         for i in range(self.num_agents):
@@ -1297,7 +1307,10 @@ class rPCIAlgorithm:
                 agent_id=agent_id,
                 agent_obs=agent_obs,
                 my_actions=my_actions,
-                agent_advantage=agent_advantages[agent_id],
+                # [Direction 2] env advantages only; adv_batch = batch-normalize(env_norm)
+                agent_advantage=agent_env_advantages[agent_id],
+                # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
+                # agent_advantage=agent_advantages[agent_id],
                 agent_return=agent_returns[agent_id],
                 masks_batch=masks_batch,
                 init_hidden_states=init_hidden_states,
@@ -1316,20 +1329,35 @@ class rPCIAlgorithm:
             prev_actions_batch_merged = prepared['prev_actions_batch_merged']
             avail_actions_batch_merged = prepared['avail_actions_batch_merged']
             old_log_probs = prepared['old_log_probs']
-                
+
+            # [Direction 2] Prepare PCI advantage batch with the same chunking as adv_batch
+            pci_adv_normalized = normalize_advantages(agent_pci_advantages[agent_id])
+            if num_chunks > 0:
+                pci_adv_batch = chunk_sequence(
+                    pci_adv_normalized[:num_chunks * self.rnn_chunk_length], self.rnn_chunk_length
+                ).reshape(-1)
+            else:
+                pci_adv_batch = pci_adv_normalized
+
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
-                    rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch, 
+                    rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch,
                     available_actions=avail_actions_batch_merged, prev_actions=prev_actions_batch
                 )
                 ratio = torch.exp(new_log_probs - old_log_probs)
-                
-                surr1 = ratio * adv_batch
-                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                
-                # Masked Policy Loss
-                policy_loss = -torch.min(surr1, surr2)
+
+                # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
+                surr1_env = ratio * adv_batch
+                surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                surr1_pci = ratio * pci_adv_batch
+                surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
+                policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
                 policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
+                # surr1 = ratio * adv_batch
+                # surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                # policy_loss = -torch.min(surr1, surr2)
+                # policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
 
                 # Masked Entropy Loss
                 entropy_loss = -entropy # entropy is (T)

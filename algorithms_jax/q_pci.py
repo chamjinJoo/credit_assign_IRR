@@ -397,14 +397,24 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         pci_advantages, pci_metrics = self.compute_bridge_advantages(rollout)
         metrics.update(pci_metrics)
 
+        causal_lambda = self.get_current_causal_lambda()
         combined_advantages, combine_metrics = self._combine_actor_advantages(
             env_advantages,
             pci_advantages,
-            self.get_current_causal_lambda(),
+            causal_lambda,
         )
         metrics.update(combine_metrics)
 
-        metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
+        # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────────
+        # combined = env_norm + λ*pci_norm; recover components and pass separately
+        pci_norm_adv = self._pci_residual_tensor(env_advantages, pci_advantages, causal_lambda)
+        env_norm_adv = combined_advantages - causal_lambda * pci_norm_adv
+        metrics.update(self._update_actor_critic(
+            rollout, env_norm_adv, returns,
+            pci_advantages=pci_norm_adv, causal_lambda=causal_lambda,
+        ))
+        # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────────
+        # metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])
         self.latest_rollout = None
         return metrics

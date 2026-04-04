@@ -999,11 +999,23 @@ class qPCIAlgorithm:
             agent_obs = full_obs_batch[:, agent_id, :]
             my_actions = actions_batch[:, agent_id]
             
-            adv_raw = torch.tensor(
-                [t['advantages'][agent_id] for t in batch_data],
+            # [Direction 2] Extract env and pci advantages separately
+            env_adv_raw = torch.tensor(
+                [t['env_advantages'][agent_id] for t in batch_data],
                 dtype=torch.float32, device=self.device)
-            
-            adv = normalize_advantages(adv_raw)
+            pci_adv_raw = torch.tensor(
+                [t['pci_advantages'][agent_id] for t in batch_data],
+                dtype=torch.float32, device=self.device)
+            causal_lambda = self.get_current_causal_lambda()
+
+            # [Direction 2] adv_batch = batch-normalize(env_norm)
+            adv = normalize_advantages(env_adv_raw)
+            pci_adv = normalize_advantages(pci_adv_raw)
+            # [Direction 1] adv_batch = batch-normalize(env_norm + λ*pci_norm); uncomment to revert
+            # adv_raw = torch.tensor(
+            #     [t['advantages'][agent_id] for t in batch_data],
+            #     dtype=torch.float32, device=self.device)
+            # adv = normalize_advantages(adv_raw)
 
             # Returns for value loss
             agent_returns = torch.tensor(
@@ -1042,6 +1054,7 @@ class qPCIAlgorithm:
                 chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
                 p_h0_batch = p_states_all[chunk_indices]
                 adv_batch = chunk_sequence(adv, chunk_len).reshape(-1)
+                pci_adv_batch = chunk_sequence(pci_adv, chunk_len).reshape(-1)  # [Direction 2]
                 ret_batch = chunk_sequence(agent_returns, chunk_len).reshape(-1)
             else:
                 rnn_obs_batch = agent_obs.unsqueeze(1)
@@ -1049,6 +1062,7 @@ class qPCIAlgorithm:
                 p_h0_batch = p_states_all[0].unsqueeze(0)
                 my_actions_batch = my_actions
                 adv_batch = adv
+                pci_adv_batch = pci_adv  # [Direction 2]
                 ret_batch = agent_returns
                 active_masks_batch = agent_active_masks
                 avail_actions_batch_merged = avail_actions_all
@@ -1072,11 +1086,19 @@ class qPCIAlgorithm:
                     available_actions=avail_actions_batch_merged, prev_actions=prev_actions_batch
                 )
                 ratio = torch.exp(new_log_probs - old_log_probs)
-                surr1 = ratio * adv_batch
-                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                
-                policy_loss = -torch.min(surr1, surr2)
+
+                # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
+                surr1_env = ratio * adv_batch
+                surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                surr1_pci = ratio * pci_adv_batch
+                surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
+                policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
                 policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
+                # surr1 = ratio * adv_batch
+                # surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                # policy_loss = -torch.min(surr1, surr2)
+                # policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
                 entropy_loss = (-entropy * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
 
                 loss = policy_loss + self.entropy_coef * entropy_loss

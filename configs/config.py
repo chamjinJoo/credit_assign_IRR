@@ -451,7 +451,7 @@ def parse_args() -> argparse.Namespace:
                         help='Checkpoint path for evaluation/testing')
     parser.add_argument('--render', action='store_true',
                         help='Render environment during testing')
-    parser.add_argument('--eval-episodes', type=int, default=50,
+    parser.add_argument('--eval-episodes', type=int, default=32,
                         help='Number of episodes for evaluation')
     
     return parser.parse_args()

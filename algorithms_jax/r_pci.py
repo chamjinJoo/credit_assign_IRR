@@ -598,7 +598,13 @@ class JAXRPCIAlgorithm:
             self.critic_state.params,
         )
 
-    def _flatten_actor_batch(self, rollout: Dict[str, jnp.ndarray], advantages: jnp.ndarray):
+    def _flatten_actor_batch(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        advantages: jnp.ndarray,
+        pci_advantages: Optional[jnp.ndarray] = None,  # [Direction 2]
+        causal_lambda: float = 0.0,                     # [Direction 2]
+    ):
         total_actor_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
         obs = rollout["obs"].reshape(-1, self.policy_obs_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
@@ -623,6 +629,19 @@ class JAXRPCIAlgorithm:
         adv = adv.reshape(-1)
         if adv.size > 1:
             adv = (adv - adv.mean()) / (adv.std() + 1.0e-8)
+
+        # [Direction 2] Normalize and flatten PCI advantages
+        if pci_advantages is not None:
+            if pci_advantages.ndim == 2:
+                pci_adv = jnp.repeat(pci_advantages[..., None], self.num_agents, axis=-1)
+            else:
+                pci_adv = pci_advantages
+            pci_adv = pci_adv.reshape(-1)
+            if pci_adv.size > 1:
+                pci_adv = (pci_adv - pci_adv.mean()) / (pci_adv.std() + 1.0e-8)
+        else:
+            pci_adv = jnp.zeros_like(adv)
+
         return {
             "obs": obs,
             "avail_actions": avail_actions,
@@ -633,6 +652,8 @@ class JAXRPCIAlgorithm:
             "masks": masks,
             "loss_masks": loss_masks,
             "advantages": adv,
+            "pci_advantages": pci_adv,                      # [Direction 2]
+            "causal_lambda": jnp.array(causal_lambda),      # [Direction 2]
         }
 
     def _flatten_critic_batch(self, rollout: Dict[str, jnp.ndarray], returns: jnp.ndarray):
@@ -804,11 +825,22 @@ class JAXRPCIAlgorithm:
             entropy = -jnp.sum(probs * jnp.log(jnp.clip(probs, a_min=1.0e-8)), axis=-1)
 
             ratio = jnp.exp(log_probs - batch["old_log_probs"])
-            unclipped = ratio * batch["advantages"]
-            clipped = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch["advantages"]
             weights = batch["loss_masks"]
             denom = jnp.sum(weights) + 1.0e-8
-            policy_loss = -jnp.sum(jnp.minimum(unclipped, clipped) * weights) / denom
+
+            # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
+            unclipped_env = ratio * batch["advantages"]
+            clipped_env = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch["advantages"]
+            loss_env = -jnp.sum(jnp.minimum(unclipped_env, clipped_env) * weights) / denom
+            unclipped_pci = ratio * batch["pci_advantages"]
+            clipped_pci = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch["pci_advantages"]
+            loss_pci = -jnp.sum(jnp.minimum(unclipped_pci, clipped_pci) * weights) / denom
+            policy_loss = loss_env + batch["causal_lambda"] * loss_pci
+            # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
+            # unclipped = ratio * batch["advantages"]
+            # clipped = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch["advantages"]
+            # policy_loss = -jnp.sum(jnp.minimum(unclipped, clipped) * weights) / denom
+
             entropy_bonus = jnp.sum(entropy * weights) / denom
             total_loss = policy_loss - self.entropy_coef * entropy_bonus
             approx_kl = jnp.sum((batch["old_log_probs"] - log_probs) * weights) / denom
@@ -1016,8 +1048,13 @@ class JAXRPCIAlgorithm:
         rollout: Dict[str, jnp.ndarray],
         advantages: jnp.ndarray,
         returns: jnp.ndarray,
+        pci_advantages: Optional[jnp.ndarray] = None,  # [Direction 2]
+        causal_lambda: float = 0.0,                     # [Direction 2]
     ) -> Dict[str, float]:
-        actor_batch = self._flatten_actor_batch(rollout, advantages)
+        # [Direction 2] pass pci_advantages and causal_lambda into actor batch
+        actor_batch = self._flatten_actor_batch(rollout, advantages, pci_advantages, causal_lambda)
+        # [Direction 1] uncomment to revert:
+        # actor_batch = self._flatten_actor_batch(rollout, advantages)
         critic_batch = self._flatten_critic_batch(rollout, returns)
 
         metrics = []
@@ -1025,7 +1062,11 @@ class JAXRPCIAlgorithm:
             self.rng, actor_key, critic_key = jax.random.split(self.rng, 3)
 
             for indices in self._iterate_minibatches(actor_batch["actions"].shape[0], actor_key):
-                actor_mb = {key: value[indices] for key, value in actor_batch.items()}
+                # scalar entries (ndim==0) like causal_lambda are broadcast as-is
+                actor_mb = {
+                    key: (value if value.ndim == 0 else value[indices])
+                    for key, value in actor_batch.items()
+                }
                 self.actor_state, actor_metrics = self._actor_update_step(self.actor_state, actor_mb)
                 metrics.append({key: float(value) for key, value in tree_to_host(actor_metrics).items()})
 
@@ -1101,7 +1142,16 @@ class JAXRPCIAlgorithm:
             )
         )
 
-        metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
+        # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────────
+        # env_norm_adv = combined_advantages - causal_lambda * pci_residual  # == env_norm component
+        # Pass env_norm and pci_norm separately; loss computed in _actor_update_step
+        env_norm_adv = combined_advantages - causal_lambda * pci_residual
+        metrics.update(self._update_actor_critic(
+            rollout, env_norm_adv, returns,
+            pci_advantages=pci_residual, causal_lambda=causal_lambda,
+        ))
+        # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────────
+        # metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])
         self.latest_rollout = None
         return metrics
