@@ -243,13 +243,11 @@ class rPCIAlgorithm:
             self.value_nets = {agent_id: agent.value_net for agent_id, agent in self.agents.items()}
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
         
-        ## option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
+        # option 1. x = (o^i_t, \mathbf{h}^{-i}_{t-1})
         x_dim = obs_dim + (num_agents-1) * hidden_dim * recurrent_N if use_recurrent_policy else obs_dim
-        ## option 2. x = (o^i_t, \mathbf{h}_{t-1})
-        # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N 
+        # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N  # option 2. x = (o^i_t, \mathbf{h}_{t-1})
+        x_dim = hidden_dim * recurrent_N * num_agents # option 3. x = (\mathbf{h}_{t})
         
-        ## option 3. x = (o^i_t, \mathbf{h}_{t-1}, a^{-i}_{t})
-        # x_dim = obs_dim + num_agents * hidden_dim * recurrent_N + action_dim * (num_agents-1)
 
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
             action_dim=action_dim,
@@ -399,15 +397,18 @@ class rPCIAlgorithm:
         prev_actions_onehot_batch = F.one_hot(prev_action_batch, self.action_dim).float()
 
         # Extract hidden states
-        hidden_states_batch = {}
+        hidden_states_batch = {}    # h_{t-1}: for policy gradient (evaluate_actions)
+        h_t_states_batch = {}       # h_t:     for bridge network (option 3)
         if 'hidden_states' in batch_data[0] and batch_data[0]['hidden_states'] is not None:
             if any(batch_data[0]['hidden_states'].values()):
                 for agent_id in range(self.num_agents):
                     if agent_id in batch_data[0]['hidden_states']:
                         p_states = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device) # (Batch, recurrent_N, hidden_dim)
-                        # v_states = torch.stack([t['hidden_states'][agent_id][1] for t in batch_data]).to(self.device)
-                        # hidden_states_batch[agent_id] = (p_states, v_states)
                         hidden_states_batch[agent_id] = p_states
+                        # h_t is stored at index [2] of the 3-tuple
+                        if len(batch_data[0]['hidden_states'][agent_id]) > 2:
+                            p_next_states = torch.stack([t['hidden_states'][agent_id][2] for t in batch_data]).to(self.device)
+                            h_t_states_batch[agent_id] = p_next_states
 
         A_super = action_batch.view(-1)
         expanded_obs = obs_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)
@@ -424,27 +425,35 @@ class rPCIAlgorithm:
         
         Y_super = reward_batch.repeat_interleave(num_agents, dim=0)
 
-        # Constructing X_super = {o^i_t, h^{-i}_{t-1}}
-        # 1. Gather all hidden states: (B, N, RecN*H)
+        # 1. Gather h_{t-1} for all agents: (B, N, RecN*H)  — used by evaluate_actions
         h_list = []
         for i in range(num_agents):
             if i in hidden_states_batch:
                 h_list.append(hidden_states_batch[i].view(batch_size, -1))
             else:
                 h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
-        H_all = torch.stack(h_list, dim=1) # (B, N, RecN*H)
+        H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
 
-        # 2. Concat obs and hidden states
+        # 2. Gather h_t for all agents: (B, N, RecN*H)  — used by bridge network (option 3)
+        h_t_list = []
+        for i in range(num_agents):
+            if i in h_t_states_batch:
+                h_t_list.append(h_t_states_batch[i].view(batch_size, -1))
+            else:
+                h_t_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
+        H_t_all = torch.stack(h_t_list, dim=1)  # (B, N, RecN*H)
+
+        # 3. Construct X_super
         ########################################################################################
         ## Option 1. x = {o^i_t, h^{-i}_{t-1}}
-        obs_super = obs_batch.view(-1, self.obs_dim)
-        if self.use_recurrent_policy:
-            expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1) # (B, N, N, RecN*H)
-            mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
-            H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1) # (B*N, (N-1)*RecN*H)
-            X_super = torch.cat([obs_super, H_others_super], dim=1)
-        else:
-            X_super = obs_super
+        # obs_super = obs_batch.view(-1, self.obs_dim)
+        # if self.use_recurrent_policy:
+        #     expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1) # (B, N, N, RecN*H)
+        #     mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
+        #     H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1) # (B*N, (N-1)*RecN*H)
+        #     X_super = torch.cat([obs_super, H_others_super], dim=1)
+        # else:
+        #     X_super = obs_super
 
         ## Option 2. x = {o^i_t, \mathbf{h}_{t-1}}
         # H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
@@ -452,11 +461,10 @@ class rPCIAlgorithm:
         # obs_super = obs_batch.view(-1, self.obs_dim)
         # X_super = torch.cat([obs_super, H_all_super], dim=1)
 
-        ## Option 3. x = {o^i_t, \mathbf{h}_{t-1}, a^{-i}_{t}}
-        # H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
-        # H_all_super = H_all_expanded.reshape(batch_size * num_agents, -1)   # (B*N, N*RecN*H)
-        # obs_super = obs_batch.view(-1, self.obs_dim)
-        # X_super = torch.cat([obs_super, H_all_super, A_others_super], dim=1)
+        ## Option 3. x = \mathbf{h}_t  (joint hidden state AFTER RNN update at t)
+        H_t_all_expanded = H_t_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
+        H_t_all_super = H_t_all_expanded.reshape(batch_size * num_agents, -1)   # (B*N, N*RecN*H)
+        X_super = H_t_all_super
         ########################################################################################
         
         Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0) # Default Z
@@ -543,22 +551,15 @@ class rPCIAlgorithm:
                 z_mb_norm = (z_mb - z_mean) / z_std
 
             # 2) split x block into obs and hid, then standardize respectively
-            x_obs_mb_raw = x_mb[:, :self.obs_dim]
+            ## Option 3: x = \mathbf{h}_t  — pure joint hidden, no obs component
+            x_obs_mb_raw = x_mb[:, :0]  # empty: no obs in option 3
+            x_hid_mb_raw = x_mb         # entire x is joint hidden state h_t
 
-            ## Option 1 / Option 2: h^{-i} or \mathbf{h} (complement-only hidden or all-agents hidden, single-agent step only)
-            x_hid_mb_raw = x_mb[:, self.obs_dim:] if self.use_recurrent_policy else x_mb[:, self.obs_dim:self.obs_dim]
-            # x_act_mb_raw = x_mb[:, self.obs_dim + self.recurrent_N * self.hidden_dim:]
+            ## Option 1 / Option 2: x = (obs_i, h^{-i}) or (obs_i, \mathbf{h})
+            # x_obs_mb_raw = x_mb[:, :self.obs_dim]
+            # x_hid_mb_raw = x_mb[:, self.obs_dim:] if self.use_recurrent_policy else x_mb[:, self.obs_dim:self.obs_dim]
 
-            ## Option 3: x = (o^i_t, \mathbf{h}_{t-1}, a^{-i}_t)
-            # ## hidden block = num_agents * recurrent_N * hidden_dim
-            # _hid_block_dim = self.num_agents * self.recurrent_N * self.hidden_dim
-            # x_hid_mb_raw = x_mb[:, self.obs_dim:self.obs_dim + _hid_block_dim]
-            # x_act_mb_raw = x_mb[:, self.obs_dim + _hid_block_dim:]
-            # do not normalize action one-hot block
-
-            x_obs_mean = x_obs_mb_raw.mean(dim=0, keepdim=True)
-            x_obs_std = x_obs_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
-            x_obs_mb = (x_obs_mb_raw - x_obs_mean) / x_obs_std
+            x_obs_mb = x_obs_mb_raw  # empty tensor; kernel_xobs_block will be skipped below
 
             if x_hid_mb_raw.size(1) > 0:
                 x_hid_mean = x_hid_mb_raw.mean(dim=0, keepdim=True)
@@ -626,8 +627,9 @@ class rPCIAlgorithm:
                 kernel_blocks = [
                     (z_mb_norm,        self.kernel_z_block),
                     (action_onehot_mb, self.kernel_a_block),
-                    (x_obs_mb,         self.kernel_xobs_block),
                 ]
+                if x_obs_mb.size(1) > 0:
+                    kernel_blocks.append((x_obs_mb, self.kernel_xobs_block))
                 if x_hid_mb.size(1) > 0:
                     kernel_blocks.append((x_hid_mb, self.kernel_xhid_block))
                 for feat, kernel in kernel_blocks:
@@ -638,8 +640,9 @@ class rPCIAlgorithm:
             # Element-wise product of block-wise Gram matrices
             K_z = (self.kernel_z_block(z_mb_norm)
                    * self.kernel_a_block(action_onehot_mb)
-                   * self.kernel_xobs_block(x_obs_mb)
                    )
+            if x_obs_mb.size(1) > 0:
+                K_z = K_z * self.kernel_xobs_block(x_obs_mb)
             if x_hid_mb.size(1) > 0:
                 K_z = K_z * self.kernel_xhid_block(x_hid_mb)
 
@@ -799,20 +802,20 @@ class rPCIAlgorithm:
             agent_prev_action_onehot = self.agents[agent_id].prev_action.unsqueeze(0).clone()
 
             # Policy
-            action, log_prob, p_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
-            
+            action, log_prob, p_state, p_next_state = self.agents[agent_id].get_action(obs, mask_tensor, available_actions=avail_actions_tensor)
+
             if self.use_centralized_critic:
                 v_state = central_v_state
             else:
                 # Value (Update state) - IPPO style
                 _, v_state = self.agents[agent_id].get_value(
-                    obs, 
-                    mask_tensor, 
+                    obs,
+                    mask_tensor,
                     prev_action_onehot=agent_prev_action_onehot
                 )
-            
+
             actions[agent_id] = (action, log_prob)
-            self.temp_hidden_states[agent_id] = (p_state, v_state)
+            self.temp_hidden_states[agent_id] = (p_state, v_state, p_next_state)
             self.temp_masks[agent_id] = mask
             self.temp_log_probs[agent_id] = log_prob
             
@@ -872,12 +875,12 @@ class rPCIAlgorithm:
             agent_prev_actions_onehot = self.agents[agent_id].prev_actions_batch.clone()
             
             # Get actions in batch
-            actions, log_probs, p_states = self.agents[agent_id].get_action_batch(
+            actions, log_probs, p_states, p_next_states = self.agents[agent_id].get_action_batch(
                 obs_stacked,
                 masks_stacked,
                 avail_actions_stacked
             )
-            
+
             if not self.use_centralized_critic:
                 # Get values in batch (IPPO style)
                 _, v_states = self.agents[agent_id].get_value_batch(
@@ -885,7 +888,7 @@ class rPCIAlgorithm:
                     masks_stacked,
                     prev_actions_onehot=agent_prev_actions_onehot
                 )
-            
+
             # Distribute results to each environment
             for env_idx in range(n_envs):
                 actions_batch[env_idx][agent_id] = (
@@ -898,7 +901,8 @@ class rPCIAlgorithm:
                     v_state_for_env = v_states[env_idx].clone()
                 self.temp_hidden_states_batch[env_idx][agent_id] = (
                     p_states[env_idx].clone(),
-                    v_state_for_env
+                    v_state_for_env,
+                    p_next_states[env_idx].clone(),
                 )
                 self.temp_masks_batch[env_idx][agent_id] = masks_stacked[env_idx, 0].item()
         
@@ -1068,24 +1072,20 @@ class rPCIAlgorithm:
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
-                # x = (o^i_t, \mathbf{h}^{-i}_{t-1})
-                obs_flat = obs_b.view(-1, self.obs_dim)
+                # x = \mathbf{h}_t  (option 3)
                 if self.use_recurrent_policy:
-                    h_list_inf = []
+                    h_t_list_inf = []
                     for k in range(num_agents):
-                        if hidden_states_batch is not None and k in hidden_states_batch:
-                            # hidden_states_batch[k][0][i:end] is (curr_bs, RecN, H)
-                            h_list_inf.append(hidden_states_batch[k][0][i:end].view(curr_bs, -1))
+                        if (hidden_states_batch is not None and k in hidden_states_batch
+                                and len(hidden_states_batch[k]) > 2):
+                            h_t_list_inf.append(hidden_states_batch[k][2][i:end].view(curr_bs, -1))
                         else:
-                            h_list_inf.append(torch.zeros(curr_bs, self.recurrent_N * self.hidden_dim, device=self.device))
-                    H_all_inf = torch.stack(h_list_inf, dim=1) # (curr_bs, N, RecN*H)
-
-                    expanded_H_inf = H_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
-                    mask_H_inf = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(curr_bs, -1, -1, self.recurrent_N * self.hidden_dim)
-                    H_others_inf = expanded_H_inf[mask_H_inf].view(curr_bs * num_agents, -1)
-                    x_flat = torch.cat([obs_flat, H_others_inf], dim=1)
+                            h_t_list_inf.append(torch.zeros(curr_bs, self.recurrent_N * self.hidden_dim, device=self.device))
+                    H_t_all_inf = torch.stack(h_t_list_inf, dim=1)  # (curr_bs, N, RecN*H)
+                    H_t_all_inf_expanded = H_t_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                    x_flat = H_t_all_inf_expanded.reshape(curr_bs * num_agents, -1)  # (curr_bs*N, N*RecN*H)
                 else:
-                    x_flat = obs_flat
+                    x_flat = obs_b.view(-1, self.obs_dim)
 
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
@@ -2189,7 +2189,14 @@ class rPCIAlgorithm:
                     v_states_list = [t['hidden_states'][agent_id][1] for t in traj]
                     p_states = torch.stack(p_states_list).to(self.device, non_blocking=True)
                     v_states = torch.stack(v_states_list).to(self.device, non_blocking=True)
-                    hidden_states_batch[agent_id] = (p_states, v_states)
+                    # h_t (index [2]) stored for bridge network (option 3)
+                    if len(traj[0]['hidden_states'][agent_id]) > 2:
+                        p_next_states = torch.stack(
+                            [t['hidden_states'][agent_id][2] for t in traj]
+                        ).to(self.device, non_blocking=True)
+                        hidden_states_batch[agent_id] = (p_states, v_states, p_next_states)
+                    else:
+                        hidden_states_batch[agent_id] = (p_states, v_states)
 
         available_actions_batch = build_available_actions_batch(
             traj,

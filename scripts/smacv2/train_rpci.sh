@@ -17,7 +17,7 @@ max_iterations=1600
 max_steps_per_iteration=6400    # 200 steps = 1 episode limit for 10gen scenarios
 # episodes_per_iteration=0        # if it is positive, use EpiosdeBuffer automatically 
 log_interval=2
-device="cpu"
+device="cuda"
 seed=42
 
 # load model if necessary

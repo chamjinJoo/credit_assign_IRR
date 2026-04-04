@@ -111,7 +111,7 @@ class RecurrentPolicyAgent:
             self.prev_action = F.one_hot(action, self.action_dim).float().squeeze(0)
 
         if return_rnn_state:
-            return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone()
+            return action.item(), log_prob.item(), curr_rnn_state.squeeze(0).clone(), next_rnn_state.squeeze(0).clone()
         return action.item(), log_prob.item()
 
     def get_action_batch(
@@ -133,10 +133,11 @@ class RecurrentPolicyAgent:
             )
 
             prev_states_copy = prev_states.clone()
+            next_states_copy = next_states.clone()
             self.rnn_states_policy_batch = next_states
             self.prev_actions_batch = F.one_hot(actions, self.action_dim).float()
 
-        return actions, log_probs, prev_states_copy
+        return actions, log_probs, prev_states_copy, next_states_copy
 
 
 class RecurrentActorCriticAgent(RecurrentPolicyAgent):
