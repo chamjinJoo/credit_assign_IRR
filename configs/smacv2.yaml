@@ -64,7 +64,7 @@ training:
   
 # Environment Configuration
 environment:
-  import_config: "configs/smacv2_configs/sc2_gen_protoss_epo.yaml"
+  import_config: "configs/smacv2_configs/sc2_gen_protoss_2_vs_2.yaml"
   env_name: "SMACv2"
   num_agents: 2
   use_individual_rewards: false  # Enable damage-based individual rewards

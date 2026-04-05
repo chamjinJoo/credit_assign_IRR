@@ -19,6 +19,11 @@ seed=42
 n_rollout_threads=4
 
 export SC2PATH="$HOME/StarCraftII"
+
+# when using Slurm
+# SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# export SC2PATH="${SC2PATH:-$SCRIPT_ROOT/3rdparty/StarCraftII}"
+
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
 conda activate pcimarl

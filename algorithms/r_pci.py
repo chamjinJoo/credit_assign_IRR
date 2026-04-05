@@ -511,8 +511,26 @@ class rPCIAlgorithm:
             
         obs_super = obs_batch.view(-1, self.obs_dim)
 
+        # Filter dead-agent timesteps from super-batch (dead = only noop action available)
+        avail_for_filter = build_available_actions_batch(batch_data, num_agents, device)
+        if avail_for_filter:
+            alive_list_bridge = []
+            for k in range(num_agents):
+                if k in avail_for_filter:
+                    alive_list_bridge.append(avail_for_filter[k][:, 1:].sum(dim=-1) > 0)
+                else:
+                    alive_list_bridge.append(torch.ones(batch_size, dtype=torch.bool, device=device))
+            alive_super_bridge = torch.stack(alive_list_bridge, dim=1).view(-1)  # (B*N,) bool
+            A_super = A_super[alive_super_bridge]
+            W_super = W_super[alive_super_bridge]
+            Z_super = Z_super[alive_super_bridge]
+            X_super = X_super[alive_super_bridge]
+            Y_super = Y_super[alive_super_bridge]
+            obs_super = obs_super[alive_super_bridge]
+            policy_probs_super = policy_probs_super[alive_super_bridge]
+
         # === 2. Mini-batch Training Loop ===
-        total_samples = A_super.size(0) 
+        total_samples = A_super.size(0)
         indices = torch.arange(total_samples, device=device)
 
         avg_outcome_loss = 0.0
@@ -1544,7 +1562,10 @@ class rPCIAlgorithm:
                     for t in traj
                 ]
                 global_obs_seq = torch.stack(global_obs_list).to(self.device, non_blocking=True)
-                global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
+                global_masks_seq = torch.tensor(
+                    [max(t['masks'][i] for i in range(self.num_agents)) for t in traj],
+                    device=self.device
+                ).unsqueeze(1)
 
                 # Initial hidden state for central value network (agent 0's v_state)
                 v_h0 = traj[0]['hidden_states'][0][1].to(self.device, non_blocking=True).unsqueeze(0)
@@ -1987,7 +2008,7 @@ class rPCIAlgorithm:
             for t in batch_data
         ]).to(self.device)
         global_masks_seq = torch.tensor(
-            [t['masks'][0] for t in batch_data],
+            [max(t['masks'][i] for i in range(self.num_agents)) for t in batch_data],
             device=self.device
         ).unsqueeze(1)
         v_states_all_central = torch.stack([

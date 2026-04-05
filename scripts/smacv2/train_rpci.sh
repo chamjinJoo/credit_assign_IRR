@@ -6,7 +6,7 @@ config="configs/smacv2.yaml"
 
 # model setting
 model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=0.1 # 0.1 for SMAC, SMACv2 | # NOTE: for additive formulation, set to negative.
+causal_lambda=1.0 # 0.1 for SMAC, SMACv2 | # NOTE: for additive formulation, set to negative.
 clip_delta=0.001
 use_centralized_critic=false  # true: MAPPO-style centralized critic, false: IPPO-style individual critic
 use_value_parameter_sharing=true
@@ -17,13 +17,18 @@ max_iterations=1600
 max_steps_per_iteration=6400    # 200 steps = 1 episode limit for 10gen scenarios
 # episodes_per_iteration=0        # if it is positive, use EpiosdeBuffer automatically 
 log_interval=2
-device="cuda"
+device="cpu"
 seed=42
 
 # load model if necessary
 # checkpoint="save_checkpoints/20260317_162941_seed42/smacv2wrapper/checkpoints/final_checkpoint.pt"
 
 export SC2PATH="$HOME/StarCraftII"
+
+# when using Slurm
+# SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# export SC2PATH="${SC2PATH:-$SCRIPT_ROOT/3rdparty/StarCraftII}"
+
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
 conda activate pcimarl

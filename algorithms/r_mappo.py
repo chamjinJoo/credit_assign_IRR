@@ -411,7 +411,10 @@ class rMAPPOAlgorithm:
             )
             for t in batch_data
         ]).to(self.device)
-        global_masks_seq = torch.tensor([t['masks'][0] for t in batch_data], device=self.device).unsqueeze(1)
+        global_masks_seq = torch.tensor(
+            [max(t['masks'][i] for i in range(self.num_agents)) for t in batch_data],
+            device=self.device
+        ).unsqueeze(1)
         
         # Extract available actions
         available_actions_batch = build_available_actions_batch(
@@ -632,7 +635,10 @@ class rMAPPOAlgorithm:
                     for t in traj
                 ]
                 global_obs_seq = torch.stack(global_obs_list).to(self.device, non_blocking=True)
-                global_masks_seq = torch.tensor([t['masks'][0] for t in traj], device=self.device).unsqueeze(1)
+                global_masks_seq = torch.tensor(
+                    [max(t['masks'][i] for i in range(self.num_agents)) for t in traj],
+                    device=self.device
+                ).unsqueeze(1)
 
                 # Rewards - Direct GPU tensor creation
                 rewards_seq = torch.tensor(

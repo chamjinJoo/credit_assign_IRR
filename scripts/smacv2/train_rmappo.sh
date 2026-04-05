@@ -11,13 +11,18 @@ recurrent_N=1
 
 # training and logging 
 n_rollout_threads=4
-max_iterations=1500
+max_iterations=1600
 max_steps_per_iteration=6400 # 8 episode for 10gen scenarios (episode limit is 200 steps)
 log_interval=2
-device="cpu"  # recommended to use cuda if available, but default to cpu for safety
+device="cuda"  # recommended to use cuda if available, but default to cpu for safety
 seed=42
 
 export SC2PATH="$HOME/StarCraftII"
+
+# when using Slurm
+# SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# export SC2PATH="${SC2PATH:-$SCRIPT_ROOT/3rdparty/StarCraftII}"
+
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
 conda activate pcimarl

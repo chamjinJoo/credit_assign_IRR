@@ -14,13 +14,17 @@ use_value_parameter_sharing=true
 
 # training and logging 
 n_rollout_threads=4
-max_iterations=1000
+max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 device="cpu"
 seed=42
 
 export SC2PATH="$HOME/StarCraftII"
+
+# when using Slurm
+# SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# export SC2PATH="${SC2PATH:-$SCRIPT_ROOT/3rdparty/StarCraftII}"
 
 # Conda initialization
 eval "$(conda shell.bash hook)"
