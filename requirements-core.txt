@@ -175,6 +175,7 @@ trimesh==4.6.12
 triton==3.3.1
 typing-inspection==0.4.1
 typing_extensions==4.14.0
+vmas==1.5.2
 tzdata==2025.2
 urllib3==2.5.0
 wandb==0.20.1

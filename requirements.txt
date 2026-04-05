@@ -118,6 +118,7 @@ treescope==0.1.9
 trimesh==4.6.12
 typing-inspection==0.4.1
 typing_extensions @ file:///C:/b/abs_0ffjxtihug/croot/typing_extensions_1734714875646/work
+vmas==1.5.2
 tzdata==2025.2
 urllib3==2.5.0
 wandb==0.20.1

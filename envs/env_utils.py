@@ -81,6 +81,26 @@ def create_environment(env_config) -> MultiAgentEnv:
             continuous_actions=config_dict.get('continuous_actions', False),
             seed=config_dict.get('seed', 0)
         )
+
+    elif env_name in ['VMASNavigation', 'vmas_navigation', 'Navigation']:
+        from .multi_agent_env import VMASNavigationEnv
+        return VMASNavigationEnv(
+            num_agents=config_dict.get('num_agents', 4),
+            max_steps=config_dict.get('max_steps', 100),
+            seed=config_dict.get('seed', 0),
+            continuous_actions=config_dict.get('continuous_actions', False),
+            **config_dict.get('env_args', {})
+        )
+
+    elif env_name in ['VMASDispersion', 'vmas_dispersion', 'Dispersion']:
+        from .multi_agent_env import VMASDispersionEnv
+        return VMASDispersionEnv(
+            num_agents=config_dict.get('num_agents', 4),
+            max_steps=config_dict.get('max_steps', 100),
+            seed=config_dict.get('seed', 0),
+            continuous_actions=config_dict.get('continuous_actions', False),
+            **config_dict.get('env_args', {})
+        )
     
     elif env_name == 'SimpleStagHunt' or env_name == 'SimpleStagHuntEnv':
         from .multi_agent_env import SimpleStagHuntEnv
@@ -150,6 +170,10 @@ def get_available_environments() -> Dict[str, str]:
         'MPESimpleSpread': 'MPE Simple Spread 환경 (N 에이전트)',
         'MPE': 'MPE Simple Spread 환경 (N 에이전트)',
         'mpe_simple_spread': 'MPE Simple Spread 환경 (N 에이전트)',
+        'VMASNavigation': 'VMAS Navigation benchmark (N 에이전트)',
+        'vmas_navigation': 'VMAS Navigation benchmark (N 에이전트)',
+        'VMASDispersion': 'VMAS Dispersion benchmark (N 에이전트)',
+        'vmas_dispersion': 'VMAS Dispersion benchmark (N 에이전트)',
         'SMAC': 'StarCraftII 환경 (N 에이전트)',
         'StarCraft2': 'StarCraftII 환경 (N 에이전트)',
         'SMACv2': 'StarCraftII 환경 (N 에이전트)',

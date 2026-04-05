@@ -654,6 +654,18 @@ def main():
                 smacv2_position_generation=getattr(env_config, 'smacv2_position_generation', False),
                 smacv2_unit_type_generation=getattr(env_config, 'smacv2_unit_type_generation', False),
             )
+        elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
+            from envs import VMASNavigationEnv, VMASDispersionEnv
+            wrapper_cls = VMASNavigationEnv if env_name == 'VMASNAVIGATION' else VMASDispersionEnv
+            env = wrapper_cls(
+                num_agents=getattr(env_config, 'num_agents', 4),
+                n_envs=max(1, n_rollout_threads),
+                max_steps=getattr(env_config, 'max_steps', 100),
+                seed=actual_seed,
+                device=device,
+                continuous_actions=getattr(env_config, 'continuous_actions', False),
+                **getattr(env_config, 'env_args', {})
+            )
         else:
             env = create_environment(env_config)
 
@@ -749,10 +761,13 @@ def main():
 
         env_name = getattr(config.environment, 'env_name', '').upper()
 
-        # SMAX + n_rollout_threads > 1: JAX vmap 기반 SMAXBatchWrapper 사용
-        # fork 기반 multiprocessing 대신 vmap으로 N환경을 병렬 실행
+        # Native batched envs (SMAX / VMAS) use in-environment vectorization instead of forked workers.
         if env_name == 'SMAX' and n_rollout_threads > 1:
             print(f"[INFO] SMAX + n_rollout_threads={n_rollout_threads}: SMAXBatchWrapper (vmap) 사용")
+            env_fn = None
+            _trainer_env = env
+        elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
+            print(f"[INFO] {env_name} + n_rollout_threads={n_rollout_threads}: VMASWrapper native batching 사용")
             # env is already created above as SMAXBatchWrapper, so reuse it.
             env_fn = None
             _trainer_env = env

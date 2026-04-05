@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import gymnasium as gym
 import matplotlib.pyplot as plt
 import copy
+import torch
 MATPLOTLIB_AVAILABLE = True
 
 class MultiAgentEnv(ABC):
@@ -1627,6 +1628,391 @@ class MPESimpleSpreadEnv(MultiAgentEnv):
 
     def close(self):
         self._env.close()
+
+
+class VMASWrapper(MultiAgentEnv):
+    """
+    Wrapper for VMAS scenarios using VMAS native vectorization when n_envs > 1.
+    """
+
+    def __init__(
+        self,
+        scenario_name: str,
+        num_agents: int = 4,
+        n_envs: int = 1,
+        max_steps: int = 100,
+        seed: int = None,
+        device: str = "cpu",
+        continuous_actions: bool = False,
+        **scenario_kwargs,
+    ):
+        try:
+            import vmas
+            from gymnasium import spaces
+        except ImportError as exc:
+            raise ImportError(
+                "VMAS is not installed. Install it with `pip install vmas` before "
+                "using VMAS benchmarks."
+            ) from exc
+
+        if continuous_actions:
+            raise ValueError(
+                "This repository currently expects discrete-action environments. "
+                "Use `continuous_actions: false` for VMAS benchmarks."
+            )
+
+        self._spaces = spaces
+        self.scenario_name = scenario_name
+        self.max_steps = max_steps
+        self.device = device
+        self.continuous_actions = continuous_actions
+        self.scenario_kwargs = dict(scenario_kwargs)
+        self.n_envs = n_envs
+        self.n_rollout_threads = n_envs
+
+        self._env = vmas.make_env(
+            scenario=scenario_name,
+            num_envs=n_envs,
+            device=device,
+            continuous_actions=continuous_actions,
+            wrapper=None,
+            max_steps=max_steps,
+            seed=seed,
+            dict_spaces=True,
+            terminated_truncated=True,
+            n_agents=num_agents,
+            **self.scenario_kwargs,
+        )
+
+        self._agent_refs = list(self._env.agents)
+        self._agent_names = self._infer_agent_names()
+        self.num_agents = len(self._agent_names)
+        self.agents = list(range(self.num_agents))
+
+        obs_space = self._extract_agent_space(self._env.observation_space, self._agent_names[0])
+        if isinstance(obs_space, self._spaces.Dict):
+            raise ValueError(
+                f"Scenario `{scenario_name}` returned nested dict observations per agent. "
+                "This wrapper currently expects flat Box observations."
+            )
+        self.obs_dim = int(np.prod(obs_space.shape))
+
+        action_space = self._extract_agent_space(self._env.action_space, self._agent_names[0])
+        if not hasattr(action_space, "n"):
+            raise ValueError(
+                f"Scenario `{scenario_name}` did not expose a discrete action space."
+            )
+        self.action_dim = int(action_space.n)
+
+        super().__init__(num_agents=self.num_agents, seed=seed)
+        self.step_count = 0
+
+    @property
+    def is_batched(self) -> bool:
+        return self.n_envs > 1
+
+    def _extract_agent_space(self, spaces_obj, agent_name: str):
+        if isinstance(spaces_obj, self._spaces.Dict):
+            return spaces_obj[agent_name]
+        if isinstance(spaces_obj, self._spaces.Tuple):
+            agent_index = self._agent_names.index(agent_name)
+            return spaces_obj[agent_index]
+        if hasattr(spaces_obj, "spaces"):
+            spaces_attr = spaces_obj.spaces
+            if isinstance(spaces_attr, dict):
+                return spaces_attr[agent_name]
+            if isinstance(spaces_attr, (list, tuple)):
+                agent_index = self._agent_names.index(agent_name)
+                return spaces_attr[agent_index]
+        return spaces_obj
+
+    def _infer_agent_names(self) -> List[str]:
+        for spaces_obj in (self._env.observation_space, self._env.action_space):
+            if isinstance(spaces_obj, self._spaces.Dict):
+                return list(spaces_obj.spaces.keys())
+            if hasattr(spaces_obj, "spaces") and isinstance(spaces_obj.spaces, dict):
+                return list(spaces_obj.spaces.keys())
+        return [f"agent_{idx}" for idx in range(len(self._agent_refs))]
+
+    @staticmethod
+    def _to_numpy(value: Any, flatten: bool = False) -> np.ndarray:
+        if torch.is_tensor(value):
+            array = value.detach().cpu().numpy()
+        else:
+            array = np.asarray(value)
+        if array.ndim > 0 and array.shape[0] == 1:
+            array = array[0]
+        if flatten:
+            array = np.asarray(array, dtype=np.float32).reshape(-1)
+        return array
+
+    def _extract_single_env_value(self, value: Any, env_idx: int, flatten: bool = False) -> np.ndarray:
+        array = self._to_numpy(value, flatten=False)
+        if self.is_batched and array.ndim > 0 and array.shape[0] == self.n_envs:
+            array = array[env_idx]
+        if flatten:
+            array = np.asarray(array, dtype=np.float32).reshape(-1)
+        return array
+
+    def _split_obs_batch(self, obs_data: Any) -> List[Dict[int, np.ndarray]]:
+        if not isinstance(obs_data, dict):
+            raise TypeError(f"Unsupported VMAS observation format: {type(obs_data)}")
+        return [
+            {
+                idx: self._extract_single_env_value(obs_data[name], env_idx, flatten=True).astype(np.float32)
+                for idx, name in enumerate(self._agent_names)
+            }
+            for env_idx in range(self.n_envs)
+        ]
+
+    def _split_rewards_batch(self, reward_data: Any) -> List[Dict[int, float]]:
+        if isinstance(reward_data, dict):
+            return [
+                {
+                    idx: float(np.asarray(self._extract_single_env_value(reward_data[name], env_idx)).reshape(-1)[0])
+                    for idx, name in enumerate(self._agent_names)
+                }
+                for env_idx in range(self.n_envs)
+            ]
+        raise TypeError(f"Unsupported VMAS reward format for batched env: {type(reward_data)}")
+
+    def _split_done_flags(self, done_data: Any) -> List[bool]:
+        if isinstance(done_data, dict):
+            first_value = next(iter(done_data.values()))
+            array = np.asarray(self._to_numpy(first_value)).reshape(-1)
+        else:
+            array = np.asarray(self._to_numpy(done_data)).reshape(-1)
+        if array.shape[0] == 1 and self.is_batched:
+            return [bool(array[0]) for _ in range(self.n_envs)]
+        return [bool(array[min(i, array.shape[0] - 1)]) for i in range(self.n_envs)]
+
+    def _split_info_batch(self, info_data: Any, done_flags: List[bool]) -> List[Dict[str, Any]]:
+        info_list = []
+        for env_idx in range(self.n_envs):
+            env_info = {
+                "step_count": self.step_count,
+                "scenario_name": self.scenario_name,
+                "episode_done": bool(done_flags[env_idx]),
+            }
+            if isinstance(info_data, dict):
+                env_raw_info = {}
+                for key, value in info_data.items():
+                    if isinstance(value, dict):
+                        env_raw_info[key] = {
+                            sub_key: self._extract_single_env_value(sub_value, env_idx, flatten=False)
+                            for sub_key, sub_value in value.items()
+                        }
+                    else:
+                        env_raw_info[key] = self._extract_single_env_value(value, env_idx, flatten=False)
+                env_info["raw_info"] = env_raw_info
+            else:
+                env_info["raw_info"] = info_data
+            info_list.append(env_info)
+        return info_list
+
+    def _reset_done_envs_in_place(self, obs_data: Dict[str, Any], done_flags: List[bool]):
+        if not any(done_flags):
+            return
+        for env_idx, done in enumerate(done_flags):
+            if not done:
+                continue
+            reset_obs = self._env.reset_at(env_idx)
+            for agent_name in self._agent_names:
+                current_value = obs_data[agent_name]
+                reset_value = reset_obs[agent_name]
+                if torch.is_tensor(current_value):
+                    if not getattr(current_value, "_base", None) is None:
+                        current_value = current_value.clone()
+                        obs_data[agent_name] = current_value
+                    reset_tensor = torch.as_tensor(
+                        self._to_numpy(reset_value, flatten=False),
+                        dtype=current_value.dtype,
+                        device=current_value.device,
+                    )
+                    current_value[env_idx] = torch.as_tensor(
+                        reset_tensor[env_idx],
+                        dtype=current_value.dtype,
+                        device=current_value.device,
+                    )
+                else:
+                    current_value = np.asarray(current_value).copy()
+                    reset_array = np.asarray(self._to_numpy(reset_value, flatten=False))
+                    current_value[env_idx] = reset_array[env_idx]
+                    obs_data[agent_name] = current_value
+
+    def _convert_obs(self, obs_data: Any) -> Dict[int, np.ndarray]:
+        if isinstance(obs_data, dict):
+            return {
+                idx: self._to_numpy(obs_data[name], flatten=True).astype(np.float32)
+                for idx, name in enumerate(self._agent_names)
+            }
+        if isinstance(obs_data, (list, tuple)):
+            return {
+                idx: self._to_numpy(obs, flatten=True).astype(np.float32)
+                for idx, obs in enumerate(obs_data)
+            }
+        raise TypeError(f"Unsupported VMAS observation format: {type(obs_data)}")
+
+    def _convert_rewards(self, reward_data: Any) -> Dict[int, float]:
+        if isinstance(reward_data, dict):
+            return {
+                idx: float(np.asarray(self._to_numpy(reward_data[name])).reshape(-1)[0])
+                for idx, name in enumerate(self._agent_names)
+            }
+        if isinstance(reward_data, (list, tuple)):
+            return {
+                idx: float(np.asarray(self._to_numpy(rew)).reshape(-1)[0])
+                for idx, rew in enumerate(reward_data)
+            }
+        reward_value = float(np.asarray(self._to_numpy(reward_data)).reshape(-1)[0])
+        return {idx: reward_value for idx in range(self.num_agents)}
+
+    def _convert_done_flag(self, done_data: Any) -> bool:
+        if isinstance(done_data, dict):
+            first_value = next(iter(done_data.values()))
+            return bool(np.asarray(self._to_numpy(first_value)).reshape(-1)[0])
+        return bool(np.asarray(self._to_numpy(done_data)).reshape(-1)[0])
+
+    def _build_single_action_dict(self, actions: Dict[int, int]) -> Dict[str, torch.Tensor]:
+        return {
+            name: torch.tensor([int(actions[idx])], dtype=torch.long, device=self.device)
+            for idx, name in enumerate(self._agent_names)
+        }
+
+    def _build_batched_action_dict(self, actions_batch: List[Dict[int, int]]) -> Dict[str, torch.Tensor]:
+        if len(actions_batch) != self.n_envs:
+            raise ValueError(f"Expected {self.n_envs} action dicts, got {len(actions_batch)}")
+        return {
+            name: torch.tensor(
+                [int(actions_batch[env_idx][agent_idx]) for env_idx in range(self.n_envs)],
+                dtype=torch.long,
+                device=self.device,
+            )
+            for agent_idx, name in enumerate(self._agent_names)
+        }
+
+    def _get_batched_avail_actions(self) -> List[Dict[int, List[int]]]:
+        avail = {agent_id: [1] * self.action_dim for agent_id in range(self.num_agents)}
+        return [{agent_id: actions[:] for agent_id, actions in avail.items()} for _ in range(self.n_envs)]
+
+    def reset(self):
+        reset_output = self._env.reset(seed=self._seed)
+        obs_data = reset_output[0] if isinstance(reset_output, tuple) else reset_output
+        self.step_count = 0
+        if self.is_batched:
+            return self._split_obs_batch(obs_data), self._get_batched_avail_actions()
+        return self._convert_obs(obs_data)
+
+    def step(self, actions):
+        action_dict = self._build_batched_action_dict(actions) if self.is_batched else self._build_single_action_dict(actions)
+
+        step_output = self._env.step(action_dict)
+        self.step_count += 1
+
+        if len(step_output) == 5:
+            obs_data, reward_data, terminated_data, truncated_data, info_data = step_output
+            done_flag = self._convert_done_flag(terminated_data) or self._convert_done_flag(truncated_data)
+        elif len(step_output) == 4:
+            obs_data, reward_data, done_data, info_data = step_output
+            done_flag = self._convert_done_flag(done_data)
+        else:
+            raise ValueError(f"Unexpected VMAS step output length: {len(step_output)}")
+
+        if self.is_batched:
+            done_flags = [t or tr for t, tr in zip(self._split_done_flags(terminated_data), self._split_done_flags(truncated_data))] if len(step_output) == 5 else self._split_done_flags(done_data)
+            self._reset_done_envs_in_place(obs_data, done_flags)
+            observations_batch = self._split_obs_batch(obs_data)
+            rewards_batch = self._split_rewards_batch(reward_data)
+            dones_batch = [
+                {agent_id: done_flags[env_idx] for agent_id in range(self.num_agents)}
+                for env_idx in range(self.n_envs)
+            ]
+            infos_batch = self._split_info_batch(info_data, done_flags)
+            return observations_batch, rewards_batch, dones_batch, infos_batch, self._get_batched_avail_actions()
+
+        observations = self._convert_obs(obs_data)
+        rewards = self._convert_rewards(reward_data)
+        dones = {idx: done_flag for idx in range(self.num_agents)}
+        info = {
+            "step_count": self.step_count,
+            "scenario_name": self.scenario_name,
+            "raw_info": info_data,
+        }
+        return observations, rewards, dones, info
+
+    def get_avail_actions(self) -> List[List[int]]:
+        return [[1] * self.action_dim for _ in range(self.num_agents)]
+
+    def get_avail_agent_actions(self, agent_id: int) -> List[int]:
+        return [1] * self.action_dim
+
+    def get_env_info(self) -> Dict[str, Any]:
+        return {
+            "obs_shape": self.obs_dim,
+            "n_actions": self.action_dim,
+            "n_agents": self.num_agents,
+            "episode_limit": self.max_steps,
+        }
+
+    def get_obs_dim(self) -> int:
+        return self.obs_dim
+
+    def get_action_dim(self) -> int:
+        return self.action_dim
+
+    def close(self):
+        if hasattr(self._env, "close"):
+            self._env.close()
+
+
+class VMASNavigationEnv(VMASWrapper):
+    """VMAS navigation benchmark."""
+
+    def __init__(
+        self,
+        num_agents: int = 4,
+        n_envs: int = 1,
+        max_steps: int = 100,
+        seed: int = None,
+        device: str = "cpu",
+        continuous_actions: bool = False,
+        **scenario_kwargs,
+    ):
+        super().__init__(
+            scenario_name="navigation",
+            num_agents=num_agents,
+            n_envs=n_envs,
+            max_steps=max_steps,
+            seed=seed,
+            device=device,
+            continuous_actions=continuous_actions,
+            **scenario_kwargs,
+        )
+
+
+class VMASDispersionEnv(VMASWrapper):
+    """VMAS dispersion benchmark."""
+
+    def __init__(
+        self,
+        num_agents: int = 4,
+        n_envs: int = 1,
+        max_steps: int = 100,
+        seed: int = None,
+        device: str = "cpu",
+        continuous_actions: bool = False,
+        **scenario_kwargs,
+    ):
+        super().__init__(
+            scenario_name="dispersion",
+            num_agents=num_agents,
+            n_envs=n_envs,
+            max_steps=max_steps,
+            seed=seed,
+            device=device,
+            continuous_actions=continuous_actions,
+            **scenario_kwargs,
+        )
 
 
 class SMAXWrapper(MultiAgentEnv):

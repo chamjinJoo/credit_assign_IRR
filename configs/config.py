@@ -199,6 +199,8 @@ class EnvironmentConfig:
                 'mauling_punishment', 'grid_observation', 'forage_quantity', 'max_steps'
             },
             'mpe_simple_spread': {'local_ratio', 'max_cycles', 'continuous_actions'},
+            'vmas_navigation': {'max_steps', 'continuous_actions', 'env_args'},
+            'vmas_dispersion': {'max_steps', 'continuous_actions', 'env_args'},
             'lbforaging': {
                 'env_id', 'field_size', 'max_food', 'player_level', 'food_level', 
                 'sight', 'max_episode_steps', 'force_coop', 'grid_observation'
@@ -226,6 +228,10 @@ class EnvironmentConfig:
             current_env = 'staghunt'
         elif 'mpe' in current_env or 'spread' in current_env:
             current_env = 'mpe_simple_spread'
+        elif 'vmasnavigation' in current_env or current_env == 'navigation' or current_env == 'vmas_navigation':
+            current_env = 'vmas_navigation'
+        elif 'vmasdispersion' in current_env or current_env == 'dispersion' or current_env == 'vmas_dispersion':
+            current_env = 'vmas_dispersion'
         elif 'foraging' in current_env:
             current_env = 'lbforaging'
             

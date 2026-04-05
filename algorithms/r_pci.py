@@ -278,18 +278,22 @@ class rPCIAlgorithm:
             parmam.requires_grad = False
         # ---------------------------------------------------------------------------------------- #
 
-        # --- Single kernel (original) ---
+        # --- Legacy single-kernel path (kept for compatibility / experimentation) ---
         # self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
         self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
 
-        # --- Product Kernel: separate RBFKernel per block (z, a, x_obs, x_hid) ---
+        # --- Block-wise product kernel over active bridge covariates ---
+        # Current kernel factorization is over:
+        #   Z^i_t = my observation,
+        #   A^i_t = my action,
+        #   X^i_t = all agents' previous hidden states h_{t-1}.
         self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)    # kept for checkpoint compatibility
-        self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # for z block
-        self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # for action one-hot block
-        # self.kernel_x_block = RBFKernel(gamma=1.0).to(self.device)   # [OPTION B-1] for x block (unsplit)
-        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2/3] for x: agent i's local obs
-        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-2/3] for x: joint hidden state
-        self.kernel_xact_block = RBFKernel(gamma=1.0).to(self.device)  # [OPTION B-3]   for x: complement actions (one-hot)
+        self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for Z^i_t
+        self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for A^i_t one-hot
+        # self.kernel_x_block = RBFKernel(gamma=1.0).to(self.device)   # legacy unsplit X block
+        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # reserved for an observation sub-block inside X
+        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # kernel for hidden-state block in X^i_t
+        self.kernel_xact_block = RBFKernel(gamma=1.0).to(self.device)  # reserved for action sub-block inside X
         
         self.stabilizer_lambda = 1.0
         self.tikhonov_gamma = 1e-4
@@ -508,10 +512,10 @@ class rPCIAlgorithm:
             pi_mb = policy_probs_super[idx]
             batch_agent_ids = idx % num_agents
             
-            # --- block-wise standardization for kernel features ---
+            # --- Standardize each active kernel block separately before building the Gram matrix ---
             eps = 1e-6
             
-            # 1-1) if z is concat of joint obs and reward
+            # Legacy fallback: keep handling older z layouts if they appear in checkpoints/experiments.
             joint_obs_dim = self.obs_dim * self.num_agents
             if z_mb.size(1) == joint_obs_dim + self.num_agents:
                 z_obs_norm = (z_mb[:, :joint_obs_dim] - z_mb[:, :joint_obs_dim].mean(0, keepdim=True)) \
@@ -520,13 +524,14 @@ class rPCIAlgorithm:
                             / z_mb[:, joint_obs_dim:].std(0, keepdim=True, unbiased=False).clamp_min(eps)
                 z_mb_norm = torch.cat([z_obs_norm, z_rew_norm], dim=1)
             
-            # 1-2) z is joint reward or joint obs
+            # Current path: Z^i_t = my observation, so plain feature-wise normalization is enough.
             else: 
                 z_mean = z_mb.mean(dim=0, keepdim=True)
                 z_std = z_mb.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
                 z_mb_norm = (z_mb - z_mean) / z_std
 
-            # 2) X^i_t = h_{t-1} for all agents, so only the hidden-state block remains.
+            # X^i_t currently contains only the joint previous hidden-state block.
+            # The observation slice is left empty so older split-kernel code paths remain usable.
             x_obs_mb_raw = x_mb[:, :0]
             x_hid_mb_raw = x_mb
 
@@ -541,20 +546,20 @@ class rPCIAlgorithm:
 
             x_mb_norm = torch.cat([x_obs_mb, x_hid_mb], dim=1)
 
-            # 3) action one-hot block
+            # A^i_t block
             action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
             # Optional but often helpful: scale down action block so it doesn't dominate when action_dim is big.
             # action_scale = (self.action_dim ** -0.5)  # 1/sqrt(|A|)
             # a_mb_norm = action_onehot_mb * action_scale
             
-            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # [OPTION A] single kernel w/ standardization
-            # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # [OPTION A] single kernel w/o standardization
+            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # legacy single-kernel path with standardization
+            # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # legacy single-kernel path without standardization
 
-            # [OPTION A] use feature projector MLP
+            # Legacy optional feature projection before applying a single kernel.
             # with torch.no_grad():
             #    kernel_feat_z = self.feature_projector(kernel_feat_z)
 
-            # [OPTION A] median heuristic gamma update with EMA
+            # Legacy median-heuristic gamma update for the single-kernel path.
             # with torch.no_grad():
             #     Xg = kernel_feat_z
             #     max_for_gamma = getattr(self, "max_points_for_kernel_gamma", 256)
@@ -570,12 +575,12 @@ class rPCIAlgorithm:
             #         self.critic_kernel_z.log_gamma.data = ema * self.critic_kernel_z.log_gamma.data + (1.0 - ema) * new_log_gamma
 
 
-            # [OPTION A] Gram matrix (single kernel)
+            # Legacy single-kernel Gram matrix.
             # K_z = self.critic_kernel_z(kernel_feat_z)
 
-            # ------------------------------------------------------------------ #
-            # [OPTION B-1] Product Kernel: K(z,a,x) = K_z(z) * K_a(a) * K_x(x) #
-            # ------------------------------------------------------------------ #
+            # ------------------------------------------------------------------- #
+            # Legacy product-kernel path with a single unsplit X block.           #
+            # ------------------------------------------------------------------- #
             # with torch.no_grad():
             #     for feat, kernel in [
             #         (z_mb_norm,        self.kernel_z_block),
@@ -589,11 +594,11 @@ class rPCIAlgorithm:
             #        * self.kernel_a_block(action_onehot_mb)
             #        * self.kernel_x_block(x_mb_norm))
 
-            # ------------------------------------------------------------------------------ #
-            # [OPTION B-2] Product Kernel: K(z,a,x_obs,x_hid)                              #
-            #   x_mb = [obs_i (obs_dim) | h_{t-1} (num_agents*hidden_dim*recurrent_N)]     #
-            # ------------------------------------------------------------------------------ #
-            # gamma='scale'의 n_features 부분만 적용 (var ≈ 1 이므로 생략)
+            # ----------------------------------------------------------------------------- #
+            # Active path: block-wise product kernel over (Z^i_t, A^i_t, X^i_t).           #
+            # In the current proxy setting, X contributes only its hidden-state sub-block.  #
+            # ----------------------------------------------------------------------------- #
+            # After standardization, var is approximately 1, so we use gamma = 1 / n_features.
             with torch.no_grad():
                 kernel_blocks = [
                     (z_mb_norm,        self.kernel_z_block),
@@ -608,7 +613,7 @@ class rPCIAlgorithm:
                     # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
                     kernel.log_gamma.data.fill_(torch.log(torch.tensor(1.0 / n)))
 
-            # Element-wise product of block-wise Gram matrices
+            # Final Gram matrix for the active (Z, A, X) blocks.
             K_z = (self.kernel_z_block(z_mb_norm)
                    * self.kernel_a_block(action_onehot_mb)
                    )
@@ -617,7 +622,7 @@ class rPCIAlgorithm:
             if x_hid_mb.size(1) > 0:
                 K_z = K_z * self.kernel_xhid_block(x_hid_mb)
 
-            # check the kernel collapse
+            # Monitor whether the Gram matrix is collapsing toward identity or all-ones.
             with torch.no_grad():
                 B = K_z.size(0)
                 off_mask = ~torch.eye(B, dtype=torch.bool, device=K_z.device)
@@ -1278,9 +1283,9 @@ class rPCIAlgorithm:
                 agent_obs=agent_obs,
                 my_actions=my_actions,
                 # [Direction 2] env advantages only; adv_batch = batch-normalize(env_norm)
-                agent_advantage=agent_env_advantages[agent_id],
+                # agent_advantage=agent_env_advantages[agent_id],
                 # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
-                # agent_advantage=agent_advantages[agent_id],
+                agent_advantage=agent_advantages[agent_id],
                 agent_return=agent_returns[agent_id],
                 masks_batch=masks_batch,
                 init_hidden_states=init_hidden_states,
@@ -1317,17 +1322,17 @@ class rPCIAlgorithm:
                 ratio = torch.exp(new_log_probs - old_log_probs)
 
                 # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
-                surr1_env = ratio * adv_batch
-                surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                surr1_pci = ratio * pci_adv_batch
-                surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
-                policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
-                policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
-                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
-                # surr1 = ratio * adv_batch
-                # surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                # policy_loss = -torch.min(surr1, surr2)
+                # surr1_env = ratio * adv_batch
+                # surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                # surr1_pci = ratio * pci_adv_batch
+                # surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
+                # policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
                 # policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
+                surr1 = ratio * adv_batch
+                surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                policy_loss = -torch.min(surr1, surr2)
+                policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
 
                 # Masked Entropy Loss
                 entropy_loss = -entropy # entropy is (T)
@@ -1450,7 +1455,6 @@ class rPCIAlgorithm:
             self._update_call_count = 0
         self._update_call_count += 1
         _do_causal_debug = (self._update_call_count % 50 == 1)
-        _do_causal_debug = False # deactivate
         current_causal_lambda = self.get_current_causal_lambda()
 
         # Compute GAE on full trajectories before chunking
@@ -1458,10 +1462,10 @@ class rPCIAlgorithm:
         for traj in trajectories:
             if len(traj) == 0:
                 continue
-            (
-                full_obs_batch, actions_batch, rewards_batch, dones_batch, 
-                z_t_batch, w_t_all, hidden_states_batch, available_actions_batch, prev_actions_batch_cr,
-            ) = self._build_causal_reward_inputs(traj)
+            (full_obs_batch, actions_batch, 
+                rewards_batch, dones_batch, 
+                z_t_batch, w_t_all, hidden_states_batch, 
+                available_actions_batch, prev_actions_batch_cr) = self._build_causal_reward_inputs(traj)
             N = self.num_agents
 
             # Compute causal rewards

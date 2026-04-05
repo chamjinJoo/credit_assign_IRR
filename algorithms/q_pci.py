@@ -276,10 +276,10 @@ class qPCIAlgorithm:
                 agent.value_net = self.shared_value_net
                 agent.value_optimizer = self.shared_value_optimizer
         
-        # --- Return Bridge Network ---
-        # Option 1 (legacy): x = (o^i_t, h^{-i}_{t-1})
-        # x_dim = obs_dim + (num_agents - 1) * hidden_dim * recurrent_N
-        # Option 3 (current): x = h_t for all agents
+        # Current proxy setting:
+        #   W^i_t = other agents' current observations
+        #   Z^i_t = agent i's current observation
+        #   X^i_t = all agents' previous policy hidden states h_{t-1}
         x_dim = hidden_dim * recurrent_N * num_agents
         
         self.outcome_bridge_net = OutcomeBridgeNetwork(
@@ -295,11 +295,15 @@ class qPCIAlgorithm:
             self.outcome_bridge_net.parameters(), lr=lr_bridge
         )
         
-        # --- Product Kernel ---
+        # --- Block-wise product kernel over active bridge covariates ---
+        # Current factorization is over:
+        #   Z^i_t = my observation,
+        #   A^i_t = my action,
+        #   X^i_t = all agents' previous hidden states h_{t-1}.
         self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)
         self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)
-        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)
-        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)
+        self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # reserved for an observation sub-block inside X
+        self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # active hidden-state sub-block inside X
         
         self.stabilizer_lambda = 1.0
         self.tikhonov_gamma = 1e-4
@@ -433,15 +437,6 @@ class qPCIAlgorithm:
         device = self.device
 
         # === Data preparation ===
-        joint_o_prev = torch.stack([
-            concatenate_agent_observations(
-                t['bold_o_t_minus_1'],
-                self.num_agents,
-                self.obs_dim,
-                self.device,
-            )
-            for t in batch_data
-        ]).to(device)
         obs_batch = torch.stack([
             torch.stack(list(t['bold_o_t'].values())) for t in batch_data
         ]).to(device)
@@ -466,7 +461,6 @@ class qPCIAlgorithm:
 
         # Hidden states
         hidden_states_batch = {}   # h_{t-1}: for policy evaluation
-        h_t_states_batch = {}      # h_t:     for bridge network (option 3)
         if 'hidden_states' in batch_data[0] and batch_data[0]['hidden_states'] is not None:
             for agent_id in range(num_agents):
                 if agent_id in batch_data[0]['hidden_states']:
@@ -474,11 +468,6 @@ class qPCIAlgorithm:
                         t['hidden_states'][agent_id][0] for t in batch_data
                     ]).to(device)
                     hidden_states_batch[agent_id] = p_states
-                    if len(batch_data[0]['hidden_states'][agent_id]) > 2:
-                        p_next_states = torch.stack([
-                            t['hidden_states'][agent_id][2] for t in batch_data
-                        ]).to(device)
-                        h_t_states_batch[agent_id] = p_next_states
 
         # === Super-batch (agent-wise expansion) ===
         A_super = action_batch.view(-1)
@@ -489,8 +478,8 @@ class qPCIAlgorithm:
             .unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
         W_super = expanded_obs[mask_w].view(batch_size * num_agents, -1)
 
-        # Z: previous joint observation
-        Z_super = joint_o_prev.repeat_interleave(num_agents, dim=0)
+        # Z: agent i's current observation
+        Z_super = obs_batch.view(-1, self.obs_dim)
 
         # Y: team return (same for all agents in a timestep)
         Y_super = bridge_targets_norm.repeat_interleave(num_agents)  # (B*N,) scalar
@@ -504,26 +493,9 @@ class qPCIAlgorithm:
                 h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
         H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
 
-        h_t_list = []
-        for i in range(num_agents):
-            if i in h_t_states_batch:
-                h_t_list.append(h_t_states_batch[i].view(batch_size, -1))
-            else:
-                h_t_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
-        H_t_all = torch.stack(h_t_list, dim=1)  # (B, N, RecN*H)
-
-        # Option 1 (legacy): x = (o^i_t, h^{-i}_{t-1})
-        # expanded_H = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)
-        # mask_H = ~torch.eye(num_agents, dtype=torch.bool, device=device)\
-        #     .unsqueeze(0).unsqueeze(-1)\
-        #     .expand(batch_size, -1, -1, self.recurrent_N * self.hidden_dim)
-        # H_others_super = expanded_H[mask_H].view(batch_size * num_agents, -1)
-        # obs_super = obs_batch.view(-1, self.obs_dim)
-        # X_super = torch.cat([obs_super, H_others_super], dim=1)
-
-        # Option 3 (current): x = h_t for all agents
-        H_t_all_expanded = H_t_all.unsqueeze(1).expand(-1, num_agents, -1, -1)
-        X_super = H_t_all_expanded.reshape(batch_size * num_agents, -1)
+        # X: all agents' previous hidden states h_{t-1}
+        H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)
+        X_super = H_all_expanded.reshape(batch_size * num_agents, -1)
 
         # Filter dead-agent timesteps from super-batch (dead = only noop action available)
         if ('available_actions' in batch_data[0] and batch_data[0]['available_actions'] is not None
@@ -566,17 +538,14 @@ class qPCIAlgorithm:
             z_mb = Z_super[idx]
             x_mb = X_super[idx]
 
-            # Block-wise standardization
+            # Standardize each active kernel block separately before building the Gram matrix.
             z_mean = z_mb.mean(dim=0, keepdim=True)
             z_std = z_mb.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
             z_mb_norm = (z_mb - z_mean) / z_std
 
-            # Option 3 (current): x = h_t only, so obs block is empty.
+            # X^i_t currently contains only the joint previous hidden-state block.
             x_obs_mb_raw = x_mb[:, :0]
             x_hid_mb_raw = x_mb
-            # Option 1 (legacy): split x = [o^i_t | h^{-i}_{t-1}]
-            # x_obs_mb_raw = x_mb[:, :self.obs_dim]
-            # x_hid_mb_raw = x_mb[:, self.obs_dim:]
 
             x_obs_mb = x_obs_mb_raw
             if x_hid_mb_raw.size(1) > 0:
@@ -586,7 +555,7 @@ class qPCIAlgorithm:
 
             action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
 
-            # Product kernel gamma
+            # Block-wise product kernel over (Z^i_t, A^i_t, X^i_t).
             with torch.no_grad():
                 kernel_blocks = [
                     (z_mb_norm, self.kernel_z_block),
@@ -689,14 +658,6 @@ class qPCIAlgorithm:
                 h_list.append(torch.zeros(T, self.recurrent_N * self.hidden_dim, device=device))
         H_all = torch.stack(h_list, dim=1)
 
-        h_t_list = []
-        for i in range(N):
-            if hidden_states_batch is not None and i in hidden_states_batch and len(hidden_states_batch[i]) > 2:
-                h_t_list.append(hidden_states_batch[i][2].view(T, -1))
-            else:
-                h_t_list.append(torch.zeros(T, self.recurrent_N * self.hidden_dim, device=device))
-        H_t_all = torch.stack(h_t_list, dim=1)
-
         bridge_values = {}
         causal_advantages = {}
         v_lse = {}
@@ -706,13 +667,8 @@ class qPCIAlgorithm:
                 w_i = w_all[:, agent_id, :]
                 obs_i = full_obs_batch[:, agent_id, :]
 
-                # Option 1 (legacy): x_i = [o^i_t, h^{-i}_{t-1}]
-                # h_others_list = [H_all[:, j, :] for j in range(N) if j != agent_id]
-                # h_others = torch.cat(h_others_list, dim=-1)
-                # x_i = torch.cat([obs_i, h_others], dim=-1)
-
-                # Option 3 (current): x_i = h_t for all agents
-                x_i = H_t_all.reshape(T, -1)
+                # X^i_t = all agents' previous hidden states h_{t-1}
+                x_i = H_all.reshape(T, -1)
 
                 q_values = torch.zeros(T, self.action_dim, device=device)
                 for a_idx in range(self.action_dim):
