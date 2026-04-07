@@ -373,6 +373,7 @@ def create_algorithm(env, config):
             bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
             normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
+            clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
             seed=getattr(config.training, 'seed', 42),
         )
     elif algorithm_type == 'coma':
@@ -653,6 +654,12 @@ def main():
                 observation_type=getattr(env_config, 'observation_type', 'unit_list'),
                 smacv2_position_generation=getattr(env_config, 'smacv2_position_generation', False),
                 smacv2_unit_type_generation=getattr(env_config, 'smacv2_unit_type_generation', False),
+                use_allowed_targets=getattr(env_config, 'use_allowed_targets', False),
+                allowed_targets=getattr(env_config, 'allowed_targets', None),
+                use_cooperative_kill_bonus=getattr(env_config, 'use_cooperative_kill_bonus', False),
+                cooperative_kill_window=getattr(env_config, 'cooperative_kill_window', 2),
+                cooperative_kill_bonus=getattr(env_config, 'cooperative_kill_bonus', 2.0),
+                cooperative_kill_owner_ratio=getattr(env_config, 'cooperative_kill_owner_ratio', 0.7),
             )
         elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
             from envs import VMASNavigationEnv, VMASDispersionEnv
@@ -803,7 +810,7 @@ def main():
             eval_interval=config.training.eval_interval,
             eval_episodes=config.training.eval_episodes,
             save_dir=trainer_save_dir,
-            use_wandb=config.wandb.use_wandb,
+            use_wandb=False if is_test_mode else config.wandb.use_wandb,
             wandb_project=wandb_project_name,
             wandb_run_name=wandb_run_name,
             device=device,
@@ -871,6 +878,18 @@ def main():
             
             logger.info(f"Test results: {test_results}")
             logger.info(f"Advanced causal evaluation results saved to: {temp_save_dir}/advanced_causal_evaluation")
+
+            # SMAX replay GIF 저장 (JAXTrainer + SMAXBatchWrapper 조합일 때만)
+            if getattr(args, 'save_replay', False):
+                if hasattr(trainer, 'save_smax_replay') and hasattr(env, '_env'):
+                    replay_dir = getattr(args, 'replay_dir', './smax_replays')
+                    replay_episodes = getattr(args, 'replay_episodes', 3)
+                    trainer.save_smax_replay(replay_dir, num_episodes=replay_episodes)
+                else:
+                    logger.warning(
+                        "--save-replay는 JAXTrainer + SMAXBatchWrapper 조합에서만 지원됩니다."
+                    )
+
             return
         
         # Resume from checkpoint if provided

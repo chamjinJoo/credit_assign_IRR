@@ -245,9 +245,9 @@ class rPCIAlgorithm:
         
         # Current proxy setting:
         #   W^i_t = other agents' current observations
-        #   Z^i_t = agent i's current observation
-        #   X^i_t = all agents' previous policy hidden states h_{t-1}
-        x_dim = hidden_dim * recurrent_N * num_agents if use_recurrent_policy else 0
+        #   Z^i_t = agent i's previous hidden state h^i_{t-1}
+        #   X^i_t = (o^i_t, h^{-i}_{t-1})
+        x_dim = obs_dim + (hidden_dim * recurrent_N * (num_agents - 1) if use_recurrent_policy else 0)
         
 
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
@@ -261,7 +261,7 @@ class rPCIAlgorithm:
         )
         
         self.action_bridge_net = ActionBridgeNetwork(
-            z_dim=obs_dim, # Z^i_t = my current observation
+            z_dim=hidden_dim * recurrent_N if use_recurrent_policy else 0, # Z^i_t = h^i_{t-1}
             action_dim=action_dim,
             num_agents=num_agents,
             hidden_dim=hidden_dim,
@@ -284,9 +284,9 @@ class rPCIAlgorithm:
 
         # --- Block-wise product kernel over active bridge covariates ---
         # Current kernel factorization is over:
-        #   Z^i_t = my observation,
+        #   Z^i_t = agent i's previous hidden state h^i_{t-1},
         #   A^i_t = my action,
-        #   X^i_t = all agents' previous hidden states h_{t-1}.
+        #   X^i_t = (o^i_t, h^{-i}_{t-1}).
         self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)    # kept for checkpoint compatibility
         self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for Z^i_t
         self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for A^i_t one-hot
@@ -388,6 +388,7 @@ class rPCIAlgorithm:
             device=device,
         )
         obs_batch = torch.stack([torch.stack(list(t['bold_o_t'].values())) for t in batch_data]).to(device)
+        prev_obs_batch = torch.stack([torch.stack(list(t['bold_o_t_minus_1'].values())) for t in batch_data]).to(device)
         action_batch = torch.tensor([[t['bold_a_t'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.long, device=device)
         reward_batch = self._build_reward_batch_tensor(batch_data)
         dones_batch = torch.tensor([[t['dones'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
@@ -426,13 +427,22 @@ class rPCIAlgorithm:
                 h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
         H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
 
-        # 2. Construct X_super = all agents' previous hidden states h_{t-1}
-        H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
-        H_all_super = H_all_expanded.reshape(batch_size * num_agents, -1)   # (B*N, N*RecN*H)
-        X_super = H_all_super
-        
         obs_super = obs_batch.view(-1, self.obs_dim)
-        Z_super = obs_super # Z^i_t = my current observation
+        # 2. Construct X_super = (o^i_t, h^{-i}_{t-1})
+        if self.use_recurrent_policy:
+            H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
+            hid_mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+                batch_size, -1, -1, self.recurrent_N * self.hidden_dim
+            )
+            H_others_super = H_all_expanded[hid_mask].view(batch_size * num_agents, -1)  # (B*N, (N-1)*RecN*H)
+            X_super = torch.cat([obs_super, H_others_super], dim=1)
+        else:
+            X_super = obs_super
+
+        if self.use_recurrent_policy:
+            Z_super = H_all.reshape(batch_size * num_agents, -1) # Z^i_t = h^i_{t-1}
+        else:
+            Z_super = torch.zeros(batch_size * num_agents, 0, device=device)
 
         with torch.no_grad():
             log_probs_list = []
@@ -524,18 +534,19 @@ class rPCIAlgorithm:
                             / z_mb[:, joint_obs_dim:].std(0, keepdim=True, unbiased=False).clamp_min(eps)
                 z_mb_norm = torch.cat([z_obs_norm, z_rew_norm], dim=1)
             
-            # Current path: Z^i_t = my observation, so plain feature-wise normalization is enough.
+            # Current path: Z^i_t = h^i_{t-1}, so plain feature-wise normalization is enough.
             else: 
                 z_mean = z_mb.mean(dim=0, keepdim=True)
                 z_std = z_mb.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
                 z_mb_norm = (z_mb - z_mean) / z_std
 
-            # X^i_t currently contains only the joint previous hidden-state block.
-            # The observation slice is left empty so older split-kernel code paths remain usable.
-            x_obs_mb_raw = x_mb[:, :0]
-            x_hid_mb_raw = x_mb
+            # X^i_t currently contains (o^i_t, h^{-i}_{t-1}).
+            x_obs_mb_raw = x_mb[:, :self.obs_dim]
+            x_hid_mb_raw = x_mb[:, self.obs_dim:] if self.use_recurrent_policy else x_mb[:, self.obs_dim:self.obs_dim]
 
-            x_obs_mb = x_obs_mb_raw  # empty tensor; kernel_xobs_block will be skipped below
+            x_obs_mean = x_obs_mb_raw.mean(dim=0, keepdim=True)
+            x_obs_std = x_obs_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
+            x_obs_mb = (x_obs_mb_raw - x_obs_mean) / x_obs_std
 
             if x_hid_mb_raw.size(1) > 0:
                 x_hid_mean = x_hid_mb_raw.mean(dim=0, keepdim=True)
@@ -596,7 +607,8 @@ class rPCIAlgorithm:
 
             # ----------------------------------------------------------------------------- #
             # Active path: block-wise product kernel over (Z^i_t, A^i_t, X^i_t).           #
-            # In the current proxy setting, X contributes only its hidden-state sub-block.  #
+            # In the current proxy setting, X contributes both current self-observation      #
+            # and complementary previous hidden states.                                      #
             # ----------------------------------------------------------------------------- #
             # After standardization, var is approximately 1, so we use gamma = 1 / n_features.
             with torch.no_grad():
@@ -608,9 +620,10 @@ class rPCIAlgorithm:
                     kernel_blocks.append((x_obs_mb, self.kernel_xobs_block))
                 if x_hid_mb.size(1) > 0:
                     kernel_blocks.append((x_hid_mb, self.kernel_xhid_block))
+
+                # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
                 for feat, kernel in kernel_blocks:
                     n = feat.shape[1]
-                    # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
                     kernel.log_gamma.data.fill_(torch.log(torch.tensor(1.0 / n)))
 
             # Final Gram matrix for the active (Z, A, X) blocks.
@@ -1048,7 +1061,7 @@ class rPCIAlgorithm:
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
-                # X^i_t = all agents' previous hidden states h_{t-1}
+                # X^i_t = (o^i_t, h^{-i}_{t-1})
                 if self.use_recurrent_policy:
                     h_prev_list_inf = []
                     for k in range(num_agents):
@@ -1058,9 +1071,14 @@ class rPCIAlgorithm:
                             h_prev_list_inf.append(torch.zeros(curr_bs, self.recurrent_N * self.hidden_dim, device=self.device))
                     H_prev_all_inf = torch.stack(h_prev_list_inf, dim=1)  # (curr_bs, N, RecN*H)
                     H_prev_all_inf_expanded = H_prev_all_inf.unsqueeze(1).expand(-1, num_agents, -1, -1)
-                    x_flat = H_prev_all_inf_expanded.reshape(curr_bs * num_agents, -1)  # (curr_bs*N, N*RecN*H)
+                    hid_mask = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(
+                        curr_bs, -1, -1, self.recurrent_N * self.hidden_dim
+                    )
+                    H_prev_others_inf = H_prev_all_inf_expanded[hid_mask].view(curr_bs * num_agents, -1)
+                    obs_flat = obs_b.reshape(curr_bs * num_agents, self.obs_dim)
+                    x_flat = torch.cat([obs_flat, H_prev_others_inf], dim=1)
                 else:
-                    x_flat = torch.zeros(curr_bs * num_agents, 0, device=self.device)
+                    x_flat = obs_b.reshape(curr_bs * num_agents, self.obs_dim)
 
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
@@ -1282,10 +1300,8 @@ class rPCIAlgorithm:
                 agent_id=agent_id,
                 agent_obs=agent_obs,
                 my_actions=my_actions,
-                # [Direction 2] env advantages only; adv_batch = batch-normalize(env_norm)
-                # agent_advantage=agent_env_advantages[agent_id],
-                # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
-                agent_advantage=agent_advantages[agent_id],
+                agent_advantage=agent_advantages[agent_id], # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
+                # agent_advantage=agent_env_advantages[agent_id], # [Direction 2] env advantages only; adv_batch = batch-normalize(env_norm)
                 agent_return=agent_returns[agent_id],
                 masks_batch=masks_batch,
                 init_hidden_states=init_hidden_states,
@@ -2141,16 +2157,9 @@ class rPCIAlgorithm:
             device=self.device,
         )
 
-        # Z^i_t = o^i_t. This tensor is currently unused by compute_causal_rewards,
+        # Z^i_t = h^i_{t-1}. This tensor is currently unused
+        # by compute_causal_rewards,
         # but we keep it aligned with the active proxy definition for future use.
-        z_t_list = [torch.stack(list(t['bold_o_t'].values())) for t in traj]
-        z_t_batch = torch.stack(z_t_list).to(self.device, non_blocking=True)
-
-        expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
-        mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, self.obs_dim)
-        obs_others_all = expanded_obs[mask].view(B, N, (N - 1) * self.obs_dim)
-        w_t_all = obs_others_all
-
         hidden_states_batch = {}
         if 'hidden_states' in traj[0] and traj[0]['hidden_states'] is not None:
             for agent_id in range(N):
@@ -2167,6 +2176,22 @@ class rPCIAlgorithm:
                         hidden_states_batch[agent_id] = (p_states, v_states, p_next_states)
                     else:
                         hidden_states_batch[agent_id] = (p_states, v_states)
+
+        if self.use_recurrent_policy:
+            z_t_list = []
+            for agent_id in range(N):
+                if agent_id in hidden_states_batch:
+                    z_t_list.append(hidden_states_batch[agent_id][0].view(B, -1))
+                else:
+                    z_t_list.append(torch.zeros(B, self.recurrent_N * self.hidden_dim, device=self.device))
+            z_t_batch = torch.stack(z_t_list, dim=1)
+        else:
+            z_t_batch = torch.zeros(B, N, 0, device=self.device)
+
+        expanded_obs = full_obs_batch.unsqueeze(1).expand(-1, N, -1, -1)
+        mask = ~torch.eye(N, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(B, -1, -1, self.obs_dim)
+        obs_others_all = expanded_obs[mask].view(B, N, (N - 1) * self.obs_dim)
+        w_t_all = obs_others_all
 
         available_actions_batch = build_available_actions_batch(
             traj,

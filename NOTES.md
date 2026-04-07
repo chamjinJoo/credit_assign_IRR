@@ -298,9 +298,20 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * SH CoordObs needs over 5M steps to test an algorithm.
 
 # 26.04.05
-* New proxy setting 
+* New proxy setting -> does not work well... ㅠㅠ
     $$
     W_t^i \triangleq \mathbf{O}_t^{-i},\quad
     Z_t^i \triangleq O^i_t,\quad 
     X_t^i \triangleq \mathbf{H}_{t-1},\quad
     $$
+* New proxy setting
+    $$
+    W_t^i \triangleq \mathbf{O}_t^{-i},\quad
+    Z_t^i \triangleq H^i_{t-1},\quad 
+    X_t^i \triangleq \mathbf{H}^{-i}_{t-1}, O^i_t,\quad
+    $$
+
+# 26.04.06
+* SMAX/SMACv2 logics are reduced to StagHunt. Target Allocations.
+  * As a battle goes on, an alley may not attack a remain enemy.
+* Set the final evaluation to be performed over 32-episode. 

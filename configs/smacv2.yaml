@@ -55,7 +55,7 @@ training:
   log_interval: 2
   save_interval: 100
   eval_interval: 50
-  eval_episodes: 32
+  eval_episodes: 10
   save_dir: "./save_checkpoints"
   device: "cpu"
   # Reproducibility settings

@@ -2017,10 +2017,7 @@ class VMASDispersionEnv(VMASWrapper):
 
 class SMAXWrapper(MultiAgentEnv):
     """
-    JaxMARL의 SMAX(HeuristicEnemySMAX) 환경을 위한 Wrapper.
-    
-    SC2 바이너리 없이 JAX로 완전히 구현된 StarCraft-like MARL 환경.
-    ally 팀(학습 에이전트)이 heuristic enemy 팀과 대전하는 구도.
+    JaxMARL SMAX(HeuristicEnemySMAX) Wrapper.
     
     기존 SMACv2Wrapper와 동일한 MultiAgentEnv 인터페이스를 제공:
         - reset() -> Dict[int, np.ndarray]
@@ -2051,6 +2048,8 @@ class SMAXWrapper(MultiAgentEnv):
     @staticmethod
     def _build_smax_env_kwargs(
         map_name: Optional[str],
+        num_allies: int,
+        num_enemies: int,
         max_steps: int,
         map_width: int,
         map_height: int,
@@ -2110,6 +2109,124 @@ class SMAXWrapper(MultiAgentEnv):
         env_kwargs["observation_type"] = observation_type
         return env_kwargs
 
+    @staticmethod
+    def _build_default_allowed_targets(
+        num_allies: int,
+        num_enemies: int,
+    ) -> Dict[int, List[int]]:
+        import math
+
+        step = num_enemies / max(1, num_allies)
+        window = min(num_enemies, max(2, math.ceil(step) + 1))
+        allowed_targets: Dict[int, List[int]] = {}
+        for ally_id in range(num_allies):
+            start = round(ally_id * step)
+            allowed_targets[ally_id] = [
+                (start + j) % num_enemies for j in range(window)
+            ]
+        return allowed_targets
+
+    @staticmethod
+    def _build_cooperative_kill_assignments(
+        num_allies: int,
+        num_enemies: int,
+        allowed_targets: Optional[Dict[int, List[int]]] = None,
+    ) -> Dict[int, List[int]]:
+        required_agents: Dict[int, List[int]] = {}
+
+        for enemy_id in range(num_enemies):
+            allowed_agents = []
+            if allowed_targets is not None:
+                allowed_agents = [
+                    agent_id
+                    for agent_id in range(num_allies)
+                    if enemy_id in allowed_targets.get(agent_id, [])
+                ]
+
+            if not allowed_agents:
+                owner = enemy_id % max(1, num_allies)
+                if num_allies <= 1:
+                    required_agents[enemy_id] = [owner]
+                else:
+                    required_agents[enemy_id] = [owner, (owner + 1) % num_allies]
+                continue
+
+            preferred_owner = enemy_id % max(1, num_allies)
+            owner = preferred_owner if preferred_owner in allowed_agents else allowed_agents[0]
+            if num_allies <= 1:
+                required_agents[enemy_id] = [owner]
+                continue
+
+            partner = None
+            for offset in range(1, num_allies):
+                candidate = (owner + offset) % num_allies
+                if candidate in allowed_agents and candidate != owner:
+                    partner = candidate
+                    break
+
+            if partner is None:
+                partner = (owner + 1) % num_allies
+
+            required_agents[enemy_id] = [owner, partner] if partner != owner else [owner]
+
+        return required_agents
+
+    @staticmethod
+    def _augment_allowed_targets_with_required_agents(
+        allowed_targets: Optional[Dict[int, List[int]]],
+        required_agents: Dict[int, List[int]],
+        num_allies: int,
+    ) -> Optional[Dict[int, List[int]]]:
+        if allowed_targets is None:
+            return None
+
+        merged = {
+            agent_id: list(targets)
+            for agent_id, targets in allowed_targets.items()
+        }
+        for agent_id in range(num_allies):
+            merged.setdefault(agent_id, [])
+
+        for enemy_id, assigned_agents in required_agents.items():
+            for agent_id in assigned_agents:
+                if enemy_id not in merged[agent_id]:
+                    merged[agent_id].append(enemy_id)
+                    merged[agent_id].sort()
+
+        return merged
+
+    @staticmethod
+    def _build_cooperative_kill_reward_tables(
+        required_agents: Dict[int, List[int]],
+        num_allies: int,
+        num_enemies: int,
+        owner_ratio: float,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        required_mask = np.zeros((num_enemies, num_allies), dtype=np.bool_)
+        reward_weights = np.zeros((num_enemies, num_allies), dtype=np.float32)
+
+        owner_ratio = float(np.clip(owner_ratio, 0.0, 1.0))
+        for enemy_id in range(num_enemies):
+            assigned_agents = list(required_agents.get(enemy_id, []))
+            if not assigned_agents:
+                continue
+
+            for agent_id in assigned_agents:
+                required_mask[enemy_id, agent_id] = True
+
+            if len(assigned_agents) == 1:
+                reward_weights[enemy_id, assigned_agents[0]] = 1.0
+                continue
+
+            owner = assigned_agents[0]
+            partners = assigned_agents[1:]
+            reward_weights[enemy_id, owner] = owner_ratio
+            partner_share = (1.0 - owner_ratio) / max(1, len(partners))
+            for agent_id in partners:
+                reward_weights[enemy_id, agent_id] = partner_share
+
+        return required_mask, reward_weights
+
     def __init__(
         self,
         num_allies: int = 5,
@@ -2130,6 +2247,12 @@ class SMAXWrapper(MultiAgentEnv):
         observation_type: str = "unit_list",
         smacv2_position_generation: bool = False,
         smacv2_unit_type_generation: bool = False,
+        use_allowed_targets: bool = False,
+        allowed_targets: Dict[int, List[int]] = None,
+        use_cooperative_kill_bonus: bool = False,
+        cooperative_kill_window: int = 2,
+        cooperative_kill_bonus: float = 2.0,
+        cooperative_kill_owner_ratio: float = 0.7,
         **kwargs
     ):
         try:
@@ -2179,6 +2302,10 @@ class SMAXWrapper(MultiAgentEnv):
         self.use_individual_rewards = use_individual_rewards
         self.map_name = map_name
         self.max_steps = max_steps
+        self.use_cooperative_kill_bonus = use_cooperative_kill_bonus
+        self.cooperative_kill_window = max(1, int(cooperative_kill_window))
+        self.cooperative_kill_bonus = float(cooperative_kill_bonus)
+        self.cooperative_kill_owner_ratio = float(cooperative_kill_owner_ratio)
 
         # 에이전트 키 매핑: int id <-> str "ally_{i}"
         self._agent_keys = [f"ally_{i}" for i in range(_num_allies)]
@@ -2194,6 +2321,47 @@ class SMAXWrapper(MultiAgentEnv):
         _seed_val = seed if seed is not None else 0
         self._rng = jax.random.PRNGKey(_seed_val)
         self._state = None
+
+        # allowed_targets 설정 (StagHuntEnv의 required_agents 패턴과 동일)
+        self.use_allowed_targets = use_allowed_targets
+        self._num_movement_actions = self._env.num_movement_actions  # 통상 5
+        if use_allowed_targets:
+            if allowed_targets is not None:
+                self.allowed_targets = allowed_targets
+            else:
+                self.allowed_targets = self._build_default_allowed_targets(_num_allies, _num_enemies)
+        else:
+            self.allowed_targets = None
+
+        self.cooperative_kill_required_agents = self._build_cooperative_kill_assignments(
+            _num_allies,
+            _num_enemies,
+            self.allowed_targets,
+        )
+        if self.use_allowed_targets and self.use_cooperative_kill_bonus:
+            self.allowed_targets = self._augment_allowed_targets_with_required_agents(
+                self.allowed_targets,
+                self.cooperative_kill_required_agents,
+                _num_allies,
+            )
+        self._coop_required_mask_np, self._coop_reward_weights_np = (
+            self._build_cooperative_kill_reward_tables(
+                self.cooperative_kill_required_agents,
+                _num_allies,
+                _num_enemies,
+                self.cooperative_kill_owner_ratio,
+            )
+        )
+        self._coop_attack_memory = np.zeros((_num_allies, _num_enemies), dtype=np.int32)
+
+        if self.use_allowed_targets:
+            print(f"[SMAXWrapper] allowed_targets: {self.allowed_targets}")
+        if self.use_cooperative_kill_bonus:
+            print(
+                "[SMAXWrapper] cooperative_kill_bonus: "
+                f"window={self.cooperative_kill_window}, bonus={self.cooperative_kill_bonus}, "
+                f"required_agents={self.cooperative_kill_required_agents}"
+            )
 
         print(f"[SMAXWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
         print(f"[SMAXWrapper] {_num_allies} allies vs {_num_enemies} enemies (heuristic)")
@@ -2255,10 +2423,42 @@ class SMAXWrapper(MultiAgentEnv):
         # warmup 후 state는 None으로 초기화 (reset()이 시작점)
         self._state = None
 
+    def _apply_cooperative_kill_bonus_numpy(
+        self,
+        prev_enemy_alive: np.ndarray,
+        next_enemy_alive: np.ndarray,
+        actions_by_agent: Dict[int, int],
+    ) -> Tuple[np.ndarray, List[int]]:
+        if not self.use_cooperative_kill_bonus:
+            return np.zeros(self.num_agents, dtype=np.float32), []
+
+        attack_memory = np.maximum(self._coop_attack_memory - 1, 0)
+        for agent_id in range(self.num_agents):
+            action = int(actions_by_agent.get(agent_id, 0))
+            if action >= self._num_movement_actions:
+                enemy_id = action - self._num_movement_actions
+                if 0 <= enemy_id < self.num_enemies:
+                    attack_memory[agent_id, enemy_id] = self.cooperative_kill_window
+
+        killed_mask = prev_enemy_alive & (~next_enemy_alive)
+        recent_attacks = attack_memory > 0
+        coop_ready = np.all(
+            np.where(self._coop_required_mask_np, recent_attacks.T, True),
+            axis=-1,
+        )
+        coop_success = killed_mask & coop_ready
+
+        bonus = coop_success.astype(np.float32) @ (
+            self.cooperative_kill_bonus * self._coop_reward_weights_np
+        )
+        self._coop_attack_memory = attack_memory
+        return bonus.astype(np.float32), np.where(coop_success)[0].tolist()
+
     def reset(self) -> Dict[int, np.ndarray]:
         """환경을 리셋하고 초기 관찰을 반환합니다."""
         self._rng, reset_key = self._jax.random.split(self._rng)
         obs_dict, self._state = self._env.reset(reset_key)
+        self._coop_attack_memory = np.zeros((self.num_agents, self.num_enemies), dtype=np.int32)
 
         # Dict[str, jax.Array] → Dict[int, np.ndarray]
         observations = {}
@@ -2275,6 +2475,22 @@ class SMAXWrapper(MultiAgentEnv):
     ]:
         """환경에서 한 스텝을 진행합니다."""
         assert self._state is not None, "step() 전에 reset()을 호출하세요."
+        prev_enemy_alive = np.array(
+            self._state.state.unit_alive[self._env.num_allies:],
+            dtype=np.bool_,
+        )
+
+        # allowed_targets가 활성화된 경우 금지된 attack action을 stop(0)으로 교체
+        if self.use_allowed_targets:
+            sanitized = {}
+            for i, a in actions.items():
+                if (i in self.allowed_targets
+                        and a >= self._num_movement_actions):
+                    enemy_id = a - self._num_movement_actions
+                    if enemy_id not in self.allowed_targets[i]:
+                        a = 0  # stop
+                sanitized[i] = a
+            actions = sanitized
 
         # Dict[int, int] → Dict[str, jnp.int32]
         jax_actions = {
@@ -2295,6 +2511,18 @@ class SMAXWrapper(MultiAgentEnv):
         for i, key in enumerate(self._agent_keys):
             rewards[i] = float(rewards_dict[key])
 
+        next_enemy_alive = np.array(
+            self._state.state.unit_alive[self._env.num_allies:],
+            dtype=np.bool_,
+        )
+        coop_bonus, cooperative_kills = self._apply_cooperative_kill_bonus_numpy(
+            prev_enemy_alive,
+            next_enemy_alive,
+            actions,
+        )
+        for agent_id in range(self.num_agents):
+            rewards[agent_id] += float(coop_bonus[agent_id])
+
         # done 변환
         # SMAX (SMAC과 동일): 개별 에이전트가 죽어도 에피소드는 계속됨.
         # 오직 __all__ 신호만 에피소드 종료로 사용 (모든 ally/enemy가 죽거나 시간 초과).
@@ -2311,6 +2539,7 @@ class SMAXWrapper(MultiAgentEnv):
         info = {
             'battle_won': battle_won,
             'episode_done': all_done,
+            'cooperative_kills': cooperative_kills,
         }
         return observations, rewards, dones, info
 
@@ -2327,7 +2556,15 @@ class SMAXWrapper(MultiAgentEnv):
 
         avail_list = []
         for i, key in enumerate(self._agent_keys):
-            avail_list.append(np.array(avail_dict[key], dtype=np.int32).tolist())
+            mask = np.array(avail_dict[key], dtype=np.int32)
+            if self.use_allowed_targets and i in self.allowed_targets:
+                # 금지된 attack action 마스킹: attack action index = num_movement_actions + enemy_id
+                for enemy_id in range(self.num_enemies):
+                    if enemy_id not in self.allowed_targets[i]:
+                        action_idx = self._num_movement_actions + enemy_id
+                        if action_idx < len(mask):
+                            mask[action_idx] = 0
+            avail_list.append(mask.tolist())
 
         return avail_list
 
@@ -2394,7 +2631,14 @@ class SMAXBatchWrapper(MultiAgentEnv):
         observation_type: str = "unit_list",
         smacv2_position_generation: bool = False,
         smacv2_unit_type_generation: bool = False,
-    ):
+        use_allowed_targets: bool = True,
+        allowed_targets: Dict[int, List[int]] = None,
+        use_cooperative_kill_bonus: bool = True,
+        cooperative_kill_window: int = 2,
+        cooperative_kill_bonus: float = 2.0,
+        cooperative_kill_owner_ratio: float = 0.7,
+    ):  
+        print(f"use allowed_targets: {use_allowed_targets}, use_cooperative_kill_bonus: {use_cooperative_kill_bonus}")
         try:
             import jax
             import jax.numpy as jnp
@@ -2411,6 +2655,8 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         env_kwargs = SMAXWrapper._build_smax_env_kwargs(
             map_name=map_name,
+            num_allies=num_allies,
+            num_enemies=num_enemies,
             max_steps=max_steps,
             map_width=map_width,
             map_height=map_height,
@@ -2443,15 +2689,70 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self.map_name = map_name
         self.max_steps = max_steps
         self.use_individual_rewards = use_individual_rewards
+        self.use_cooperative_kill_bonus = use_cooperative_kill_bonus
+        self.cooperative_kill_window = max(1, int(cooperative_kill_window))
+        self.cooperative_kill_bonus = float(cooperative_kill_bonus)
+        self.cooperative_kill_owner_ratio = float(cooperative_kill_owner_ratio)
         self._agent_keys = [f"ally_{i}" for i in range(_num_allies)]
         self._id_to_key = {i: f"ally_{i}" for i in range(_num_allies)}
 
         self.obs_dim = self._env.obs_size
         self.action_dim = self._env.num_ally_actions
+        self._num_movement_actions = self._env.num_movement_actions
+
+        # allowed_targets 설정 (SMAXWrapper와 동일한 로직)
+        self.use_allowed_targets = use_allowed_targets
+        if use_allowed_targets:
+            if allowed_targets is not None:
+                self.allowed_targets = allowed_targets
+            else:
+                self.allowed_targets = SMAXWrapper._build_default_allowed_targets(
+                    _num_allies,
+                    _num_enemies,
+                )
+        else:
+            self.allowed_targets = None
+
+        self.cooperative_kill_required_agents = SMAXWrapper._build_cooperative_kill_assignments(
+            _num_allies,
+            _num_enemies,
+            self.allowed_targets,
+        )
+        if self.use_allowed_targets and self.use_cooperative_kill_bonus:
+            self.allowed_targets = SMAXWrapper._augment_allowed_targets_with_required_agents(
+                self.allowed_targets,
+                self.cooperative_kill_required_agents,
+                _num_allies,
+            )
+
+        self._coop_required_mask_np, self._coop_reward_weights_np = (
+            SMAXWrapper._build_cooperative_kill_reward_tables(
+                self.cooperative_kill_required_agents,
+                _num_allies,
+                _num_enemies,
+                self.cooperative_kill_owner_ratio,
+            )
+        )
+        self._coop_required_mask_jax = jnp.array(self._coop_required_mask_np)
+        self._coop_reward_weights_jax = jnp.array(self._coop_reward_weights_np)
+
+        # avail 마스크 선계산: shape (num_agents, action_dim), 금지 action = 0
+        import numpy as _np
+        self._avail_mask_np = _np.ones((_num_allies, self.action_dim), dtype=_np.int32)
+        if use_allowed_targets:
+            for i in range(_num_allies):
+                for enemy_id in range(_num_enemies):
+                    if enemy_id not in self.allowed_targets.get(i, list(range(_num_enemies))):
+                        action_idx = self._num_movement_actions + enemy_id
+                        if action_idx < self.action_dim:
+                            self._avail_mask_np[i, action_idx] = 0
+        self._avail_mask_jax = jnp.array(self._avail_mask_np)  # (num_agents, action_dim)
 
         _seed_val = seed if seed is not None else 0
         self._rng = jax.random.PRNGKey(_seed_val)
         self._batch_states = None  # 배치 상태 (n_envs, ...)
+        self._coop_attack_memory_np = np.zeros((n_envs, _num_allies, _num_enemies), dtype=np.int32)
+        self._coop_attack_memory_jax = jnp.zeros((n_envs, _num_allies, _num_enemies), dtype=jnp.int32)
 
         # vmap + JIT 컴파일된 함수
         self._batch_reset = jax.jit(jax.vmap(self._env.reset))
@@ -2478,6 +2779,14 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         self._batch_step_auto_reset = jax.jit(jax.vmap(_single_env_step_auto_reset))
 
+        if self.use_allowed_targets:
+            print(f"[SMAXBatchWrapper] allowed_targets: {self.allowed_targets}")
+        if self.use_cooperative_kill_bonus:
+            print(
+                "[SMAXBatchWrapper] cooperative_kill_bonus: "
+                f"window={self.cooperative_kill_window}, bonus={self.cooperative_kill_bonus}, "
+                f"required_agents={self.cooperative_kill_required_agents}"
+            )
         print(f"[SMAXBatchWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
         print(f"[SMAXBatchWrapper] {_num_allies}v{_num_enemies} × {n_envs} 환경 (vmap 병렬)")
 
@@ -2530,6 +2839,95 @@ class SMAXBatchWrapper(MultiAgentEnv):
         print(f"[SMAXBatchWrapper] warm-up 완료! (총 {time.time()-t0:.1f}초)")
         self._batch_states = None
 
+    def _pack_batch_state(self, env_state, coop_attack_memory):
+        return {
+            "env_state": env_state,
+            "coop_attack_memory": coop_attack_memory,
+        }
+
+    def _unpack_batch_state(self, batch_state):
+        if isinstance(batch_state, dict) and "env_state" in batch_state:
+            return batch_state["env_state"], batch_state["coop_attack_memory"]
+        zero_memory = self._jnp.zeros(
+            (self.n_envs, self.num_agents, self.num_enemies),
+            dtype=self._jnp.int32,
+        )
+        return batch_state, zero_memory
+
+    def _apply_cooperative_kill_bonus_numpy_batch(
+        self,
+        attack_memory: np.ndarray,
+        actions: np.ndarray,
+        prev_enemy_alive: np.ndarray,
+        next_enemy_alive: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+        if not self.use_cooperative_kill_bonus:
+            zero_bonus = np.zeros((actions.shape[0], self.num_agents), dtype=np.float32)
+            zero_success = np.zeros((actions.shape[0], self.num_enemies), dtype=np.bool_)
+            return zero_bonus, attack_memory, zero_success
+
+        updated_memory = np.maximum(attack_memory - 1, 0)
+        attack_targets = np.clip(actions - self._num_movement_actions, 0, self.num_enemies - 1)
+        attack_mask = actions >= self._num_movement_actions
+        for enemy_id in range(self.num_enemies):
+            hit_enemy = attack_mask & (attack_targets == enemy_id)
+            updated_memory[:, :, enemy_id] = np.where(
+                hit_enemy,
+                self.cooperative_kill_window,
+                updated_memory[:, :, enemy_id],
+            )
+
+        killed_mask = prev_enemy_alive & (~next_enemy_alive)
+        recent_attacks = np.transpose(updated_memory > 0, (0, 2, 1))
+        coop_ready = np.all(
+            np.where(self._coop_required_mask_np[None, :, :], recent_attacks, True),
+            axis=-1,
+        )
+        coop_success = killed_mask & coop_ready
+        bonus = coop_success.astype(np.float32) @ (
+            self.cooperative_kill_bonus * self._coop_reward_weights_np
+        )
+        return bonus.astype(np.float32), updated_memory, coop_success
+
+    def _apply_cooperative_kill_bonus_jax(
+        self,
+        attack_memory,
+        actions,
+        prev_enemy_alive,
+        next_enemy_alive,
+    ):
+        if not self.use_cooperative_kill_bonus:
+            zero_bonus = self._jnp.zeros((actions.shape[0], self.num_agents), dtype=self._jnp.float32)
+            zero_success = self._jnp.zeros((actions.shape[0], self.num_enemies), dtype=bool)
+            return zero_bonus, attack_memory, zero_success
+
+        updated_memory = self._jnp.maximum(attack_memory - 1, 0)
+        attack_mask = actions >= self._num_movement_actions
+        attack_targets = self._jnp.clip(actions - self._num_movement_actions, 0, self.num_enemies - 1)
+        current_targets = self._jax.nn.one_hot(
+            attack_targets,
+            self.num_enemies,
+            dtype=self._jnp.int32,
+        )
+        current_targets = (
+            current_targets
+            * attack_mask[..., None].astype(self._jnp.int32)
+            * self.cooperative_kill_window
+        )
+        updated_memory = self._jnp.maximum(updated_memory, current_targets)
+
+        killed_mask = prev_enemy_alive & (~next_enemy_alive)
+        recent_attacks = self._jnp.transpose(updated_memory > 0, (0, 2, 1))
+        coop_ready = self._jnp.all(
+            self._jnp.where(self._coop_required_mask_jax[None, :, :], recent_attacks, True),
+            axis=-1,
+        )
+        coop_success = killed_mask & coop_ready
+        bonus = coop_success.astype(self._jnp.float32) @ (
+            self.cooperative_kill_bonus * self._coop_reward_weights_jax
+        )
+        return bonus, updated_memory, coop_success
+
     # ------------------------------------------------------------------
     # ParallelEnvWrapper 인터페이스
     # ------------------------------------------------------------------
@@ -2546,6 +2944,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         obs_b, self._batch_states = self._batch_reset(keys_arr)
         self._jax.block_until_ready(obs_b)
+        self._coop_attack_memory_np = np.zeros(
+            (self.n_envs, self.num_agents, self.num_enemies),
+            dtype=np.int32,
+        )
 
         avail_b = self._batch_avail(self._batch_states)
         return self._obs_to_list(obs_b), self._avail_to_list(avail_b)
@@ -2563,6 +2965,14 @@ class SMAXBatchWrapper(MultiAgentEnv):
         import numpy as np
 
         jax_actions = self._actions_to_jax(actions_batch)
+        actions_np = np.stack(
+            [np.array(jax_actions[self._id_to_key[agent_id]], dtype=np.int32) for agent_id in range(self.num_agents)],
+            axis=1,
+        )
+        prev_enemy_alive = np.array(
+            self._batch_states.state.unit_alive[:, self._env.num_allies:],
+            dtype=np.bool_,
+        )
 
         self._rng, *step_keys = self._jax.random.split(self._rng, self.n_envs + 1)
         step_keys_arr = self._jnp.stack(step_keys)
@@ -2571,8 +2981,22 @@ class SMAXBatchWrapper(MultiAgentEnv):
             step_keys_arr, self._batch_states, jax_actions
         )
         self._jax.block_until_ready(obs_b)
+        next_enemy_alive = np.array(
+            new_states.state.unit_alive[:, self._env.num_allies:],
+            dtype=np.bool_,
+        )
+        rew_stacked = self._stack_agent_dict(rew_b)
+        coop_bonus, self._coop_attack_memory_np, _ = self._apply_cooperative_kill_bonus_numpy_batch(
+            self._coop_attack_memory_np,
+            actions_np,
+            prev_enemy_alive,
+            next_enemy_alive,
+        )
+        rew_stacked = np.array(rew_stacked, dtype=np.float32) + coop_bonus
 
         all_done_np = np.array(dones_b["__all__"])   # (n_envs,) bool
+        if np.any(all_done_np):
+            self._coop_attack_memory_np[all_done_np] = 0
 
         # 에피소드 종료 환경 자동 리셋 ─────────────────────────────
         if np.any(all_done_np):
@@ -2599,7 +3023,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         return (
             self._obs_to_list(final_obs_b),
-            self._rew_to_list(rew_b),
+            [
+                {agent_id: float(rew_stacked[e, agent_id]) for agent_id in range(self.num_agents)}
+                for e in range(self.n_envs)
+            ],
             self._dones_to_list(all_done_np),
             self._infos_to_list(new_states, all_done_np),
             self._avail_to_list(avail_b),
@@ -2613,48 +3040,69 @@ class SMAXBatchWrapper(MultiAgentEnv):
     def _stack_agent_dict(self, data_b):
         return self._jnp.stack([data_b[key] for key in self._agent_keys], axis=1)
 
+    def _mask_avail_jax(self, avail_stacked):
+        """stacked avail (n_envs, num_agents, action_dim)에 allowed_targets 마스크 적용."""
+        if not self.use_allowed_targets:
+            return avail_stacked
+        return avail_stacked * self._avail_mask_jax[None, :, :]
+
+    def _sanitize_actions_jax(self, actions):
+        """actions (n_envs, num_agents) JAX array에서 금지된 attack → stop(0) 교체.
+
+        jax.lax.scan 내부(traced context)에서 호출되므로 np.array() 사용 불가.
+        Python for-loop은 tracing 시점에 펼쳐지므로 jnp.where만으로 구현.
+        """
+        if not self.use_allowed_targets:
+            return actions
+        # actions: (n_envs, num_agents) — traced array
+        cols = []
+        for i in range(self.num_agents):
+            col = actions[:, i]  # (n_envs,)
+            if i in self.allowed_targets:
+                for j in range(self._num_movement_actions, self.action_dim):
+                    enemy_id = j - self._num_movement_actions
+                    if enemy_id not in self.allowed_targets[i]:
+                        col = self._jnp.where(col == j, 0, col)
+            cols.append(col)
+        return self._jnp.stack(cols, axis=1)
+
     def reset_jax(self):
-        self._rng, *env_keys = self._jax.random.split(self._rng, self.n_envs + 1)
-        keys_arr = self._jnp.stack(env_keys)
-        obs_b, self._batch_states = self._batch_reset(keys_arr)
-        avail_b = self._batch_avail(self._batch_states)
-        return self._stack_agent_dict(obs_b), self._stack_agent_dict(avail_b)
+        self._rng, batch_state, obs, avail = self.reset_jax_pure(self._rng)
+        self._batch_states = batch_state["env_state"]
+        self._coop_attack_memory_jax = batch_state["coop_attack_memory"]
+        return obs, avail
 
     def reset_jax_pure(self, rng):
         rng, *env_keys = self._jax.random.split(rng, self.n_envs + 1)
         keys_arr = self._jnp.stack(env_keys)
-        obs_b, batch_states = self._batch_reset(keys_arr)
-        avail_b = self._batch_avail(batch_states)
-        return rng, batch_states, self._stack_agent_dict(obs_b), self._stack_agent_dict(avail_b)
+        obs_b, env_state = self._batch_reset(keys_arr)
+        coop_attack_memory = self._jnp.zeros(
+            (self.n_envs, self.num_agents, self.num_enemies),
+            dtype=self._jnp.int32,
+        )
+        avail_b = self._batch_avail(env_state)
+        avail_stacked = self._mask_avail_jax(self._stack_agent_dict(avail_b))
+        return rng, self._pack_batch_state(env_state, coop_attack_memory), self._stack_agent_dict(obs_b), avail_stacked
 
     def step_jax(self, actions):
-        jax_actions = {
-            self._id_to_key[i]: actions[:, i].astype(self._jnp.int32)
-            for i in range(self.num_agents)
-        }
-
-        self._rng, *step_keys = self._jax.random.split(self._rng, self.n_envs + 1)
-        step_keys_arr = self._jnp.stack(step_keys)
-        self._rng, *reset_keys = self._jax.random.split(self._rng, self.n_envs + 1)
-        reset_keys_arr = self._jnp.stack(reset_keys)
-
-        obs_b, self._batch_states, rew_b, dones_b, avail_b, battle_won = self._batch_step_auto_reset(
-            step_keys_arr,
-            reset_keys_arr,
-            self._batch_states,
-            jax_actions,
-        )
-
-        return (
-            self._stack_agent_dict(obs_b),
-            self._stack_agent_dict(avail_b),
-            self._stack_agent_dict(rew_b),
-            self._stack_agent_dict(dones_b),
-            dones_b["__all__"],
+        batch_state = self._pack_batch_state(self._batch_states, self._coop_attack_memory_jax)
+        (
+            self._rng,
+            next_batch_state,
+            obs,
+            avail,
+            rewards,
+            dones,
+            dones_all,
             battle_won,
-        )
+        ) = self.step_jax_pure(self._rng, batch_state, actions)
+        self._batch_states = next_batch_state["env_state"]
+        self._coop_attack_memory_jax = next_batch_state["coop_attack_memory"]
+        return obs, avail, rewards, dones, dones_all, battle_won
 
     def step_jax_pure(self, rng, batch_states, actions):
+        env_state, coop_attack_memory = self._unpack_batch_state(batch_states)
+        actions = self._sanitize_actions_jax(actions)
         jax_actions = {
             self._id_to_key[i]: actions[:, i].astype(self._jnp.int32)
             for i in range(self.num_agents)
@@ -2662,22 +3110,47 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         rng, *step_keys = self._jax.random.split(rng, self.n_envs + 1)
         step_keys_arr = self._jnp.stack(step_keys)
+        prev_enemy_alive = env_state.state.unit_alive[:, self._env.num_allies:]
+        obs_b, next_env_state, rew_b, dones_b, _ = self._batch_step(
+            step_keys_arr,
+            env_state,
+            jax_actions,
+        )
+        next_enemy_alive = next_env_state.state.unit_alive[:, self._env.num_allies:]
+        battle_won = ~self._jnp.any(next_enemy_alive, axis=-1)
+        rewards_stacked = self._stack_agent_dict(rew_b).astype(self._jnp.float32)
+        coop_bonus, coop_attack_memory, _ = self._apply_cooperative_kill_bonus_jax(
+            coop_attack_memory,
+            actions,
+            prev_enemy_alive,
+            next_enemy_alive,
+        )
+        rewards_stacked = rewards_stacked + coop_bonus
+
         rng, *reset_keys = self._jax.random.split(rng, self.n_envs + 1)
         reset_keys_arr = self._jnp.stack(reset_keys)
+        reset_obs_b, reset_states = self._batch_reset(reset_keys_arr)
+        done_flags = dones_b["__all__"]
 
-        obs_b, batch_states, rew_b, dones_b, avail_b, battle_won = self._batch_step_auto_reset(
-            step_keys_arr,
-            reset_keys_arr,
-            batch_states,
-            jax_actions,
+        def _select(new, reset):
+            cond = done_flags.reshape((-1,) + (1,) * (new.ndim - 1))
+            return self._jnp.where(cond, reset, new)
+
+        final_env_state = self._jax.tree_map(_select, next_env_state, reset_states)
+        final_obs_b = self._jax.tree_map(_select, obs_b, reset_obs_b)
+        avail_b = self._batch_avail(final_env_state)
+        coop_attack_memory = self._jnp.where(
+            done_flags[:, None, None],
+            self._jnp.zeros_like(coop_attack_memory),
+            coop_attack_memory,
         )
 
         return (
             rng,
-            batch_states,
-            self._stack_agent_dict(obs_b),
-            self._stack_agent_dict(avail_b),
-            self._stack_agent_dict(rew_b),
+            self._pack_batch_state(final_env_state, coop_attack_memory),
+            self._stack_agent_dict(final_obs_b),
+            self._mask_avail_jax(self._stack_agent_dict(avail_b)),
+            rewards_stacked,
             self._stack_agent_dict(dones_b),
             dones_b["__all__"],
             battle_won,
@@ -2721,6 +3194,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
     def _avail_to_list(self, avail_b) -> List:
         import numpy as np
         avail_np = {k: np.array(avail_b[k]) for k in self._agent_keys}
+        if self.use_allowed_targets:
+            # _avail_mask_np[i]: (action_dim,) → broadcast over (n_envs, action_dim)
+            for i, k in enumerate(self._agent_keys):
+                avail_np[k] = avail_np[k] * self._avail_mask_np[i]
         return [
             {i: avail_np[k][e].tolist() for i, k in enumerate(self._agent_keys)}
             for e in range(self.n_envs)
@@ -2728,6 +3205,20 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
     def _actions_to_jax(self, actions_batch):
         """List[Dict[int, int]] → Dict[str, jnp.ndarray (n_envs,)]"""
+        if self.use_allowed_targets:
+            sanitized = []
+            for e in range(self.n_envs):
+                env_actions = {}
+                for agent_id, a in actions_batch[e].items():
+                    a = int(a)
+                    if (agent_id in self.allowed_targets
+                            and a >= self._num_movement_actions):
+                        enemy_id = a - self._num_movement_actions
+                        if enemy_id not in self.allowed_targets[agent_id]:
+                            a = 0  # stop
+                    env_actions[agent_id] = a
+                sanitized.append(env_actions)
+            actions_batch = sanitized
         return {
             key: self._jnp.array(
                 [int(actions_batch[e][agent_id]) for e in range(self.n_envs)],

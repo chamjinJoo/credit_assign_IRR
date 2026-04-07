@@ -46,6 +46,7 @@ environment:
   # maps: [2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
   max_steps: 100
   use_individual_rewards: false
+  use_allowed_targets: true
   enemy_shoots: true
   attack_mode: "closest"
   map_width: 32

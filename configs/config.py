@@ -158,6 +158,8 @@ class EnvironmentConfig:
     # For SMAX environment
     enemy_shoots: bool = True
     attack_mode: str = "closest"
+    use_allowed_targets: bool = False
+    use_cooperative_kill_bonus: bool = False
     map_width: int = 32
     map_height: int = 32
     world_steps_per_env_step: int = 8
@@ -457,6 +459,12 @@ def parse_args() -> argparse.Namespace:
                         help='Checkpoint path for evaluation/testing')
     parser.add_argument('--render', action='store_true',
                         help='Render environment during testing')
+    parser.add_argument('--save-replay', action='store_true',
+                        help='Save SMAX episode replay as GIF (JAX SMAX only)')
+    parser.add_argument('--replay-dir', type=str, default='./smax_replays',
+                        help='Directory to save replay GIFs')
+    parser.add_argument('--replay-episodes', type=int, default=3,
+                        help='Number of episodes to record as replay')
     parser.add_argument('--eval-episodes', type=int, default=32,
                         help='Number of episodes for evaluation')
     

@@ -12,7 +12,8 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
 from algorithms import PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm, X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm, rQMIXAlgorithm
-from envs import MultiAgentEnv, dict_to_tensor
+from algorithms.common import resolve_step_episode_done
+from envs import MultiAgentEnv, dict_to_tensor, create_environment
 from utils import Logger, MetricsTracker, get_causal_evaluator, get_advanced_causal_evaluator
 from typing import Union
 
@@ -73,6 +74,7 @@ class Trainer:
         self.config = config
         self.n_rollout_threads = n_rollout_threads
         self.episodes_per_iteration = episodes_per_iteration
+        self._eval_env_build_error = None
         
         # Setup environment (single or parallel)
         if n_rollout_threads > 1:
@@ -87,7 +89,7 @@ class Trainer:
                 # fork 없이 이미 병렬화되어 있음
                 self.env = env
                 self.is_parallel = True
-                self.eval_env = env  # 평가도 동일 env 사용
+                self.eval_env = self._build_eval_env(env)
             else:
                 raise ValueError(
                     "n_rollout_threads > 1 시 env_fn 또는 SMAXBatchWrapper가 필요합니다."
@@ -121,6 +123,14 @@ class Trainer:
         algorithm_type = type(algorithm).__name__.replace('Algorithm', '').upper()
         self.logger = Logger(name=algorithm_type)
         self.metrics_tracker = MetricsTracker()
+        if self.eval_env is not self.env:
+            self.logger.info(
+                f"Created dedicated evaluation environment: {self.eval_env.__class__.__name__}"
+            )
+        elif self._eval_env_build_error is not None:
+            self.logger.warning(
+                f"Falling back to shared evaluation environment: {self._eval_env_build_error}"
+            )
         
         # Initialize causal effect evaluator (only for PCI-MAPPO)
         # For other algorithms, these will be None
@@ -203,6 +213,43 @@ class Trainer:
         self.episode_rewards = defaultdict(list)
         self.episode_lengths = []
         self.recent_rewards = deque(maxlen=100)
+
+    def _build_eval_env(self, env: MultiAgentEnv) -> MultiAgentEnv:
+        """Prefer a dedicated single-environment evaluator for SMAX batched runs."""
+        if env.__class__.__name__ != "SMAXBatchWrapper":
+            return env
+
+        env_config = getattr(self.config, 'environment', None)
+        if env_config is None:
+            return env
+
+        try:
+            return create_environment(env_config)
+        except Exception as exc:
+            self._eval_env_build_error = str(exc)
+            return env
+
+    def _get_eval_episode_limit(self) -> int:
+        """Infer a reasonable evaluation horizon from the environment."""
+        max_steps = getattr(self.eval_env, 'max_steps', None)
+        if max_steps is not None:
+            return max(1, int(max_steps))
+
+        get_env_info = getattr(self.eval_env, 'get_env_info', None)
+        if callable(get_env_info):
+            try:
+                env_info = get_env_info()
+                episode_limit = env_info.get('episode_limit')
+                if episode_limit is not None:
+                    return max(1, int(episode_limit))
+            except Exception:
+                pass
+
+        max_episode_steps = getattr(self.eval_env, 'max_episode_steps', None)
+        if max_episode_steps is not None:
+            return max(1, int(max_episode_steps))
+
+        return 1000
 
     @staticmethod
     def _is_eval_only_advantage_metric(key: str) -> bool:
@@ -419,7 +466,7 @@ class Trainer:
                 
                 # Evaluate policy
                 if iteration % self.eval_interval == 0 or iteration == self.max_iterations - 1:
-                    eval_info = self.evaluate_policy()
+                    eval_info = self.evaluate_policy(num_episodes=self.eval_episodes)
                     self.log_evaluation_metrics(eval_info, update_info=update_info)
                 
                 # Save checkpoint
@@ -442,12 +489,8 @@ class Trainer:
         
         # Final evaluation and save
         self.logger.info("Running final evaluation...")
-        final_eval = self.evaluate_policy()
-        mean_reward = final_eval.get('eval_mean_reward', 'N/A')
-        if isinstance(mean_reward, (int, float)):
-            self.logger.info(f"Final evaluation reward: {mean_reward:.4f}")
-        else:
-            self.logger.info(f"Final evaluation reward: {mean_reward}")
+        final_eval = self.evaluate_policy(num_episodes=32)  # Run more episodes for final evaluation
+        self.log_evaluation_metrics(final_eval, title="Final Evaluation Results")
         self.save_checkpoint(is_final=True)
         
         # Save final training summary
@@ -866,7 +909,7 @@ class Trainer:
         
         return rollout_data
  
-    def evaluate_policy(self) -> Dict[str, float]:
+    def evaluate_policy(self, num_episodes: int = 10) -> Dict[str, float]:
         """
         Evaluate current policy for multiple episodes.
         
@@ -876,13 +919,14 @@ class Trainer:
         eval_rewards = defaultdict(list)
         eval_lengths = []
         eval_successes = []
+        episode_limit = self._get_eval_episode_limit()
 
         # SMAXBatchWrapper는 reset()이 (obs_list, avail_list) 튜플을 반환하고
         # step()은 (obs, rew, done, info, avail) 5-튜플을 반환함.
         # 평가 시에는 첫 번째 환경만 사용하여 단일 에피소드 평가.
         is_batch_env = hasattr(self.eval_env, 'n_envs') and getattr(self.eval_env, 'n_envs', 1) > 1
 
-        for episode in range(self.eval_episodes):
+        for episode in range(num_episodes):
             # Reset environment and agents (use eval_env for evaluation)
             observations = self.eval_env.reset()
 
@@ -904,7 +948,7 @@ class Trainer:
             episode_length = 0
             done = False
             
-            while not done and episode_length < 1000:
+            while not done and episode_length < episode_limit:
                 # Get availability of actions
                 available_actions = None
                 if is_batch_env:
@@ -975,7 +1019,13 @@ class Trainer:
                 
                 observations = next_observations
                 episode_length += 1
-                done = any(dones.values())
+                done = resolve_step_episode_done(dones, info)
+
+            if not done and episode_length >= episode_limit:
+                self.logger.warning(
+                    f"Evaluation episode {episode + 1}/{num_episodes} reached the "
+                    f"episode limit ({episode_limit}) without an explicit done signal."
+                )
             
             # Store episode data
             for agent_id, total_reward in episode_reward.items():
@@ -1102,9 +1152,15 @@ class Trainer:
             
             wandb.log(wandb_data, step=self.iteration)
     
-    def log_evaluation_metrics(self, eval_info: Dict[str, float], update_info: Optional[Dict[str, float]] = None):
+    def log_evaluation_metrics(
+        self,
+        eval_info: Dict[str, float],
+        update_info: Optional[Dict[str, float]] = None,
+        title: str = "Evaluation Results:",
+    ):
         """Log evaluation metrics."""
-        self.logger.info("Evaluation Results:")
+        self.logger.info(title)
+        self.logger.info(f"  Success Rate: {eval_info['eval_success_rate']:.3f}")
         self.logger.info(f"  Mean Reward: {eval_info['eval_mean_reward']:.3f} ± {eval_info['eval_std_reward']:.3f}")
         self.logger.info(f"  Mean Length: {eval_info['eval_mean_length']:.1f}")
         self.logger.info(f"  Min/Max Reward: {eval_info['eval_min_reward']:.3f} / {eval_info['eval_max_reward']:.3f}")
@@ -1120,6 +1176,8 @@ class Trainer:
         
         if self.use_wandb:
             wandb_data = {
+                'iteration': self.iteration,
+                'total_steps': self.total_steps,
                 'eval/success_rate': eval_info['eval_success_rate'],
                 'eval/mean_reward': eval_info['eval_mean_reward'],
                 'eval/std_reward': eval_info['eval_std_reward'],
