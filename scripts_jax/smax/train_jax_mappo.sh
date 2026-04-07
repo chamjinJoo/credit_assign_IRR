@@ -9,14 +9,13 @@ config="configs_jax/smax_mappo.yaml"
 model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
-seed=42
 n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 
 log_interval=2
-device="cuda"  # recommended to use cuda if available, but default to cpu for safety
-seeds=(1 2)
+device="cpu"  # recommended to use cuda if available, but default to cpu for safety
+seed=42
 
 test=false
 checkpoint="./save_checkpoints/20260406_185738_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_1599.pkl"
@@ -53,23 +52,15 @@ if ${test}; then
     ${replay_flag}
 
 else
-  for seed in ${seeds[@]}; do
-    echo "[seed=${seed}] start]"
-    python main.py \
-      --env SMAX \
-      --config ${config} \
-      --model ${model} \
-      --use-recurrent-policy ${use_recurrent_policy} \
-      --n-rollout-threads ${n_rollout_threads} \
-      --max-iterations ${max_iterations} \
-      --max-steps ${max_steps_per_iteration} \
-      --log-interval ${log_interval} \
-      --device ${device} \
-      --seed ${seed} \
-      --use-wandb \
-      --wandb-project pci-marl-smax-jax \
-      # & # deactivate for sequential training
-    echo "[seed=${seed}] PID: $!"
-  done
-
+  python main.py --env SMAX --config ${config} \
+    --model ${model} \
+    --use-recurrent-policy ${use_recurrent_policy} \
+    --n-rollout-threads ${n_rollout_threads} \
+    --max-iterations ${max_iterations} \
+    --max-steps ${max_steps_per_iteration} \
+    --log-interval ${log_interval} \
+    --device ${device} \
+    --seed ${seed} \
+    --use-wandb \
+    --wandb-project pci-marl-smax-jax 
 fi

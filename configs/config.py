@@ -159,6 +159,7 @@ class EnvironmentConfig:
     enemy_shoots: bool = True
     attack_mode: str = "closest"
     use_allowed_targets: bool = False
+    allowed_target_window: int = 2 
     use_cooperative_kill_bonus: bool = False
     map_width: int = 32
     map_height: int = 32

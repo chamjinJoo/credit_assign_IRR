@@ -314,4 +314,9 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.04.06
 * SMAX/SMACv2 logics are reduced to StagHunt. Target Allocations.
   * As a battle goes on, an alley may not attack a remain enemy.
+  * `rPCI` outperforms backbone model MAPPO.
+  * However, the results are huge differently depending on backend configurations such as cuda versoin, gpu tpye etc.
+  * Simulation on JAX-based SMAX should use a unified backend cuda or cpu. 
+    * rpci shows low performance on cpu due to the inherent floating or resolution scale of JAX. 
+    * baselines shows cool performance in different cuda version or gpu.
 * Set the final evaluation to be performed over 32-episode. 
