@@ -24,7 +24,6 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
-export XLA_FLAGS="--xla_gpu_deterministic_ops=true ${XLA_FLAGS:-}"
 # export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 python main.py \

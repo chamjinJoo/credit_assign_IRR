@@ -53,6 +53,6 @@ for seed in ${seeds[@]}; do
     echo "[seed=${seed}] PID: $!"
 done
 
-echo "all seed is running... (${#seeds[@]} parallel processes)"
+echo "모든 seed 실행 중... (${#seeds[@]}개 병렬 실행)"
 wait
-echo "all seed training completed!"
+echo "모든 seed 학습 완료!"

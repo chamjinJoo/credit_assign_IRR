@@ -9,6 +9,7 @@ config="configs_jax/smax_mappo.yaml"
 model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
+seed=42
 n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
@@ -29,7 +30,6 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
-export XLA_FLAGS="--xla_gpu_deterministic_ops=true ${XLA_FLAGS:-}"
 # export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 if ${test}; then
@@ -38,6 +38,7 @@ if ${test}; then
   if ${save_replay}; then
     replay_flag="--save-replay --replay-dir ${replay_dir} --replay-episodes ${replay_episodes}"
   fi
+
   python main.py \
     --env SMAX \
     --config ${config} \
@@ -50,9 +51,10 @@ if ${test}; then
     --test \
     --checkpoint ${checkpoint} \
     ${replay_flag}
-
 else
-  python main.py --env SMAX --config ${config} \
+  python main.py \
+    --env SMAX \
+    --config ${config} \
     --model ${model} \
     --use-recurrent-policy ${use_recurrent_policy} \
     --n-rollout-threads ${n_rollout_threads} \
@@ -62,5 +64,5 @@ else
     --device ${device} \
     --seed ${seed} \
     --use-wandb \
-    --wandb-project pci-marl-smax-jax 
+    --wandb-project pci-marl-smax-jax
 fi

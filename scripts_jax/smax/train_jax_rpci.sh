@@ -13,12 +13,12 @@ use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 
-seed=1
 n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 device="cpu"
+seed=42
 
 if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
@@ -26,7 +26,6 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
-export XLA_FLAGS="--xla_gpu_deterministic_ops=true ${XLA_FLAGS:-}"
 # export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 python main.py \

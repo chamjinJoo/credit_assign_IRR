@@ -655,7 +655,6 @@ def main():
                 smacv2_position_generation=getattr(env_config, 'smacv2_position_generation', False),
                 smacv2_unit_type_generation=getattr(env_config, 'smacv2_unit_type_generation', False),
                 use_allowed_targets=getattr(env_config, 'use_allowed_targets', False),
-                allowed_target_window=getattr(env_config, 'allowed_target_window', 2),
                 allowed_targets=getattr(env_config, 'allowed_targets', None),
                 use_cooperative_kill_bonus=getattr(env_config, 'use_cooperative_kill_bonus', False),
                 cooperative_kill_window=getattr(env_config, 'cooperative_kill_window', 2),

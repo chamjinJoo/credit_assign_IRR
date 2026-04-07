@@ -47,7 +47,6 @@ environment:
   max_steps: 100
   use_individual_rewards: false
   use_allowed_targets: true          # addition
-  allowed_target_window: 2           # cyclic target window per ally
   use_cooperative_kill_bonus: false  # addition
   cooperative_kill_window: 2         # addition
   cooperative_kill_bonus: 1.0        # addition

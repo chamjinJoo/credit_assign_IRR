@@ -2018,7 +2018,33 @@ class VMASDispersionEnv(VMASWrapper):
 class SMAXWrapper(MultiAgentEnv):
     """
     JaxMARL SMAX(HeuristicEnemySMAX) Wrapper.
+    
+    기존 SMACv2Wrapper와 동일한 MultiAgentEnv 인터페이스를 제공:
+        - reset() -> Dict[int, np.ndarray]
+        - step(actions: Dict[int, int]) -> (obs, rewards, dones, info)
+        - get_avail_actions() -> List[List[int]]
+        - get_obs_dim() -> int
+        - get_action_dim() -> int
+    
+    지원 시나리오 (map_name 파라미터):
+        "3m"               : 3 Marine vs 3 Marine
+        "8m"               : 8 Marine vs 8 Marine
+        "2s3z"             : 2 Stalker + 3 Zealot vs 같음
+        "smacv2_5_units"   : 5 units (SMACv2 위치/타입 생성)
+        "smacv2_10_units"  : 10 units
+        None               : num_allies/num_enemies 직접 지정
+    
+    Args:
+        num_allies: 아군 에이전트 수 (map_name 없을 때 사용)
+        num_enemies: 적군 수 (heuristic policy 사용)
+        map_name: 내장 시나리오 이름. 지정 시 num_allies/num_enemies 무시.
+        seed: 랜덤 시드
+        max_steps: 에피소드 최대 스텝 수
+        use_individual_rewards: True면 팀 보상을 개별로 분리 (현재 SMAX는 팀 보상)
+        enemy_shoots: heuristic enemy가 공격할지 여부
+        attack_mode: heuristic enemy 공격 모드 ("closest" or "random")
     """
+
     @staticmethod
     def _build_smax_env_kwargs(
         map_name: Optional[str],
@@ -2087,15 +2113,14 @@ class SMAXWrapper(MultiAgentEnv):
     def _build_default_allowed_targets(
         num_allies: int,
         num_enemies: int,
-        window: int = 2,
     ) -> Dict[int, List[int]]:
-        if num_enemies <= 0:
-            return {ally_id: [] for ally_id in range(num_allies)}
+        import math
 
-        window = max(1, min(int(window), num_enemies))
+        step = num_enemies / max(1, num_allies)
+        window = min(num_enemies, max(2, math.ceil(step) + 1))
         allowed_targets: Dict[int, List[int]] = {}
         for ally_id in range(num_allies):
-            start = ally_id % num_enemies
+            start = round(ally_id * step)
             allowed_targets[ally_id] = [
                 (start + j) % num_enemies for j in range(window)
             ]
@@ -2223,7 +2248,6 @@ class SMAXWrapper(MultiAgentEnv):
         smacv2_position_generation: bool = False,
         smacv2_unit_type_generation: bool = False,
         use_allowed_targets: bool = False,
-        allowed_target_window: int = 2,
         allowed_targets: Dict[int, List[int]] = None,
         use_cooperative_kill_bonus: bool = False,
         cooperative_kill_window: int = 2,
@@ -2279,7 +2303,6 @@ class SMAXWrapper(MultiAgentEnv):
         self.map_name = map_name
         self.max_steps = max_steps
         self.use_cooperative_kill_bonus = use_cooperative_kill_bonus
-        self.allowed_target_window = max(1, int(allowed_target_window))
         self.cooperative_kill_window = max(1, int(cooperative_kill_window))
         self.cooperative_kill_bonus = float(cooperative_kill_bonus)
         self.cooperative_kill_owner_ratio = float(cooperative_kill_owner_ratio)
@@ -2306,11 +2329,7 @@ class SMAXWrapper(MultiAgentEnv):
             if allowed_targets is not None:
                 self.allowed_targets = allowed_targets
             else:
-                self.allowed_targets = self._build_default_allowed_targets(
-                    _num_allies,
-                    _num_enemies,
-                    window=self.allowed_target_window,
-                )
+                self.allowed_targets = self._build_default_allowed_targets(_num_allies, _num_enemies)
         else:
             self.allowed_targets = None
 
@@ -2336,10 +2355,7 @@ class SMAXWrapper(MultiAgentEnv):
         self._coop_attack_memory = np.zeros((_num_allies, _num_enemies), dtype=np.int32)
 
         if self.use_allowed_targets:
-            print(
-                f"[SMAXWrapper] allowed_target_window={self.allowed_target_window}, "
-                f"allowed_targets: {self.allowed_targets}"
-            )
+            print(f"[SMAXWrapper] allowed_targets: {self.allowed_targets}")
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXWrapper] cooperative_kill_bonus: "
@@ -2615,14 +2631,14 @@ class SMAXBatchWrapper(MultiAgentEnv):
         observation_type: str = "unit_list",
         smacv2_position_generation: bool = False,
         smacv2_unit_type_generation: bool = False,
-        use_allowed_targets: bool = False,
-        allowed_target_window: int = 2,
+        use_allowed_targets: bool = True,
         allowed_targets: Dict[int, List[int]] = None,
-        use_cooperative_kill_bonus: bool = False,
+        use_cooperative_kill_bonus: bool = True,
         cooperative_kill_window: int = 2,
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
-    ):
+    ):  
+        print(f"use allowed_targets: {use_allowed_targets}, use_cooperative_kill_bonus: {use_cooperative_kill_bonus}")
         try:
             import jax
             import jax.numpy as jnp
@@ -2674,7 +2690,6 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self.max_steps = max_steps
         self.use_individual_rewards = use_individual_rewards
         self.use_cooperative_kill_bonus = use_cooperative_kill_bonus
-        self.allowed_target_window = max(1, int(allowed_target_window))
         self.cooperative_kill_window = max(1, int(cooperative_kill_window))
         self.cooperative_kill_bonus = float(cooperative_kill_bonus)
         self.cooperative_kill_owner_ratio = float(cooperative_kill_owner_ratio)
@@ -2694,7 +2709,6 @@ class SMAXBatchWrapper(MultiAgentEnv):
                 self.allowed_targets = SMAXWrapper._build_default_allowed_targets(
                     _num_allies,
                     _num_enemies,
-                    window=self.allowed_target_window,
                 )
         else:
             self.allowed_targets = None
@@ -2766,10 +2780,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self._batch_step_auto_reset = jax.jit(jax.vmap(_single_env_step_auto_reset))
 
         if self.use_allowed_targets:
-            print(
-                f"[SMAXBatchWrapper] allowed_target_window={self.allowed_target_window}, "
-                f"allowed_targets: {self.allowed_targets}"
-            )
+            print(f"[SMAXBatchWrapper] allowed_targets: {self.allowed_targets}")
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXBatchWrapper] cooperative_kill_bonus: "

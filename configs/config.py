@@ -159,7 +159,6 @@ class EnvironmentConfig:
     enemy_shoots: bool = True
     attack_mode: str = "closest"
     use_allowed_targets: bool = False
-    allowed_target_window: int = 2 
     use_cooperative_kill_bonus: bool = False
     map_width: int = 32
     map_height: int = 32
@@ -217,6 +216,7 @@ class EnvironmentConfig:
             'smax': {
                 'map_name', 'max_steps',
                 'use_individual_rewards', 'enemy_shoots', 'attack_mode',
+                'use_allowed_targets', 'use_cooperative_kill_bonus',
                 'map_width', 'map_height', 'world_steps_per_env_step',
                 'time_per_step', 'see_enemy_actions', 'won_battle_bonus',
                 'walls_cause_death', 'observation_type',
