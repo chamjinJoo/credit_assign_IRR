@@ -46,7 +46,7 @@ environment:
   # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
   max_steps: 100
   use_individual_rewards: false
-  use_allowed_targets: false         # addition
+  use_allowed_targets: true          # addition
   use_cooperative_kill_bonus: false  # addition
   cooperative_kill_window: 2         # addition
   cooperative_kill_bonus: 1.0        # addition

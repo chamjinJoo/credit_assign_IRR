@@ -15,8 +15,8 @@ max_iterations=1600
 max_steps_per_iteration=6400
 
 log_interval=2
-device="cpu"  # recommended to use cuda if available, but default to cpu for safety
-seed=42
+device="cuda"  # recommended to use cuda if available, but default to cpu for safety
+seeds=(1 2)
 
 test=false
 checkpoint="./save_checkpoints/20260406_185738_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_1599.pkl"
@@ -30,6 +30,7 @@ if command -v conda >/dev/null 2>&1; then
 fi
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export XLA_FLAGS="--xla_gpu_deterministic_ops=true ${XLA_FLAGS:-}"
 # export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 if ${test}; then
@@ -38,7 +39,6 @@ if ${test}; then
   if ${save_replay}; then
     replay_flag="--save-replay --replay-dir ${replay_dir} --replay-episodes ${replay_episodes}"
   fi
-
   python main.py \
     --env SMAX \
     --config ${config} \
@@ -51,18 +51,25 @@ if ${test}; then
     --test \
     --checkpoint ${checkpoint} \
     ${replay_flag}
+
 else
-  python main.py \
-    --env SMAX \
-    --config ${config} \
-    --model ${model} \
-    --use-recurrent-policy ${use_recurrent_policy} \
-    --n-rollout-threads ${n_rollout_threads} \
-    --max-iterations ${max_iterations} \
-    --max-steps ${max_steps_per_iteration} \
-    --log-interval ${log_interval} \
-    --device ${device} \
-    --seed ${seed} \
-    --use-wandb \
-    --wandb-project pci-marl-smax-jax
+  for seed in ${seeds[@]}; do
+    echo "[seed=${seed}] start]"
+    python main.py \
+      --env SMAX \
+      --config ${config} \
+      --model ${model} \
+      --use-recurrent-policy ${use_recurrent_policy} \
+      --n-rollout-threads ${n_rollout_threads} \
+      --max-iterations ${max_iterations} \
+      --max-steps ${max_steps_per_iteration} \
+      --log-interval ${log_interval} \
+      --device ${device} \
+      --seed ${seed} \
+      --use-wandb \
+      --wandb-project pci-marl-smax-jax \
+      # & # deactivate for sequential training
+    echo "[seed=${seed}] PID: $!"
+  done
+
 fi
