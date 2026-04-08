@@ -17,8 +17,8 @@ n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
-device="cuda"
-seed=42
+device="cpu"
+seeds=(1 2 31 32 33)
 
 if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
@@ -28,18 +28,26 @@ fi
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 # export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
-python main.py \
-  --env SMAX \
-  --config ${config} \
-  --model ${model} \
-  --use-recurrent-policy ${use_recurrent_policy} \
-  --use-centralized-critic ${use_centralized_critic} \
-  --causal-lambda ${causal_lambda} \
-  --n-rollout-threads ${n_rollout_threads} \
-  --max-iterations ${max_iterations} \
-  --max-steps ${max_steps_per_iteration} \
-  --log-interval ${log_interval} \
-  --device ${device} \
-  --seed ${seed} \
-  --use-wandb \
-  --wandb-project pci-marl-smax-jax
+for seed in ${seeds[@]}; do
+    echo "[seed=${seed}] start]"
+    python main.py \
+      --env SMAX \
+      --config ${config} \
+      --model ${model} \
+      --use-recurrent-policy ${use_recurrent_policy} \
+      --use-centralized-critic ${use_centralized_critic} \
+      --causal-lambda ${causal_lambda} \
+      --n-rollout-threads ${n_rollout_threads} \
+      --max-iterations ${max_iterations} \
+      --max-steps ${max_steps_per_iteration} \
+      --log-interval ${log_interval} \
+      --device ${device} \
+      --seed ${seed} \
+      --use-wandb \
+      --wandb-project pci-marl-smax-jax
+        # & # deactivate for sequential training
+    echo "[seed=${seed}] PID: $!"
+done
+echo "all seed launched. waiting for completion..."
+wait
+echo "all seed training completed!"

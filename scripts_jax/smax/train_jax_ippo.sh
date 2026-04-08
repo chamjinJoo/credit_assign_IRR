@@ -10,12 +10,12 @@ model="jax-ippo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 seed=42
-n_rollout_threads=4
+n_rollout_threads=8
 max_iterations=1600
 max_steps_per_iteration=6400
 
 log_interval=2
-device="cpu"  # recommended to use cuda if available, but default to cpu for safety
+device="cuda"  # recommended to use cuda if available, but default to cpu for safety
 seed=42
 
 if command -v conda >/dev/null 2>&1; then

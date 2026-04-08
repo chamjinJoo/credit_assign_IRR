@@ -268,6 +268,15 @@ class JAXRPCIAlgorithm:
         std = jnp.clip(signal.std(), a_min=1.0e-8)
         return (signal - signal.mean()) / std
 
+    def _normalize_actor_advantages(self, advantages: jnp.ndarray) -> jnp.ndarray:
+        if advantages.shape[0] <= 1:
+            return jnp.zeros_like(advantages)
+        centered = advantages - advantages.mean(axis=0, keepdims=True)
+        sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
+        denom = jnp.maximum(advantages.shape[0] - 1, 1)
+        std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
+        return centered / std
+
     def _orthogonalize_advantage_signal(
         self,
         base_signal: jnp.ndarray,
@@ -611,19 +620,21 @@ class JAXRPCIAlgorithm:
         causal_lambda: float = 0.0,
     ):
         del pci_advantages, causal_lambda
-        total_actor_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
-        obs = rollout["obs"].reshape(-1, self.policy_obs_dim)
-        avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
-        actions = rollout["actions"].reshape(-1)
-        old_log_probs = rollout["log_probs"].reshape(-1)
-        prev_actions = rollout["prev_actions"].reshape(-1, self.action_dim)
-        hidden = rollout["actor_hidden"].reshape(total_actor_steps, self.actor_state_dim)
+        total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
+        obs = rollout["obs"].reshape(total_steps, self.num_agents, self.policy_obs_dim)
+        avail_actions = rollout["avail_actions"].reshape(total_steps, self.num_agents, self.action_dim)
+        actions = rollout["actions"].reshape(total_steps, self.num_agents)
+        old_log_probs = rollout["log_probs"].reshape(total_steps, self.num_agents)
+        prev_actions = rollout["prev_actions"].reshape(total_steps, self.num_agents, self.action_dim)
+        hidden = rollout["actor_hidden"].reshape(total_steps, self.num_agents, self.actor_state_dim)
         masks = jnp.broadcast_to(
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
-        ).reshape(-1)
+        ).reshape(total_steps, self.num_agents)
         if self.action_dim > 1:
-            alive_masks = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32).reshape(-1)
+            alive_masks = (
+                rollout["avail_actions"][..., 1:].sum(axis=-1) > 0
+            ).astype(jnp.float32).reshape(total_steps, self.num_agents)
         else:
             alive_masks = jnp.ones_like(actions, dtype=jnp.float32)
         loss_masks = masks * alive_masks
@@ -632,14 +643,8 @@ class JAXRPCIAlgorithm:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
         else:
             adv = advantages
-        adv = adv.reshape(-1, self.num_agents)
-        if adv.shape[0] > 1:
-            adv = (adv - adv.mean(axis=0, keepdims=True)) / (
-                adv.std(axis=0, keepdims=True) + 1.0e-8
-            )
-        else:
-            adv = jnp.zeros_like(adv)
-        adv = adv.reshape(-1)
+        adv = adv.reshape(total_steps, self.num_agents)
+        adv = self._normalize_actor_advantages(adv)
 
         return {
             "obs": obs,
@@ -800,43 +805,73 @@ class JAXRPCIAlgorithm:
         batch: Dict[str, jnp.ndarray],
     ):
         def loss_fn(params):
+            batch_size = batch["actions"].shape[0]
+            flat_obs = batch["obs"].reshape(batch_size * self.num_agents, self.policy_obs_dim)
+            flat_prev_actions = batch["prev_actions"].reshape(
+                batch_size * self.num_agents, self.action_dim
+            )
+            flat_hidden = batch["hidden"].reshape(batch_size * self.num_agents, self.actor_state_dim)
+            flat_masks = batch["masks"].reshape(batch_size * self.num_agents)
             _, logits = actor_state.apply_fn(
                 {"params": params},
-                batch["obs"],
-                batch["prev_actions"],
-                batch["hidden"],
-                batch["masks"],
+                flat_obs,
+                flat_prev_actions,
+                flat_hidden,
+                flat_masks,
             )
             _, new_log_probs, _ = categorical_stats(
                 logits,
-                batch["avail_actions"],
+                batch["avail_actions"].reshape(batch_size * self.num_agents, self.action_dim),
                 jax.random.PRNGKey(0),
                 True,
             )
             log_probs = new_log_probs
-            masked_logits = jnp.where(batch["avail_actions"] > 0, logits, -1.0e9)
+            masked_logits = jnp.where(
+                batch["avail_actions"].reshape(batch_size * self.num_agents, self.action_dim) > 0,
+                logits,
+                -1.0e9,
+            )
             probs = jax.nn.softmax(masked_logits, axis=-1)
-            selected = jnp.take_along_axis(probs, batch["actions"][:, None], axis=-1).squeeze(-1)
-            log_probs = jnp.log(jnp.clip(selected, a_min=1.0e-8))
+            selected = jnp.take_along_axis(
+                probs,
+                batch["actions"].reshape(batch_size * self.num_agents, 1),
+                axis=-1,
+            ).squeeze(-1)
+            log_probs = jnp.log(jnp.clip(selected, a_min=1.0e-8)).reshape(batch_size, self.num_agents)
             entropy = -jnp.sum(probs * jnp.log(jnp.clip(probs, a_min=1.0e-8)), axis=-1)
+            entropy = entropy.reshape(batch_size, self.num_agents)
 
             ratio = jnp.exp(log_probs - batch["old_log_probs"])
+            clipped_ratio = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon)
+            surrogate = jnp.minimum(
+                ratio * batch["advantages"],
+                clipped_ratio * batch["advantages"],
+            )
             weights = batch["loss_masks"]
-            denom = jnp.sum(weights) + 1.0e-8
+            denom = jnp.sum(weights, axis=0) + 1.0e-8
 
-            # Direction 1: PPO on the pre-combined advantage signal.
-            unclipped = ratio * batch["advantages"]
-            clipped = jnp.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * batch["advantages"]
-            policy_loss = -jnp.sum(jnp.minimum(unclipped, clipped) * weights) / denom
+            policy_loss_per_agent = -jnp.sum(surrogate * weights, axis=0) / denom
+            entropy_per_agent = jnp.sum(entropy * weights, axis=0) / denom
+            total_loss_per_agent = policy_loss_per_agent - self.entropy_coef * entropy_per_agent
 
-            entropy_bonus = jnp.sum(entropy * weights) / denom
-            total_loss = policy_loss - self.entropy_coef * entropy_bonus
-            approx_kl = jnp.sum((batch["old_log_probs"] - log_probs) * weights) / denom
-            return total_loss, {
-                "policy_loss": policy_loss,
-                "entropy": entropy_bonus,
-                "approx_kl": approx_kl,
+            valid_agents = (jnp.sum(weights, axis=0) > 0).astype(jnp.float32)
+            valid_count = jnp.maximum(valid_agents.sum(), 1.0)
+            total_loss = jnp.sum(total_loss_per_agent * valid_agents) / valid_count
+            approx_kl = jnp.sum(
+                (batch["old_log_probs"] - log_probs) * weights,
+                axis=0,
+            ) / denom
+
+            metrics = {
+                "policy_loss": jnp.sum(policy_loss_per_agent * valid_agents) / valid_count,
+                "entropy": jnp.sum(entropy_per_agent * valid_agents) / valid_count,
+                "approx_kl": jnp.sum(approx_kl * valid_agents) / valid_count,
             }
+            for agent_id in range(self.num_agents):
+                metrics[f"agent_{agent_id}_policy_loss"] = policy_loss_per_agent[agent_id]
+                metrics[f"agent_{agent_id}_entropy"] = entropy_per_agent[agent_id]
+                metrics[f"agent_{agent_id}_approx_kl"] = approx_kl[agent_id]
+            return total_loss, metrics
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(actor_state.params)
         new_actor_state = actor_state.apply_gradients(grads=grads)

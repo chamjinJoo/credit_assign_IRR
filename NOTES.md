@@ -323,3 +323,4 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * Fix: cooperative kill bonus configuration does not convey to envwrapper.
     It was always set to 2.0 which was twice of won_battle_bonus, too large.
 * JAX rpci normalizes advantage over all agent, not on a specific agent i -> fix to be matched to Torch rpci. (_flatten_action_batch())
+* JAX rpci test: remove final adv. normalization
