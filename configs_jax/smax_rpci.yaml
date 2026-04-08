@@ -46,11 +46,18 @@ environment:
   # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
   max_steps: 100
   use_individual_rewards: false
-  use_allowed_targets: true          # addition
-  use_cooperative_kill_bonus: false  # addition
-  cooperative_kill_window: 2         # addition
-  cooperative_kill_bonus: 1.0        # addition
-  cooperative_kill_owner_ratio: 0.7  # addition
+  
+  use_allowed_targets: true      # 비활성화: action masking 대신 hp_regen 사용
+  allowed_target_window: 2
+  
+  use_cooperative_kill_bonus: false  # hp_regen과 중복 방지, 필요 시 활성화
+  cooperative_kill_window: 2
+  cooperative_kill_bonus: 0.5
+  cooperative_kill_owner_ratio: 0.7
+  
+  use_hp_regen: false                # required pair 모두 공격 시에만 regen 억제
+  hp_regen_amount: 20.0              # HP 회복량
+  
   enemy_shoots: true
   attack_mode: "closest"
   map_width: 32

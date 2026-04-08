@@ -168,12 +168,13 @@ class Trainer:
         
         # Initialize wandb if requested
         if use_wandb:
+            serialized_config = self._get_serialized_config()
             # Get algorithm type for config
             algorithm_type = type(self.algorithm).__name__.replace('Algorithm', '').lower()
             wandb.init(
                 project=wandb_project,
                 name=wandb_run_name,
-                config=config
+                config=serialized_config
             )
             
             # Define metrics for better visualization
@@ -228,6 +229,24 @@ class Trainer:
         except Exception as exc:
             self._eval_env_build_error = str(exc)
             return env
+
+    def _get_serialized_config(self) -> Dict[str, Any]:
+        """Return config data safe for metadata persistence and wandb logging."""
+        if hasattr(self.config, 'to_dict'):
+            try:
+                return self.config.to_dict(filter_environment=True)
+            except TypeError:
+                config_dict = self.config.to_dict()
+        elif isinstance(self.config, dict):
+            config_dict = dict(self.config)
+        else:
+            return self.config
+
+        env_config = getattr(self.config, 'environment', None)
+        if env_config is not None and hasattr(env_config, 'get_relevant_config'):
+            config_dict['environment'] = env_config.get_relevant_config()
+
+        return config_dict
 
     def _get_eval_episode_limit(self) -> int:
         """Infer a reasonable evaluation horizon from the environment."""
@@ -341,9 +360,7 @@ class Trainer:
         metadata_dir = os.path.dirname(self.save_dir)  # Remove 'checkpoints' from path
         
         # Prepare full config with filtered environment config
-        config_dict = self.config.to_dict() if hasattr(self.config, 'to_dict') else self.config
-        if hasattr(self.config.environment, 'get_relevant_config'):
-             config_dict['environment'] = self.config.environment.get_relevant_config()
+        config_dict = self._get_serialized_config()
              
         metadata = {
             "simulation_info": {

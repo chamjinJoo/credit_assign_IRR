@@ -17,7 +17,7 @@ n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
-device="cpu"
+device="cuda"
 seed=42
 
 if command -v conda >/dev/null 2>&1; then

@@ -8,10 +8,9 @@ set -euo pipefail
 config="configs_jax/smax_qpci.yaml"
 model="jax-qpci"
 use_centralized_critic=true # false: IPPO-critic / true: MAPPO-critic
-causal_lambda=0.1
+causal_lambda=1.0
 clip_delta=0.0
 
-seed=42
 n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400

@@ -21,7 +21,6 @@ class NetworkConfig:
 class AlgorithmConfig:
     """Algorithm configuration."""
     type: str = "r_pci"
-    use_recurrent_policy: bool = True
     gamma: float = 0.99
     gae_lambda: float = 0.95
     rnn_chunk_length: int = 50
@@ -159,7 +158,14 @@ class EnvironmentConfig:
     enemy_shoots: bool = True
     attack_mode: str = "closest"
     use_allowed_targets: bool = False
+    allowed_target_window: int = 2
+    allowed_targets: Optional[Dict[int, Any]] = None
     use_cooperative_kill_bonus: bool = False
+    cooperative_kill_window: int = 2
+    cooperative_kill_bonus: float = 2.0
+    cooperative_kill_owner_ratio: float = 0.7
+    use_hp_regen: bool = False
+    hp_regen_amount: float = 20.0
     map_width: int = 32
     map_height: int = 32
     world_steps_per_env_step: int = 8
@@ -180,31 +186,78 @@ class EnvironmentConfig:
     # Generic args for any environment
     env_args: Dict[str, Any] = field(default_factory=dict)
 
+    def get_canonical_env_name(self) -> str:
+        """Return the effective environment name, respecting the legacy `name` alias."""
+        env_name = (self.env_name or "").strip()
+        alias_name = (self.name or "").strip()
+        default_env_name = EnvironmentConfig.__dataclass_fields__['env_name'].default
+
+        if alias_name and (not env_name or env_name == default_env_name) and alias_name != default_env_name:
+            return alias_name
+        return env_name or alias_name or default_env_name
+
+    def get_env_family_key(self) -> str:
+        """Normalize environment aliases to the canonical family key used for filtering."""
+        current_env = self.get_canonical_env_name().lower().replace('-', '_').replace(' ', '_')
+        compact_env = current_env.replace('_', '')
+
+        if compact_env in {'simplecooperative', 'simplecooperativeenv'}:
+            return 'simple_cooperative'
+        if compact_env in {'toy', 'toycausal', 'toycausalenv'}:
+            return 'toy_causal'
+        if compact_env in {'dectiger', 'dec_tiger'}:
+            return 'dec_tiger'
+        if compact_env in {'simplestaghunt', 'simplestaghuntenv'}:
+            return 'simple_stag_hunt'
+        if 'stag' in compact_env and 'hunt' in compact_env:
+            return 'staghunt'
+        if 'mpe' in compact_env or 'spread' in compact_env:
+            return 'mpe_simple_spread'
+        if compact_env in {'vmasnavigation', 'navigation'}:
+            return 'vmas_navigation'
+        if compact_env in {'vmasdispersion', 'dispersion'}:
+            return 'vmas_dispersion'
+        if 'foraging' in compact_env or compact_env == 'lbf':
+            return 'lbforaging'
+        if compact_env == 'smacv2':
+            return 'smacv2'
+        if compact_env in {'smac', 'starcraft2'}:
+            return 'smac'
+        if compact_env == 'smax':
+            return 'smax'
+
+        return current_env
+
     def get_relevant_config(self) -> Dict[str, Any]:
         """Get configuration dictionary with only relevant fields for the current environment."""
         base_config = asdict(self)
+        env_args = dict(base_config.get('env_args') or {})
         relevant_config = {}
+        canonical_env_name = self.get_canonical_env_name()
+        base_config['env_name'] = canonical_env_name
+        base_config['name'] = canonical_env_name
         
         # Common fields for all environments
         common_fields = {
-            'env_name', 'name', 'num_agents', 'seed', 'use_visualization', 
-            'visualize_freq', 'save_animations', 'animation_interval', 'env_args'
+            'env_name', 'seed', 'use_visualization',
+            'visualize_freq', 'save_animations', 'animation_interval'
         }
         
         # Environment specific fields map
         env_specific_fields = {
-            'simple_cooperative': {'max_steps', 'cooperation_bonus', 'episode_length'},
-            'toy_causal': {'episode_length'},
-            'dec_tiger': {'failure_obs_prob', 'fully_observable'},
+            'simple_cooperative': {'num_agents', 'grid_size', 'max_steps', 'cooperation_bonus'},
+            'toy_causal': {'num_agents', 'episode_length'},
+            'dec_tiger': {'max_steps', 'failure_obs_prob', 'fully_observable'},
             'staghunt': {
-                'stag_move_prob', 'coop_bonus', 'forage_reward', 'stag_reward', 
-                'mauling_punishment', 'grid_observation', 'forage_quantity', 'max_steps'
+                'num_agents', 'max_steps', 'stag_follows', 'run_away_after_maul',
+                'stag_move_prob', 'coop_bonus', 'forage_reward', 'stag_reward',
+                'mauling_punishment', 'grid_observation', 'forage_quantity', 'obs_noise_std'
             },
-            'mpe_simple_spread': {'local_ratio', 'max_cycles', 'continuous_actions'},
-            'vmas_navigation': {'max_steps', 'continuous_actions', 'env_args'},
-            'vmas_dispersion': {'max_steps', 'continuous_actions', 'env_args'},
+            'mpe_simple_spread': {'num_agents', 'local_ratio', 'max_cycles', 'continuous_actions'},
+            'vmas_navigation': {'num_agents', 'max_steps', 'continuous_actions'},
+            'vmas_dispersion': {'num_agents', 'max_steps', 'continuous_actions'},
             'lbforaging': {
-                'env_id', 'field_size', 'max_food', 'player_level', 'food_level', 
+                'num_agents', 'env_id', 'field_size', 'max_food', 'player_level', 'food_level',
                 'sight', 'max_episode_steps', 'force_coop', 'grid_observation'
             },
             'simple_stag_hunt': {
@@ -212,11 +265,14 @@ class EnvironmentConfig:
                 'failed_cooperation_punishment', 'eps_per_game'
             },
             'smac': {'map_name'},
-            'smacv2': {'map_name', 'capability_config'},
+            'smacv2': {'map_name', 'capability_config', 'use_individual_rewards'},
             'smax': {
                 'map_name', 'max_steps',
                 'use_individual_rewards', 'enemy_shoots', 'attack_mode',
-                'use_allowed_targets', 'use_cooperative_kill_bonus',
+                'use_allowed_targets', 'allowed_target_window', 'allowed_targets',
+                'use_cooperative_kill_bonus',
+                'cooperative_kill_window', 'cooperative_kill_bonus', 'cooperative_kill_owner_ratio',
+                'use_hp_regen', 'hp_regen_amount',
                 'map_width', 'map_height', 'world_steps_per_env_step',
                 'time_per_step', 'see_enemy_actions', 'won_battle_bonus',
                 'walls_cause_death', 'observation_type',
@@ -225,18 +281,7 @@ class EnvironmentConfig:
         }
         
         # Determine current env key
-        current_env = self.env_name.lower()
-        # Handle aliases or specific checks if needed
-        if 'stag' in current_env and 'hunt' in current_env and 'simple' not in current_env:
-            current_env = 'staghunt'
-        elif 'mpe' in current_env or 'spread' in current_env:
-            current_env = 'mpe_simple_spread'
-        elif 'vmasnavigation' in current_env or current_env == 'navigation' or current_env == 'vmas_navigation':
-            current_env = 'vmas_navigation'
-        elif 'vmasdispersion' in current_env or current_env == 'dispersion' or current_env == 'vmas_dispersion':
-            current_env = 'vmas_dispersion'
-        elif 'foraging' in current_env:
-            current_env = 'lbforaging'
+        current_env = self.get_env_family_key()
             
         # Select relevant fields
         fields_to_keep = common_fields.union(env_specific_fields.get(current_env, set()))
@@ -247,10 +292,22 @@ class EnvironmentConfig:
              if 'v2' in current_env:
                   fields_to_keep.add('capability_config')
 
-        for key, value in base_config.items():
-            if key in fields_to_keep:
-                relevant_config[key] = value
-                
+        for key in sorted(fields_to_keep):
+            if key == 'env_args':
+                continue
+            if key in base_config:
+                value = base_config[key]
+            else:
+                value = env_args.pop(key, None)
+
+            if value is None:
+                continue
+            relevant_config[key] = value
+
+        # Preserve truly generic extra arguments after hoisting any env-specific keys.
+        if env_args:
+            relevant_config['env_args'] = env_args
+
         return relevant_config
         
 @dataclass
@@ -280,7 +337,11 @@ class Config:
             config.network = NetworkConfig(**config_dict['network'])
         
         if 'algorithm' in config_dict:
-            config.algorithm = AlgorithmConfig(**config_dict['algorithm'])
+            algorithm_dict = dict(config_dict['algorithm'])
+            legacy_use_recurrent = algorithm_dict.pop('use_recurrent_policy', None)
+            config.algorithm = AlgorithmConfig(**algorithm_dict)
+            if legacy_use_recurrent is not None and 'network' not in config_dict:
+                config.network.use_recurrent_policy = legacy_use_recurrent
         
         if 'training' in config_dict:
             config.training = TrainingConfig(**config_dict['training'])
@@ -313,6 +374,14 @@ class Config:
             
             # known_args로 객체 생성
             env_conf_obj = EnvironmentConfig(**known_args)
+
+            # Keep legacy `name` and canonical `env_name` synchronized.
+            if 'env_name' in known_args and 'name' not in known_args:
+                env_conf_obj.name = env_conf_obj.env_name
+            elif 'name' in known_args and 'env_name' not in known_args:
+                env_conf_obj.env_name = env_conf_obj.name
+            elif 'env_name' in known_args and 'name' in known_args and env_conf_obj.name != env_conf_obj.env_name:
+                env_conf_obj.name = env_conf_obj.env_name
             
             # unknown_args는 env_args 필드에 추가 (기존 env_args가 있다면 병합)
             if 'env_args' in known_args:
@@ -334,9 +403,12 @@ class Config:
             config_dict = yaml.safe_load(f)
         return cls.from_dict(config_dict)
     
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, filter_environment: bool = False) -> Dict[str, Any]:
         """Convert config to dictionary."""
-        return asdict(self)
+        config_dict = asdict(self)
+        if filter_environment and hasattr(self.environment, 'get_relevant_config'):
+            config_dict['environment'] = self.environment.get_relevant_config()
+        return config_dict
     
     def to_yaml(self, yaml_path: str):
         """Save config to YAML file."""
@@ -483,6 +555,7 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     # Override with command line arguments
     if hasattr(args, 'env') and args.env:
         config.environment.env_name = args.env
+        config.environment.name = args.env
     if hasattr(args, 'num_agents') and args.num_agents:
         config.environment.num_agents = args.num_agents
     if hasattr(args, 'episode_length') and args.episode_length:

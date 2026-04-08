@@ -660,6 +660,8 @@ def main():
                 cooperative_kill_window=getattr(env_config, 'cooperative_kill_window', 2),
                 cooperative_kill_bonus=getattr(env_config, 'cooperative_kill_bonus', 2.0),
                 cooperative_kill_owner_ratio=getattr(env_config, 'cooperative_kill_owner_ratio', 0.7),
+                use_hp_regen=getattr(env_config, 'use_hp_regen', False),
+                hp_regen_amount=getattr(env_config, 'hp_regen_amount', 20.0),
             )
         elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
             from envs import VMASNavigationEnv, VMASDispersionEnv

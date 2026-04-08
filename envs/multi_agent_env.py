@@ -2253,6 +2253,8 @@ class SMAXWrapper(MultiAgentEnv):
         cooperative_kill_window: int = 2,
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
+        use_hp_regen: bool = False,
+        hp_regen_amount: float = 20.0,
         **kwargs
     ):
         try:
@@ -2353,6 +2355,11 @@ class SMAXWrapper(MultiAgentEnv):
             )
         )
         self._coop_attack_memory = np.zeros((_num_allies, _num_enemies), dtype=np.int32)
+
+        # HP regeneration: 단독 공격 시 enemy HP 회복 (global reward 구조 유지)
+        self.use_hp_regen = use_hp_regen
+        self.hp_regen_amount = float(hp_regen_amount)
+        self._max_enemy_health = None  # reset() 최초 호출 시 설정
 
         if self.use_allowed_targets:
             print(f"[SMAXWrapper] allowed_targets: {self.allowed_targets}")
@@ -2460,12 +2467,56 @@ class SMAXWrapper(MultiAgentEnv):
         obs_dict, self._state = self._env.reset(reset_key)
         self._coop_attack_memory = np.zeros((self.num_agents, self.num_enemies), dtype=np.int32)
 
+        # 최초 reset 시 enemy max HP 기록 (unit type은 에피소드마다 동일)
+        if self.use_hp_regen and self._max_enemy_health is None:
+            self._max_enemy_health = np.array(
+                self._state.state.unit_health[self._env.num_allies:],
+                dtype=np.float32,
+            )
+
         # Dict[str, jax.Array] → Dict[int, np.ndarray]
         observations = {}
         for i, key in enumerate(self._agent_keys):
             observations[i] = np.array(obs_dict[key], dtype=np.float32)
 
         return observations
+
+    def _apply_hp_regen_numpy(self, actions: Dict[int, int]) -> None:
+        """required agent pair가 모두 공격하지 않은 enemy의 HP를 회복시킵니다.
+
+        cooperative_kill_required_agents[j] = [ally_a, ally_b]:
+          ally_a AND ally_b 모두 enemy_j를 공격한 경우에만 regen 억제.
+          그 외 경우(단독 공격 포함)에는 hp_regen_amount만큼 HP 회복.
+        """
+        if not self.use_hp_regen or self._max_enemy_health is None:
+            return
+
+        alive = np.array(self._state.state.unit_alive, dtype=np.bool_)
+        health = np.array(self._state.state.unit_health, dtype=np.float32)
+        modified = False
+
+        for j in range(self.num_enemies):
+            unit_idx = self._env.num_allies + j
+            if not alive[unit_idx]:
+                continue
+            required = self.cooperative_kill_required_agents.get(j, [])
+            # required pair가 모두 enemy_j를 공격했는지 확인
+            all_required_attacked = all(
+                int(actions.get(agent_id, -1)) == self._num_movement_actions + j
+                for agent_id in required
+            )
+            if not all_required_attacked:
+                health[unit_idx] = min(
+                    health[unit_idx] + self.hp_regen_amount,
+                    self._max_enemy_health[j],
+                )
+                modified = True
+
+        if modified:
+            new_inner = self._state.state.replace(
+                unit_health=self._jnp.array(health)
+            )
+            self._state = self._state.replace(state=new_inner)
 
     def step(self, actions: Dict[int, int]) -> Tuple[
         Dict[int, np.ndarray],
@@ -2541,6 +2592,10 @@ class SMAXWrapper(MultiAgentEnv):
             'episode_done': all_done,
             'cooperative_kills': cooperative_kills,
         }
+
+        # HP regen: 다음 스텝을 위해 단독 공격 enemy HP 회복
+        self._apply_hp_regen_numpy(actions)
+
         return observations, rewards, dones, info
 
     def get_avail_actions(self) -> List[List[int]]:
@@ -2637,8 +2692,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
         cooperative_kill_window: int = 2,
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
-    ):  
-        print(f"use allowed_targets: {use_allowed_targets}, use_cooperative_kill_bonus: {use_cooperative_kill_bonus}")
+        use_hp_regen: bool = False,
+        hp_regen_amount: float = 20.0,
+    ):
+        print(f"use allowed_targets: {use_allowed_targets}, use_cooperative_kill_bonus: {use_cooperative_kill_bonus}, use_hp_regen: {use_hp_regen}")
         try:
             import jax
             import jax.numpy as jnp
@@ -2748,6 +2805,11 @@ class SMAXBatchWrapper(MultiAgentEnv):
                             self._avail_mask_np[i, action_idx] = 0
         self._avail_mask_jax = jnp.array(self._avail_mask_np)  # (num_agents, action_dim)
 
+        # HP regeneration
+        self.use_hp_regen = use_hp_regen
+        self.hp_regen_amount = float(hp_regen_amount)
+        self._max_enemy_health_jax = None  # warmup 중 _batch_reset 후 설정
+
         _seed_val = seed if seed is not None else 0
         self._rng = jax.random.PRNGKey(_seed_val)
         self._batch_states = None  # 배치 상태 (n_envs, ...)
@@ -2787,6 +2849,8 @@ class SMAXBatchWrapper(MultiAgentEnv):
                 f"window={self.cooperative_kill_window}, bonus={self.cooperative_kill_bonus}, "
                 f"required_agents={self.cooperative_kill_required_agents}"
             )
+        if self.use_hp_regen:
+            print(f"[SMAXBatchWrapper] hp_regen: amount={self.hp_regen_amount}, required_agents={self.cooperative_kill_required_agents}")
         print(f"[SMAXBatchWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
         print(f"[SMAXBatchWrapper] {_num_allies}v{_num_enemies} × {n_envs} 환경 (vmap 병렬)")
 
@@ -2812,6 +2876,12 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
             obs_b, batch_st = self._batch_reset(keys_arr)
             self._jax.block_until_ready(obs_b)
+
+            # 최초 reset에서 enemy max HP 기록
+            if self.use_hp_regen and self._max_enemy_health_jax is None:
+                self._max_enemy_health_jax = self._jnp.array(
+                    batch_st.state.unit_health[0, self._env.num_allies:]
+                )  # shape: (num_enemies,)
 
             for _ in range(self._env.max_steps + 5):
                 avail_b = self._batch_avail(batch_st)
@@ -3046,6 +3116,45 @@ class SMAXBatchWrapper(MultiAgentEnv):
             return avail_stacked
         return avail_stacked * self._avail_mask_jax[None, :, :]
 
+    def _apply_hp_regen_jax(self, env_state, actions):
+        """required agent pair가 모두 공격하지 않은 enemy HP 회복 (JAX pure).
+
+        actions: (n_envs, num_agents) int array
+        cooperative_kill_required_agents[j] = [ally_a, ally_b] (Python dict, trace-safe)
+        ally_a AND ally_b 모두 enemy_j를 공격한 경우에만 regen 억제.
+        """
+        if not self.use_hp_regen:
+            return env_state
+
+        jnp = self._jnp
+        num_movement = self._num_movement_actions
+
+        health = env_state.state.unit_health  # (n_envs, num_units)
+        alive  = env_state.state.unit_alive   # (n_envs, num_units)
+        new_health = health
+
+        for j in range(self.num_enemies):
+            unit_idx = self._env.num_allies + j
+            is_alive = alive[:, unit_idx]  # (n_envs,)
+
+            # required pair가 모두 enemy_j를 공격했는지 확인 (Python for-loop → unroll)
+            required = self.cooperative_kill_required_agents.get(j, [])
+            all_required_attacked = jnp.ones(self.n_envs, dtype=jnp.bool_)
+            for agent_id in required:
+                attacked = actions[:, agent_id] == (num_movement + j)
+                all_required_attacked = all_required_attacked & attacked
+
+            apply_regen = (~all_required_attacked) & is_alive
+
+            current_hp = health[:, unit_idx]
+            max_hp = self._max_enemy_health_jax[j]
+            regened_hp = jnp.minimum(current_hp + self.hp_regen_amount, max_hp)
+            new_hp = jnp.where(apply_regen, regened_hp, current_hp)
+            new_health = new_health.at[:, unit_idx].set(new_hp)
+
+        new_inner = env_state.state.replace(unit_health=new_health)
+        return env_state.replace(state=new_inner)
+
     def _sanitize_actions_jax(self, actions):
         """actions (n_envs, num_agents) JAX array에서 금지된 attack → stop(0) 교체.
 
@@ -3126,6 +3235,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
             next_enemy_alive,
         )
         rewards_stacked = rewards_stacked + coop_bonus
+
+        # HP regen: reward/done 계산 후, auto-reset 전에 적용
+        # (이번 스텝 reward에는 영향 없고 다음 스텝 시작 HP에만 반영)
+        next_env_state = self._apply_hp_regen_jax(next_env_state, actions)
 
         rng, *reset_keys = self._jax.random.split(rng, self.n_envs + 1)
         reset_keys_arr = self._jnp.stack(reset_keys)

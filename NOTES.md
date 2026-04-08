@@ -1,6 +1,5 @@
 ## 2025.12.12
 * Test a new method: 
-    
     set agent-wise proxy $W^i_t = O^{-i}_t, Z^i_t = O_{t-1}$ (unchanged) -> 가능성 있음
 
 ## 2025.12.15
@@ -315,3 +314,12 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * SMAX/SMACv2 logics are reduced to StagHunt. Target Allocations.
   * As a battle goes on, an alley may not attack a remain enemy.
 * Set the final evaluation to be performed over 32-episode. 
+
+# 26.04.07
+* restore and backup the project commit when we first add target-allocation and coop-bonus in the SMAXWrapper. 
+    [commit: 3ef5527dac96a2a641eb46e350bbef9fbb11eec3]
+
+# 26.04.08
+* Fix: cooperative kill bonus configuration does not convey to envwrapper.
+    It was always set to 2.0 which was twice of won_battle_bonus, too large.
+* JAX rpci normalizes advantage over all agent, not on a specific agent i -> fix to be matched to Torch rpci. (_flatten_action_batch())

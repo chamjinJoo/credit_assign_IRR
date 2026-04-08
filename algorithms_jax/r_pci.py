@@ -292,6 +292,7 @@ class JAXRPCIAlgorithm:
         env_norm = self._normalize_advantage_signal(env_advantages)
         pci_norm = self._normalize_advantage_signal(pci_signal)
         combined = env_norm + causal_lambda * pci_norm
+        # combined = (1-causal_lambda) * env_norm + causal_lambda * pci_norm # convex combination
         return combined, env_norm, pci_norm
 
     def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
@@ -631,9 +632,14 @@ class JAXRPCIAlgorithm:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
         else:
             adv = advantages
+        adv = adv.reshape(-1, self.num_agents)
+        if adv.shape[0] > 1:
+            adv = (adv - adv.mean(axis=0, keepdims=True)) / (
+                adv.std(axis=0, keepdims=True) + 1.0e-8
+            )
+        else:
+            adv = jnp.zeros_like(adv)
         adv = adv.reshape(-1)
-        if adv.size > 1:
-            adv = (adv - adv.mean()) / (adv.std() + 1.0e-8)
 
         return {
             "obs": obs,
