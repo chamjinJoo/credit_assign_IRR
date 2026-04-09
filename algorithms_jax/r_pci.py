@@ -121,6 +121,7 @@ class JAXRPCIAlgorithm:
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
         self.rng = jax.random.PRNGKey(seed)
+        self.rng, self.bridge_rng = jax.random.split(self.rng)
 
         self.actor_model = (
             RecurrentActor(hidden_dim=hidden_dim, action_dim=action_dim)
@@ -276,21 +277,6 @@ class JAXRPCIAlgorithm:
         denom = jnp.maximum(advantages.shape[0] - 1, 1)
         std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
         return centered / std
-
-    def _orthogonalize_advantage_signal(
-        self,
-        base_signal: jnp.ndarray,
-        aux_signal: jnp.ndarray,
-    ) -> jnp.ndarray:
-        base_centered = base_signal - base_signal.mean()
-        aux_centered = aux_signal - aux_signal.mean()
-        denom = jnp.dot(base_centered, base_centered)
-        projection = jnp.where(
-            denom > 1.0e-8,
-            jnp.dot(aux_centered, base_centered) / (denom + 1.0e-8),
-            0.0,
-        )
-        return aux_centered - projection * base_centered
 
     def _combine_env_and_pci_advantages(
         self,
@@ -918,9 +904,8 @@ class JAXRPCIAlgorithm:
             return (x - mean) / jnp.clip(std, a_min=1.0e-6)
 
         def _rbf_gram(x: jnp.ndarray, gamma: float) -> jnp.ndarray:
-            x_norm = jnp.sum(jnp.square(x), axis=-1, keepdims=True)
-            dists_sq = x_norm - 2.0 * (x @ x.T) + x_norm.T
-            dists_sq = jnp.clip(dists_sq, a_min=0.0)
+            diff = x[:, None, :] - x[None, :, :]
+            dists_sq = jnp.sum(jnp.square(diff), axis=-1)
             return jnp.exp(-gamma * dists_sq)
 
         def loss_fn(params):
@@ -952,7 +937,8 @@ class JAXRPCIAlgorithm:
                 gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
             eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
             reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
-            solved = jnp.linalg.solve(reg_gram, residuals)
+            chol = jnp.linalg.cholesky(reg_gram)
+            solved = jax.scipy.linalg.cho_solve((chol, True), residuals)
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
             outcome_bridge_loss = jnp.mean(per_sample_loss)
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
@@ -994,7 +980,7 @@ class JAXRPCIAlgorithm:
         causal_batch = self._causal_batch(rollout)
         metrics = []
         for epoch in range(self.bridge_epoch):
-            self.rng, perm_key = jax.random.split(self.rng)
+            self.bridge_rng, perm_key = jax.random.split(self.bridge_rng)
             perm = jax.random.permutation(perm_key, causal_batch["actions"].shape[0])
             for start in range(0, causal_batch["actions"].shape[0], self.causal_mini_batch_size):
                 indices = perm[start:start + self.causal_mini_batch_size]
@@ -1196,6 +1182,7 @@ class JAXRPCIAlgorithm:
             "critic_state": serialization.to_state_dict(self.critic_state),
             "bridge_state": serialization.to_state_dict(self.bridge_state) if self.bridge_state is not None else None,
             "rng": tree_to_host(self.rng),
+            "bridge_rng": tree_to_host(self.bridge_rng),
             "training_steps": self.training_steps,
         }
 
@@ -1205,4 +1192,6 @@ class JAXRPCIAlgorithm:
         if self.bridge_state is not None and state_dict.get("bridge_state") is not None:
             self.bridge_state = serialization.from_state_dict(self.bridge_state, state_dict["bridge_state"])
         self.rng = jnp.asarray(state_dict["rng"])
+        if "bridge_rng" in state_dict:
+            self.bridge_rng = jnp.asarray(state_dict["bridge_rng"])
         self.training_steps = int(state_dict.get("training_steps", 0))

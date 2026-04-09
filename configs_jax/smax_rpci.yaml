@@ -19,10 +19,10 @@ algorithm:
   ppo_epochs: 4
   bridge_epoch: 4
   batch_size: 0 # unused
-  num_batches: 4
+  num_batches: 2
   global_reward: true
   use_centralized_critic: false
-  add_agent_id: true
+  add_agent_id: false # same as use_centralized_critic setting.
   causal_lambda: 1.0
   causal_lambda_schedule: false
   clip_delta: 0.0

@@ -324,3 +324,13 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
     It was always set to 2.0 which was twice of won_battle_bonus, too large.
 * JAX rpci normalizes advantage over all agent, not on a specific agent i -> fix to be matched to Torch rpci. (_flatten_action_batch())
 * JAX rpci test: remove final adv. normalization
+
+# 26.04.09
+* Fix SMAX hyperparameters, following the SMAX paper and HyperMARL paper
+    * steps_per_iteration 6400 -> 8192
+    * num batch 4 -> 2
+    * no obs agent id when IPPO critic
+* Fix JAX rpci reproductability issue:
+  1. jnp.linalg.solve → jnp.linalg.cholesky + jax.scipy.linalg.cho_solve
+  2. separate RNG chain
+  3. fix pairwise distance calulcation RBFKernel to be more stable.

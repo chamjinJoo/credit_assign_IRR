@@ -32,7 +32,7 @@ class RecurrentActor(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         x = jnp.concatenate([obs, prev_actions], axis=-1)
         x = nn.Dense(self.hidden_dim)(x)
-        x = nn.tanh(x)
+        x = nn.relu(x)
 
         hidden = hidden * masks[..., None]
         gru = make_gru_cell(self.hidden_dim)
@@ -55,7 +55,7 @@ class RecurrentCritic(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         x = jnp.concatenate([obs, prev_actions], axis=-1)
         x = nn.Dense(self.hidden_dim)(x)
-        x = nn.tanh(x)
+        x = nn.relu(x)
 
         hidden = hidden * masks[..., None]
         gru = make_gru_cell(self.hidden_dim)
@@ -80,9 +80,9 @@ class FeedForwardActor(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         del prev_actions, masks
         x = nn.Dense(self.hidden_dim)(obs)
-        x = nn.tanh(x)
+        x = nn.relu(x)
         x = nn.Dense(self.hidden_dim)(x)
-        x = nn.tanh(x)
+        x = nn.relu(x)
         logits = nn.Dense(self.action_dim)(x)
         return hidden, logits
 
@@ -101,9 +101,9 @@ class FeedForwardCritic(nn.Module):
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         del prev_actions, masks
         x = nn.Dense(self.hidden_dim)(obs)
-        x = nn.tanh(x)
+        x = nn.relu(x)
         x = nn.Dense(self.hidden_dim)(x)
-        x = nn.tanh(x)
+        x = nn.relu(x)
         values = nn.Dense(self.output_dim)(x)
         if self.output_dim == 1:
             values = values.squeeze(-1)
