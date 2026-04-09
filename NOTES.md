@@ -330,7 +330,8 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
     * steps_per_iteration 6400 -> 8192
     * num batch 4 -> 2
     * no obs agent id when IPPO critic
-* Fix JAX rpci reproductability issue:
-  1. jnp.linalg.solve → jnp.linalg.cholesky + jax.scipy.linalg.cho_solve
-  2. separate RNG chain
-  3. fix pairwise distance calulcation RBFKernel to be more stable.
+    * change tanh in common.py to relu.
+* Fix JAX rpci reproductability issue?:
+  1. separate RNG chain
+  2. fix pairwise distance calulcation RBFKernel to be more stable.
+  3. JAX rpci always considers fallback error term, `1.0e-6`.

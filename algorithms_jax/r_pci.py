@@ -61,11 +61,12 @@ class JAXRPCIAlgorithm:
         causal_lambda_warmup_steps: int = 10000,
         causal_lambda_startingpoint: int = 0,
         bridge_epoch: int = 4,
-        causal_mini_batch_size: int = 256,
+        causal_mini_batch_size: int = 10000,
         tikhonov_gamma: float = 1.0e-4,
         stabilizer_lambda: float = 1.0,
         normalize_returns: bool = True,
         use_recurrent_policy: bool = True,
+        use_pci_value_proxy: bool = False,
         seed: int = 42,
         **_: Any,
     ):
@@ -106,6 +107,8 @@ class JAXRPCIAlgorithm:
         self.causal_mini_batch_size = causal_mini_batch_size
         self.tikhonov_gamma = tikhonov_gamma
         self.stabilizer_lambda = stabilizer_lambda
+        self.use_pci_value_proxy = use_pci_value_proxy
+        print("proxy value function enabled:", use_pci_value_proxy)
         self.training_steps = 0
         self.latest_rollout: Optional[Dict[str, Any]] = None
         self._rollout_fns: Dict[int, Any] = {}
@@ -711,13 +714,20 @@ class JAXRPCIAlgorithm:
                 axis=2,
             ).reshape(-1, self.num_agents)
 
+        if self.action_dim > 1:
+            alive_mask = (
+                rollout["avail_actions"][..., 1:].sum(axis=-1) > 0
+            ).reshape(-1)
+        else:
+            alive_mask = jnp.ones((flat_batch * self.num_agents,), dtype=bool)
+
         return {
-            "z": z.astype(jnp.float32),
-            "w": others_obs.astype(jnp.float32),
-            "x_obs": local_obs.astype(jnp.float32),
-            "x_hid": hidden_others.astype(jnp.float32),
-            "actions": actions.astype(jnp.int32),
-            "targets": targets.astype(jnp.float32),
+            "z": z[alive_mask].astype(jnp.float32),
+            "w": others_obs[alive_mask].astype(jnp.float32),
+            "x_obs": local_obs[alive_mask].astype(jnp.float32),
+            "x_hid": hidden_others[alive_mask].astype(jnp.float32),
+            "actions": actions[alive_mask].astype(jnp.int32),
+            "targets": targets[alive_mask].astype(jnp.float32),
         }
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
@@ -904,8 +914,9 @@ class JAXRPCIAlgorithm:
             return (x - mean) / jnp.clip(std, a_min=1.0e-6)
 
         def _rbf_gram(x: jnp.ndarray, gamma: float) -> jnp.ndarray:
-            diff = x[:, None, :] - x[None, :, :]
-            dists_sq = jnp.sum(jnp.square(diff), axis=-1)
+            x_norm = jnp.sum(jnp.square(x), axis=-1, keepdims=True)
+            dists_sq = x_norm - 2.0 * (x @ x.T) + x_norm.T
+            dists_sq = jnp.clip(dists_sq, a_min=0.0)
             return jnp.exp(-gamma * dists_sq)
 
         def loss_fn(params):
@@ -936,9 +947,10 @@ class JAXRPCIAlgorithm:
                 gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
                 gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
             eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
+            # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci. Remove it?
             reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
-            chol = jnp.linalg.cholesky(reg_gram)
-            solved = jax.scipy.linalg.cho_solve((chol, True), residuals)
+            solved = jnp.linalg.solve(reg_gram, residuals)
+            
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
             outcome_bridge_loss = jnp.mean(per_sample_loss)
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
@@ -980,10 +992,11 @@ class JAXRPCIAlgorithm:
         causal_batch = self._causal_batch(rollout)
         metrics = []
         for epoch in range(self.bridge_epoch):
-            self.bridge_rng, perm_key = jax.random.split(self.bridge_rng)
-            perm = jax.random.permutation(perm_key, causal_batch["actions"].shape[0])
             for start in range(0, causal_batch["actions"].shape[0], self.causal_mini_batch_size):
-                indices = perm[start:start + self.causal_mini_batch_size]
+                indices = jnp.arange(
+                    start,
+                    min(start + self.causal_mini_batch_size, causal_batch["actions"].shape[0]),
+                )
                 batch = {
                     "z": causal_batch["z"][indices],
                     "w": causal_batch["w"][indices],
@@ -1006,7 +1019,7 @@ class JAXRPCIAlgorithm:
         rollout: Dict[str, jnp.ndarray],
         baseline_type: str = "weighted",
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
-        if baseline_type != "weighted":
+        if baseline_type not in ("weighted", "averaged"):
             raise ValueError(f"Unsupported baseline_type for JAXRPCIAlgorithm: {baseline_type}")
         if self.bridge_state is None or self.get_current_causal_lambda() == 0.0:
             zeros = jnp.zeros(rollout["actions"].shape + (self.num_agents,), dtype=jnp.float32)
@@ -1017,7 +1030,7 @@ class JAXRPCIAlgorithm:
             }
 
         local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions = self._bridge_inputs(rollout)
-        actual_pred, baseline, _ = self._bridge_predictions(
+        actual_pred, baseline_weighted, all_preds = self._bridge_predictions(
             self.bridge_state.params,
             local_obs,
             others_obs,
@@ -1026,6 +1039,18 @@ class JAXRPCIAlgorithm:
             actions,
             avail_actions,
         )
+
+        if baseline_type == "weighted":
+            baseline = baseline_weighted
+        else:  # averaged
+            # Factual action을 제외한 가능한 action들의 단순 평균
+            # all_preds: (B*N, action_dim, reward_dim)
+            # avail_actions, actions: (B*N, action_dim)
+            factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
+            valid_non_factual = factual_mask * avail_actions  # (B*N, action_dim)
+            denom = jnp.clip(valid_non_factual.sum(axis=-1, keepdims=True), a_min=1.0)
+            baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
+
         actual_team_reward = reward_targets
         # raw_effects = actual_pred - baseline
         raw_effects = actual_team_reward - baseline
@@ -1084,6 +1109,38 @@ class JAXRPCIAlgorithm:
 
         return stack_metrics(metrics)
 
+    def _pci_value_proxy(
+        self,
+        delta: jnp.ndarray,
+        values: jnp.ndarray,
+        last_value: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        """env_critic value를 delta 스케일로 맞춰 PCI GAE의 bootstrap 값으로 사용.
+
+        use_pci_value_proxy=False(기본값): zero bootstrapping (기존 동작)
+        use_pci_value_proxy=True:  env_value × (std(delta) / std(values))
+
+        centralized critic일 때 values가 (T,E)이므로 (T,E,N)으로 broadcast.
+        """
+        if not self.use_pci_value_proxy:
+            return jnp.zeros_like(delta), jnp.zeros_like(delta[0])
+
+        # centralized critic: (T,E) → (T,E,N)
+        proxy_v  = values
+        proxy_lv = last_value
+        if proxy_v.ndim < delta.ndim:
+            proxy_v  = jnp.repeat(proxy_v[..., None],  self.num_agents, axis=-1)
+            proxy_lv = jnp.repeat(proxy_lv[..., None], self.num_agents, axis=-1)
+
+        # delta와 values의 스케일을 맞춤:
+        #   V^pci(s) ≈ coef × V^env(s)
+        #   coef = std(delta) / std(values)  (양수 보장, 분모 clamp)
+        delta_std = jnp.std(delta)
+        value_std = jnp.std(proxy_v)
+        coef = delta_std / jnp.clip(value_std, a_min=1e-8)
+
+        return coef * proxy_v, coef * proxy_lv
+
     def update(self, **_: Any) -> Dict[str, float]:
         if self.latest_rollout is None:
             return {}
@@ -1121,12 +1178,13 @@ class JAXRPCIAlgorithm:
             self.gae_lambda,
         )
 
-        zero_values = jnp.zeros_like(delta)
-        zero_last_value = jnp.zeros_like(delta[0])
+        pci_proxy_values, pci_proxy_last_value = self._pci_value_proxy(
+            delta, values, last_value
+        )
         pci_advantages, _ = compute_gae(
             delta,
-            zero_values,
-            zero_last_value,
+            pci_proxy_values,
+            pci_proxy_last_value,
             rollout["dones"],
             self.gamma,
             self.gae_lambda,

@@ -13,12 +13,12 @@ use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 
-n_rollout_threads=128
+n_rollout_threads=16
 max_iterations=1300
 max_steps_per_iteration=8192 # follow the smax paper: 128 env * 64 steps
 log_interval=2
 device="cpu"
-seeds=(1 2 31 32)
+seeds=(33)
 run_in_background=false
 
 if command -v conda >/dev/null 2>&1; then

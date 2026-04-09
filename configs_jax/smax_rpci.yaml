@@ -18,6 +18,7 @@ algorithm:
   max_grad_norm: 0.5
   ppo_epochs: 4
   bridge_epoch: 4
+  causal_mini_batch_size: 10000
   batch_size: 0 # unused
   num_batches: 2
   global_reward: true
@@ -26,8 +27,10 @@ algorithm:
   causal_lambda: 1.0
   causal_lambda_schedule: false
   clip_delta: 0.0
+  tikhonov_gamma: 1.0e-4
   normalize_returns: true
-
+  use_pci_value_proxy: false
+  
 training:
   max_iterations: 1600
   max_steps_per_iteration: 6400
