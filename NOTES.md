@@ -333,5 +333,7 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
     * change tanh in common.py to relu.
 * Fix JAX rpci reproductability issue?:
   1. separate RNG chain
-  2. fix pairwise distance calulcation RBFKernel to be more stable.
-  3. JAX rpci always considers fallback error term, `1.0e-6`.
+  2. JAX rpci always considers fallback error term, `1.0e-6` -> remove
+  3. JAX rpci shuffle batch -> remove.
+  * Preformance on CoopBonus+TargetAlloc: cool & Much faster training speed with `device=cuda`.
+  * Preformance on CoopBonus:

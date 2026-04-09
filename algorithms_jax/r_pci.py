@@ -948,7 +948,7 @@ class JAXRPCIAlgorithm:
                 gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
             eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
             # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci. Remove it?
-            reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
+            reg_gram = self.tikhonov_gamma * eye + self.stabilizer_lambda * gram
             solved = jnp.linalg.solve(reg_gram, residuals)
             
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
@@ -973,11 +973,10 @@ class JAXRPCIAlgorithm:
         metrics["bridge_grad_norm"] = global_norm(grads)
         return new_bridge_state, metrics
 
-    def _iterate_minibatches(self, size: int, rng: jax.Array):
-        perm = jax.random.permutation(rng, size)
+    def _iterate_minibatches(self, size: int):
         effective_batch = self.batch_size if self.batch_size > 0 else math.ceil(size / self.num_batches)
         for start in range(0, size, effective_batch):
-            yield perm[start:start + effective_batch]
+            yield jnp.arange(start, min(start + effective_batch, size))
 
     def update_causal_networks(self, rollout: Optional[Dict[str, jnp.ndarray]] = None) -> Dict[str, float]:
         if rollout is None:
@@ -1091,9 +1090,7 @@ class JAXRPCIAlgorithm:
 
         metrics = []
         for epoch in range(self.ppo_epochs):
-            self.rng, actor_key, critic_key = jax.random.split(self.rng, 3)
-
-            for indices in self._iterate_minibatches(actor_batch["actions"].shape[0], actor_key):
+            for indices in self._iterate_minibatches(actor_batch["actions"].shape[0]):
                 # scalar entries (ndim==0) like causal_lambda are broadcast as-is
                 actor_mb = {
                     key: (value if value.ndim == 0 else value[indices])
@@ -1102,7 +1099,7 @@ class JAXRPCIAlgorithm:
                 self.actor_state, actor_metrics = self._actor_update_step(self.actor_state, actor_mb)
                 metrics.append({key: float(value) for key, value in tree_to_host(actor_metrics).items()})
 
-            for indices in self._iterate_minibatches(critic_batch["returns"].shape[0], critic_key):
+            for indices in self._iterate_minibatches(critic_batch["returns"].shape[0]):
                 critic_mb = {key: value[indices] for key, value in critic_batch.items()}
                 self.critic_state, critic_metrics = self._critic_update_step(self.critic_state, critic_mb)
                 metrics.append({key: float(value) for key, value in tree_to_host(critic_metrics).items()})
