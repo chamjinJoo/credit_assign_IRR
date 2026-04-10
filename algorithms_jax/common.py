@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from typing import Any, Dict
 
 import jax
@@ -10,13 +11,21 @@ from flax.training import train_state
 
 VERY_NEGATIVE = -1.0e9
 
+# Orthogonal initializer with ReLU gain (sqrt(2)), matching Torch MLPBase(use_orthogonal=True)
+_ORTH_RELU = nn.initializers.orthogonal(scale=math.sqrt(2))
+# Orthogonal initializer with unit scale, used for GRU kernels and output layers
+_ORTH_UNIT = nn.initializers.orthogonal(scale=1.0)
+
+
 def make_gru_cell(hidden_dim: int) -> nn.GRUCell:
+    # Torch RNNLayer applies nn.init.orthogonal_ to all GRU weight matrices.
     return nn.GRUCell(
         features=hidden_dim,
-        kernel_init=nn.initializers.xavier_uniform(),
-        recurrent_kernel_init=nn.initializers.xavier_uniform(),
+        kernel_init=_ORTH_UNIT,
+        recurrent_kernel_init=_ORTH_UNIT,
         bias_init=nn.initializers.zeros_init(),
     )
+
 
 class RecurrentActor(nn.Module):
     hidden_dim: int
@@ -30,13 +39,18 @@ class RecurrentActor(nn.Module):
         hidden: jnp.ndarray,
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        # Matches Torch RNNPolicyNetwork:
+        #   Linear → ReLU → LayerNorm → GRU → LayerNorm → Linear(logits)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
         x = nn.Dense(self.hidden_dim)(x)
         x = nn.relu(x)
+        x = nn.LayerNorm()(x)
 
         hidden = hidden * masks[..., None]
         gru = make_gru_cell(self.hidden_dim)
         new_hidden, core_out = gru(hidden, x)
+        core_out = nn.LayerNorm()(core_out)
+
         logits = nn.Dense(self.action_dim)(core_out)
         return new_hidden, logits
 
@@ -53,13 +67,18 @@ class RecurrentCritic(nn.Module):
         hidden: jnp.ndarray,
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        # Matches Torch RNNValueNetwork:
+        #   Linear → ReLU → LayerNorm → GRU → LayerNorm → Linear(value)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
         x = nn.Dense(self.hidden_dim)(x)
         x = nn.relu(x)
+        x = nn.LayerNorm()(x)
 
         hidden = hidden * masks[..., None]
         gru = make_gru_cell(self.hidden_dim)
         new_hidden, core_out = gru(hidden, x)
+        core_out = nn.LayerNorm()(core_out)
+
         values = nn.Dense(self.output_dim)(core_out)
         if self.output_dim == 1:
             values = values.squeeze(-1)
@@ -79,10 +98,12 @@ class FeedForwardActor(nn.Module):
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         del prev_actions, masks
-        x = nn.Dense(self.hidden_dim)(obs)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(obs)
         x = nn.relu(x)
-        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
+        x = nn.LayerNorm()(x)
         logits = nn.Dense(self.action_dim)(x)
         return hidden, logits
 
@@ -100,10 +121,12 @@ class FeedForwardCritic(nn.Module):
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         del prev_actions, masks
-        x = nn.Dense(self.hidden_dim)(obs)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(obs)
         x = nn.relu(x)
-        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
+        x = nn.LayerNorm()(x)
         values = nn.Dense(self.output_dim)(x)
         if self.output_dim == 1:
             values = values.squeeze(-1)
@@ -123,12 +146,18 @@ class CausalBridgeNetwork(nn.Module):
         hidden_others: jnp.ndarray,
         actions: jnp.ndarray,
     ) -> jnp.ndarray:
+        # Matches Torch OutcomeBridgeNetwork (MLPBase, use_orthogonal=True,
+        # use_feature_normalization=True, use_layer_norm=True):
+        #   LayerNorm(input) → [Dense(orth,√2) → ReLU → LayerNorm] × 2 → Dense(output)
         action_onehot = jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim)
         x = jnp.concatenate([local_obs, others_obs, hidden_others, action_onehot], axis=-1)
-        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
-        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.LayerNorm()(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
+        x = nn.LayerNorm()(x)
         return nn.Dense(self.num_agents)(x)
 
 

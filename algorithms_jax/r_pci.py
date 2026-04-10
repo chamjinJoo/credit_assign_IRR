@@ -95,6 +95,13 @@ class JAXRPCIAlgorithm:
         self.normalize_returns = normalize_returns
         self.use_recurrent_policy = use_recurrent_policy
         self.attack_action_threshold = self._infer_attack_action_threshold(action_dim)
+        # SMAX: stop (attack_threshold-1) is always available even for dead agents.
+        # SMAC: action 0 (no-op) is the dead-only action.
+        env_name = self.env.__class__.__name__
+        if env_name in ('SMAXBatchWrapper', 'SMAXWrapper') and self.attack_action_threshold is not None:
+            self._dead_only_action_idx: Optional[int] = self.attack_action_threshold - 1
+        else:
+            self._dead_only_action_idx = None  # use avail[1:].sum() fallback
 
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
@@ -180,7 +187,7 @@ class JAXRPCIAlgorithm:
                 bridge_key,
                 (
                     jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
-                    jnp.zeros((1, (num_agents - 1) * self.policy_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, (num_agents - 1) * obs_dim), dtype=jnp.float32),
                     jnp.zeros((1, self.bridge_hidden_dim), dtype=jnp.float32),
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
@@ -263,6 +270,18 @@ class JAXRPCIAlgorithm:
         threshold = max(0, min(int(threshold), int(action_dim) - 1))
         return threshold
 
+    def _alive_from_avail(self, avail_actions: jnp.ndarray) -> jnp.ndarray:
+        """Return boolean alive mask.
+
+        SMAX: stop action (index = attack_action_threshold - 1) is always
+        available even for dead agents, so exclude it from the alive check.
+        SMAC / default: action 0 is the dead-only no-op, so avail[1:].sum()>0 works.
+        """
+        if self._dead_only_action_idx is not None:
+            stop = avail_actions[..., self._dead_only_action_idx]
+            return (avail_actions.sum(axis=-1) - stop) > 0
+        return avail_actions[..., 1:].sum(axis=-1) > 0
+
     def _normalize_advantage_signal(self, signal: jnp.ndarray) -> jnp.ndarray:
         if signal.size <= 1:
             return jnp.zeros_like(signal)
@@ -295,6 +314,13 @@ class JAXRPCIAlgorithm:
             return jnp.repeat(env_advantages[..., None], self.num_agents, axis=-1)
         return env_advantages
 
+    def _normalize_columns(self, x: jnp.ndarray) -> jnp.ndarray:
+        """Normalize each column (agent) of x:(T*E, N) independently — same as
+        calling _normalize_advantage_signal per agent then stacking."""
+        mean = x.mean(axis=0, keepdims=True)
+        std = jnp.clip(x.std(axis=0, keepdims=True), a_min=1.0e-8)
+        return (x - mean) / std
+
     def _combine_actor_advantages(
         self,
         env_advantages: jnp.ndarray,
@@ -302,30 +328,22 @@ class JAXRPCIAlgorithm:
         causal_lambda: float,
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
         env_for_actor = self._env_advantages_for_actor(env_advantages)
-        combined_agents = []
-        env_norm_agents = []
-        pci_res_agents = []
-
-        for agent_id in range(self.num_agents):
-            combined, env_norm, pci_res = self._combine_env_and_pci_advantages(
-                env_for_actor[..., agent_id].reshape(-1),
-                pci_advantages[..., agent_id].reshape(-1),
-                causal_lambda,
-            )
-            combined_agents.append(combined.reshape(env_for_actor.shape[:2]))
-            env_norm_agents.append(env_norm.reshape(env_for_actor.shape[:2]))
-            pci_res_agents.append(pci_res.reshape(env_for_actor.shape[:2]))
-
-        combined_adv = jnp.stack(combined_agents, axis=-1)
-        env_norm = jnp.stack(env_norm_agents, axis=-1)
-        pci_res = jnp.stack(pci_res_agents, axis=-1)
+        orig_shape = env_for_actor.shape  # (T, E, N)
+        # Normalize each agent's slice independently (vectorized over agent dim).
+        env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
+        pci_flat = pci_advantages.reshape(-1, self.num_agents)
+        env_norm = self._normalize_columns(env_flat)
+        pci_res  = self._normalize_columns(pci_flat)
+        combined = (env_norm + causal_lambda * pci_res).reshape(orig_shape)
+        env_norm = env_norm.reshape(orig_shape)
+        pci_res  = pci_res.reshape(orig_shape)
         info = {
             "env_adv_std": float(jnp.std(env_norm)),
             "pci_adv_res_std": float(jnp.std(pci_res)),
             "pci_bonus_std": float(jnp.std(causal_lambda * pci_res)),
-            "combined_adv_std": float(jnp.std(combined_adv)),
+            "combined_adv_std": float(jnp.std(combined)),
         }
-        return combined_adv, info
+        return combined, info
 
     def _pci_residual_tensor(
         self,
@@ -334,15 +352,10 @@ class JAXRPCIAlgorithm:
         causal_lambda: float,
     ) -> jnp.ndarray:
         env_for_actor = self._env_advantages_for_actor(env_advantages)
-        pci_res_agents = []
-        for agent_id in range(self.num_agents):
-            _, _, pci_res = self._combine_env_and_pci_advantages(
-                env_for_actor[..., agent_id].reshape(-1),
-                pci_advantages[..., agent_id].reshape(-1),
-                causal_lambda,
-            )
-            pci_res_agents.append(pci_res.reshape(env_for_actor.shape[:2]))
-        return jnp.stack(pci_res_agents, axis=-1)
+        orig_shape = env_for_actor.shape  # (T, E, N)
+        pci_flat = pci_advantages.reshape(-1, self.num_agents)
+        pci_res  = self._normalize_columns(pci_flat)
+        return pci_res.reshape(orig_shape)
 
     def _smac_attack_reward_event_metrics(
         self,
@@ -360,37 +373,71 @@ class JAXRPCIAlgorithm:
         reward_hit = team_reward > 1.0e-8
 
         if self.action_dim > 1:
-            alive = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0)
+            alive = (self._alive_from_avail(rollout["avail_actions"]))
         else:
             alive = jnp.ones_like(actions, dtype=bool)
         attack_intent = actions >= self.attack_action_threshold
         event_mask = attack_intent & alive & reward_hit[..., None]
 
-        metrics: Dict[str, float] = {}
         bonus_abs = jnp.abs(causal_lambda * pci_residual)
+        # Vectorize over agent dim: sum over (T, E) axes.
+        mask_f = event_mask.astype(jnp.float32)                        # (T, E, N)
+        counts   = mask_f.sum(axis=(0, 1))                             # (N,)
+        denoms   = counts + 1.0e-8
+        delta_means   = (delta        * mask_f).sum(axis=(0, 1)) / denoms
+        pci_means     = (pci_advantages * mask_f).sum(axis=(0, 1)) / denoms
+        res_means     = (pci_residual   * mask_f).sum(axis=(0, 1)) / denoms
+        bonus_means   = (bonus_abs      * mask_f).sum(axis=(0, 1)) / denoms
+        # Zero out agents with no events (count == 0 ⟹ numerator == 0 already, but be explicit).
+        has_events = counts > 0
+        delta_means = jnp.where(has_events, delta_means, 0.0)
+        pci_means   = jnp.where(has_events, pci_means,   0.0)
+        res_means   = jnp.where(has_events, res_means,   0.0)
+        bonus_means = jnp.where(has_events, bonus_means, 0.0)
+        # Move to host once, then build the dict.
+        counts_h      = [float(v) for v in counts]
+        delta_means_h = [float(v) for v in delta_means]
+        pci_means_h   = [float(v) for v in pci_means]
+        res_means_h   = [float(v) for v in res_means]
+        bonus_means_h = [float(v) for v in bonus_means]
+        metrics: Dict[str, float] = {}
         for agent_id in range(self.num_agents):
-            mask_i = event_mask[..., agent_id].astype(jnp.float32)
-            count = float(jnp.sum(mask_i))
-            metrics[f"delta_agent_{agent_id}_attack_reward_count"] = count
-            if count <= 0.0:
-                metrics[f"delta_agent_{agent_id}_attack_reward_mean"] = 0.0
-                metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = 0.0
-                metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = 0.0
-                metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = 0.0
-                continue
-            denom = count + 1.0e-8
-            metrics[f"delta_agent_{agent_id}_attack_reward_mean"] = float(
-                jnp.sum(delta[..., agent_id] * mask_i) / denom
-            )
-            metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = float(
-                jnp.sum(pci_advantages[..., agent_id] * mask_i) / denom
-            )
-            metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = float(
-                jnp.sum(pci_residual[..., agent_id] * mask_i) / denom
-            )
-            metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = float(
-                jnp.sum(bonus_abs[..., agent_id] * mask_i) / denom
-            )
+            metrics[f"delta_agent_{agent_id}_attack_reward_count"] = counts_h[agent_id]
+            metrics[f"delta_agent_{agent_id}_attack_reward_mean"]  = delta_means_h[agent_id]
+            metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = pci_means_h[agent_id]
+            metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = res_means_h[agent_id]
+            metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = bonus_means_h[agent_id]
+        return metrics
+
+    def _per_action_delta_metrics(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        delta: jnp.ndarray,
+    ) -> Dict[str, float]:
+        """Log mean delta per (agent, action) for all alive steps."""
+        actions = rollout["actions"]  # (T, E, N)
+        if self.action_dim > 1:
+            alive = self._alive_from_avail(rollout["avail_actions"])  # (T, E, N)
+        else:
+            alive = jnp.ones_like(actions, dtype=bool)
+
+        # one_hot: (T, E, N, A); alive_f: (T, E, N, 1)
+        one_hot = jax.nn.one_hot(actions, self.action_dim, dtype=jnp.float32)
+        alive_f = alive.astype(jnp.float32)[..., None]
+        # mask[t,e,n,a] = 1 iff agent n was alive and took action a
+        mask = one_hot * alive_f                                       # (T, E, N, A)
+        counts     = mask.sum(axis=(0, 1))                             # (N, A)
+        delta_sums = (delta[..., None] * mask).sum(axis=(0, 1))       # (N, A)
+        means = jnp.where(counts > 0, delta_sums / jnp.maximum(counts, 1.0e-8), 0.0)
+        # Move to host once.
+        counts_h = [[float(counts[n, a]) for a in range(self.action_dim)] for n in range(self.num_agents)]
+        means_h  = [[float(means[n, a])  for a in range(self.action_dim)] for n in range(self.num_agents)]
+        metrics: Dict[str, float] = {}
+        for agent_id in range(self.num_agents):
+            for a in range(self.action_dim):
+                key_prefix = f"delta_agent{agent_id}_action{a}"
+                metrics[f"{key_prefix}_count"] = counts_h[agent_id][a]
+                metrics[f"{key_prefix}_mean"]  = means_h[agent_id][a]
         return metrics
 
     @partial(jax.jit, static_argnums=0)
@@ -620,7 +667,7 @@ class JAXRPCIAlgorithm:
         ).reshape(total_steps, self.num_agents)
         if self.action_dim > 1:
             alive_masks = (
-                rollout["avail_actions"][..., 1:].sum(axis=-1) > 0
+                self._alive_from_avail(rollout["avail_actions"])
             ).astype(jnp.float32).reshape(total_steps, self.num_agents)
         else:
             alive_masks = jnp.ones_like(actions, dtype=jnp.float32)
@@ -655,7 +702,7 @@ class JAXRPCIAlgorithm:
             else:
                 returns_flat = returns.reshape(-1, self.num_agents)
                 if self.action_dim > 1:
-                    alive_masks = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32)
+                    alive_masks = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32)
                 else:
                     alive_masks = jnp.ones(rollout["actions"].shape, dtype=jnp.float32)
                 loss_masks = base_masks[:, None] * alive_masks.reshape(-1, self.num_agents)
@@ -674,7 +721,7 @@ class JAXRPCIAlgorithm:
             rollout["actions"].shape,
         ).reshape(-1)
         if self.action_dim > 1:
-            alive_masks = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32).reshape(-1)
+            alive_masks = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32).reshape(-1)
         else:
             alive_masks = jnp.ones((total_steps,), dtype=jnp.float32)
         return {
@@ -692,7 +739,8 @@ class JAXRPCIAlgorithm:
 
         obs_flat = rollout["obs"].reshape(flat_batch, self.num_agents, self.policy_obs_dim)
         local_obs = obs_flat.reshape(-1, self.policy_obs_dim)
-        others_obs = gather_other_agent_obs(obs_flat).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
+        raw_obs_flat = obs_flat[..., :self.obs_dim]
+        others_obs = gather_other_agent_obs(raw_obs_flat).reshape(-1, (self.num_agents - 1) * self.obs_dim)
         if self.use_recurrent_policy:
             hidden_all = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
             z = hidden_all.reshape(-1, self.actor_state_dim)
@@ -714,7 +762,7 @@ class JAXRPCIAlgorithm:
 
         if self.action_dim > 1:
             alive_mask = (
-                rollout["avail_actions"][..., 1:].sum(axis=-1) > 0
+                self._alive_from_avail(rollout["avail_actions"])
             ).reshape(-1)
         else:
             alive_mask = jnp.ones((flat_batch * self.num_agents,), dtype=bool)
@@ -731,7 +779,8 @@ class JAXRPCIAlgorithm:
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
         obs = rollout["obs"]
         local_obs = obs.reshape(-1, self.policy_obs_dim)
-        others_obs = gather_other_agent_obs(obs).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
+        raw_obs = obs[..., :self.obs_dim]
+        others_obs = gather_other_agent_obs(raw_obs).reshape(-1, (self.num_agents - 1) * self.obs_dim)
         if self.use_recurrent_policy:
             hidden_others = gather_other_agent_obs(rollout["actor_hidden"]).reshape(-1, self.bridge_hidden_dim)
         else:
@@ -785,12 +834,15 @@ class JAXRPCIAlgorithm:
         factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
         probs_counterfactual = probs * factual_mask * avail_actions
         renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
-        renormalized_probs = probs_counterfactual / jnp.clip(renorm, a_min=1.0e-8)
+        # Match Torch: clip with 1e-10 so that when no valid CF exists,
+        # renormalized_probs ≈ 0 → baseline ≈ 0 → delta = r_factual (same as Torch).
+        renormalized_probs = probs_counterfactual / jnp.clip(renorm, a_min=1.0e-10)
         baseline = jnp.sum(renormalized_probs[..., None] * all_preds, axis=1)
 
         no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
-        baseline = jnp.where(no_valid_cf[:, None], actual_pred, baseline)
-        return actual_pred, baseline, all_preds
+        baseline = jnp.where(no_valid_cf[:, None], jnp.zeros_like(baseline), baseline)
+        no_valid_cf_rate = jnp.mean(no_valid_cf.astype(jnp.float32))
+        return actual_pred, baseline, all_preds, no_valid_cf_rate
 
     @partial(jax.jit, static_argnums=0)
     def _actor_update_step(
@@ -813,13 +865,6 @@ class JAXRPCIAlgorithm:
                 flat_hidden,
                 flat_masks,
             )
-            _, new_log_probs, _ = categorical_stats(
-                logits,
-                batch["avail_actions"].reshape(batch_size * self.num_agents, self.action_dim),
-                jax.random.PRNGKey(0),
-                True,
-            )
-            log_probs = new_log_probs
             masked_logits = jnp.where(
                 batch["avail_actions"].reshape(batch_size * self.num_agents, self.action_dim) > 0,
                 logits,
@@ -901,11 +946,11 @@ class JAXRPCIAlgorithm:
         return new_critic_state, metrics
 
     @partial(jax.jit, static_argnums=0)
-    def _bridge_update_step(
+    def _compute_gram(
         self,
-        bridge_state: Any,
         batch: Dict[str, jnp.ndarray],
-    ):
+    ) -> tuple[jnp.ndarray, jnp.ndarray, Dict[str, jnp.ndarray]]:
+        """Compute Gram matrix and regularized Gram once per mini-batch (reused across bridge epochs)."""
         def _standardize(x: jnp.ndarray) -> jnp.ndarray:
             mean = jnp.mean(x, axis=0, keepdims=True)
             std = jnp.std(x, axis=0, keepdims=True)
@@ -917,6 +962,52 @@ class JAXRPCIAlgorithm:
             dists_sq = jnp.clip(dists_sq, a_min=0.0)
             return jnp.exp(-gamma * dists_sq)
 
+        z_norm = _standardize(batch["z"])
+        x_obs_norm = _standardize(batch["x_obs"])
+        action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
+
+        gamma_z = 1.0 / max(1, batch["z"].shape[-1])
+        gamma_a = 1.0 / max(1, self.action_dim)
+        gamma_xobs = 1.0 / max(1, batch["x_obs"].shape[-1])
+
+        gram = (
+            _rbf_gram(z_norm, gamma_z)
+            * _rbf_gram(action_onehot, gamma_a)
+            * _rbf_gram(x_obs_norm, gamma_xobs)
+        )
+
+        if batch["x_hid"].shape[-1] > 0:
+            x_hid_norm = _standardize(batch["x_hid"])
+            gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
+            gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
+
+        eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
+        # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci.
+        reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
+
+        diag = jnp.diag(gram)
+        total_sum = jnp.sum(gram) - jnp.sum(diag)
+        off_count = gram.shape[0] * max(gram.shape[0] - 1, 1)
+        kz_offdiag_mean = total_sum / off_count
+        centered = gram - kz_offdiag_mean
+        sq_sum = jnp.sum(jnp.square(centered)) - jnp.sum(jnp.square(diag - kz_offdiag_mean))
+        kz_offdiag_std = jnp.sqrt(jnp.clip(sq_sum / off_count, a_min=0.0))
+
+        gram_metrics = {
+            "Kz_offdiag_mean": kz_offdiag_mean,
+            "Kz_offdiag_std": kz_offdiag_std,
+        }
+        return gram, reg_gram, gram_metrics
+
+    @partial(jax.jit, static_argnums=0)
+    def _bridge_update_step(
+        self,
+        bridge_state: Any,
+        batch: Dict[str, jnp.ndarray],
+        gram: jnp.ndarray,
+        reg_gram: jnp.ndarray,
+    ):
+        """Update bridge parameters using a precomputed Gram matrix (matches Torch: gram computed once per mini-batch)."""
         def loss_fn(params):
             preds = bridge_state.apply_fn(
                 {"params": params},
@@ -926,46 +1017,13 @@ class JAXRPCIAlgorithm:
                 batch["actions"],
             )
             residuals = batch["targets"] - preds
-
-            z_norm = _standardize(batch["z"])
-            x_obs_norm = _standardize(batch["x_obs"])
-            action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
-
-            gamma_z = 1.0 / max(1, batch["z"].shape[-1])
-            gamma_a = 1.0 / max(1, self.action_dim)
-            gamma_xobs = 1.0 / max(1, batch["x_obs"].shape[-1])
-
-            gram = (
-                _rbf_gram(z_norm, gamma_z)
-                * _rbf_gram(action_onehot, gamma_a)
-                * _rbf_gram(x_obs_norm, gamma_xobs)
-            )
-            
-            if batch["x_hid"].shape[-1] > 0:
-                x_hid_norm = _standardize(batch["x_hid"])
-                gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
-                gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
-
-            eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
-            # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci. Remove it.
-            reg_gram = self.tikhonov_gamma * eye + self.stabilizer_lambda * gram
             solved = jnp.linalg.solve(reg_gram, residuals)
-            
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
             outcome_bridge_loss = jnp.mean(per_sample_loss)
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
-            diag = jnp.diag(gram)
-            total_sum = jnp.sum(gram) - jnp.sum(diag)
-            off_count = gram.shape[0] * max(gram.shape[0] - 1, 1)
-            kz_offdiag_mean = total_sum / off_count
-            centered = gram - kz_offdiag_mean
-            sq_sum = jnp.sum(jnp.square(centered)) - jnp.sum(jnp.square(diag - kz_offdiag_mean))
-            kz_offdiag_std = jnp.sqrt(jnp.clip(sq_sum / off_count, a_min=0.0))
             return outcome_bridge_loss + action_bridge_loss, {
                 "outcome_bridge_loss": outcome_bridge_loss,
                 "action_bridge_loss": action_bridge_loss,
-                "Kz_offdiag_mean": kz_offdiag_mean,
-                "Kz_offdiag_std": kz_offdiag_std,
             }
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(bridge_state.params)
@@ -990,22 +1048,28 @@ class JAXRPCIAlgorithm:
 
         causal_batch = self._causal_batch(rollout)
         metrics = []
-        for epoch in range(self.bridge_epoch):
-            for start in range(0, causal_batch["actions"].shape[0], self.causal_mini_batch_size):
-                indices = jnp.arange(
-                    start,
-                    min(start + self.causal_mini_batch_size, causal_batch["actions"].shape[0]),
-                )
-                batch = {
-                    "z": causal_batch["z"][indices],
-                    "w": causal_batch["w"][indices],
-                    "x_obs": causal_batch["x_obs"][indices],
-                    "x_hid": causal_batch["x_hid"][indices],
-                    "actions": causal_batch["actions"][indices],
-                    "targets": causal_batch["targets"][indices],
-                }
-                self.bridge_state, batch_metrics = self._bridge_update_step(self.bridge_state, batch)
-                metrics.append({key: float(value) for key, value in tree_to_host(batch_metrics).items()})
+        total = causal_batch["actions"].shape[0]
+        for start in range(0, total, self.causal_mini_batch_size):
+            indices = jnp.arange(
+                start,
+                min(start + self.causal_mini_batch_size, total),
+            )
+            batch = {
+                "z": causal_batch["z"][indices],
+                "w": causal_batch["w"][indices],
+                "x_obs": causal_batch["x_obs"][indices],
+                "x_hid": causal_batch["x_hid"][indices],
+                "actions": causal_batch["actions"][indices],
+                "targets": causal_batch["targets"][indices],
+            }
+            # Compute Gram once per mini-batch and reuse across bridge epochs (matches Torch).
+            gram, reg_gram, gram_metrics = self._compute_gram(batch)
+            gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
+            for _ in range(self.bridge_epoch):
+                self.bridge_state, batch_metrics = self._bridge_update_step(self.bridge_state, batch, gram, reg_gram)
+                combined = {key: float(value) for key, value in tree_to_host(batch_metrics).items()}
+                combined.update(gram_metrics_host)
+                metrics.append(combined)
         stacked = stack_metrics(metrics)
         stacked.setdefault("outcome_bridge_loss", 0.0)
         stacked.setdefault("action_bridge_loss", 0.0)
@@ -1029,7 +1093,7 @@ class JAXRPCIAlgorithm:
             }
 
         local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions = self._bridge_inputs(rollout)
-        actual_pred, baseline_weighted, all_preds = self._bridge_predictions(
+        actual_pred, baseline_weighted, all_preds, no_valid_cf_rate = self._bridge_predictions(
             self.bridge_state.params,
             local_obs,
             others_obs,
@@ -1057,7 +1121,7 @@ class JAXRPCIAlgorithm:
         # the final r^i = r - lambda_c*(h_factual - E[h_cf])
         
         if self.action_dim > 1:
-            alive = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32)
+            alive = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32)
         else:
             alive = jnp.ones_like(rollout["actions"], dtype=jnp.float32)
         if self.global_reward:
@@ -1075,6 +1139,7 @@ class JAXRPCIAlgorithm:
             "causal_lambda": self.get_current_causal_lambda(),
             "delta_mean": float(jnp.mean(delta)),
             "delta_std": float(jnp.std(delta)),
+            "no_valid_cf_rate": float(no_valid_cf_rate),
         }
         return c_matrix, info
 
@@ -1162,6 +1227,7 @@ class JAXRPCIAlgorithm:
                 causal_lambda,
             )
         )
+        metrics.update(self._per_action_delta_metrics(rollout, delta))
 
         metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])

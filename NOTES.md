@@ -333,7 +333,9 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
     * change tanh in common.py to relu.
 * Fix JAX rpci reproductability issue?:
   1. separate RNG chain
-  2. JAX rpci always considers fallback error term, `1.0e-6` -> remove
-  3. JAX rpci shuffle batch -> remove.
-  * Preformance on CoopBonus+TargetAlloc: cool & Much faster training speed with `device=cuda`.
-  * Preformance on CoopBonus:
+  2. JAX rpci shuffle batch -> remove.
+* Highly recommend to set `device=cuda` for SMAX: training speed and unity.
+  
+# 26.04.10
+* Fix JAX `rpci` compute_causal_rewards function fallback. -> r_factual - baseline(=0 for fallback)
+* Fix alive_masking in SMAX. -> in SMAX dead agent action is fix as stop, not no-op.
