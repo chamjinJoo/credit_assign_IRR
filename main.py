@@ -376,7 +376,6 @@ def create_algorithm(env, config):
             clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
             tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
             stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
-            use_pci_value_proxy=getattr(algorithm_config, 'use_pci_value_proxy', False),
             seed=getattr(config.training, 'seed', 42),
         )
     elif algorithm_type == 'coma':

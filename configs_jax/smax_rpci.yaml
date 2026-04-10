@@ -4,7 +4,7 @@ network:
   hidden_dim: 128
   lr_actor: 5.0e-4
   lr_critic: 5.0e-4
-  lr_bridge: 1.0e-3
+  lr_bridge: 1.0e-3 # 5.0e-4 ?
   recurrent_N: 1
   use_recurrent_policy: true
 
@@ -29,7 +29,6 @@ algorithm:
   clip_delta: 0.0
   tikhonov_gamma: 1.0e-4
   normalize_returns: true
-  use_pci_value_proxy: false
   
 training:
   max_iterations: 1600

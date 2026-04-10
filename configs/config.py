@@ -49,7 +49,6 @@ class AlgorithmConfig:
     causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
     tikhonov_gamma: float = 1e-4  # Tikhonov regularization for RKHS solver
     stabilizer_lambda: float = 1.0  # Gram matrix scaling in RKHS loss
-    use_pci_value_proxy: bool = False  # Use env_critic value as proxy bootstrap for PCI GAE
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     train_naivepredictor: bool = False  # Train naive predictor for causal baseline

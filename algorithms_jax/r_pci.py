@@ -66,7 +66,6 @@ class JAXRPCIAlgorithm:
         stabilizer_lambda: float = 1.0,
         normalize_returns: bool = True,
         use_recurrent_policy: bool = True,
-        use_pci_value_proxy: bool = False,
         seed: int = 42,
         **_: Any,
     ):
@@ -107,8 +106,6 @@ class JAXRPCIAlgorithm:
         self.causal_mini_batch_size = causal_mini_batch_size
         self.tikhonov_gamma = tikhonov_gamma
         self.stabilizer_lambda = stabilizer_lambda
-        self.use_pci_value_proxy = use_pci_value_proxy
-        print("proxy value function enabled:", use_pci_value_proxy)
         self.training_steps = 0
         self.latest_rollout: Optional[Dict[str, Any]] = None
         self._rollout_fns: Dict[int, Any] = {}
@@ -424,7 +421,8 @@ class JAXRPCIAlgorithm:
             flat_masks,
         )
 
-        action_keys = jax.random.split(rng, flat_obs.shape[0])
+        sample_ids = jnp.arange(flat_obs.shape[0], dtype=jnp.uint32)
+        action_keys = jax.vmap(lambda idx: jax.random.fold_in(rng, idx))(sample_ids)
         flat_actions, flat_log_probs, flat_probs = jax.vmap(
             categorical_stats,
             in_axes=(0, 0, 0, None),
@@ -942,12 +940,14 @@ class JAXRPCIAlgorithm:
                 * _rbf_gram(action_onehot, gamma_a)
                 * _rbf_gram(x_obs_norm, gamma_xobs)
             )
+            
             if batch["x_hid"].shape[-1] > 0:
                 x_hid_norm = _standardize(batch["x_hid"])
                 gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
                 gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
+
             eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
-            # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci. Remove it?
+            # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci. Remove it.
             reg_gram = self.tikhonov_gamma * eye + self.stabilizer_lambda * gram
             solved = jnp.linalg.solve(reg_gram, residuals)
             
@@ -1051,9 +1051,11 @@ class JAXRPCIAlgorithm:
             baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
 
         actual_team_reward = reward_targets
-        # raw_effects = actual_pred - baseline
         raw_effects = actual_team_reward - baseline
 
+        # raw_effects = actual_pred - baseline 
+        # the final r^i = r - lambda_c*(h_factual - E[h_cf])
+        
         if self.action_dim > 1:
             alive = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32)
         else:
@@ -1090,53 +1092,13 @@ class JAXRPCIAlgorithm:
 
         metrics = []
         for epoch in range(self.ppo_epochs):
-            for indices in self._iterate_minibatches(actor_batch["actions"].shape[0]):
-                # scalar entries (ndim==0) like causal_lambda are broadcast as-is
-                actor_mb = {
-                    key: (value if value.ndim == 0 else value[indices])
-                    for key, value in actor_batch.items()
-                }
-                self.actor_state, actor_metrics = self._actor_update_step(self.actor_state, actor_mb)
-                metrics.append({key: float(value) for key, value in tree_to_host(actor_metrics).items()})
+            self.actor_state, actor_metrics = self._actor_update_step(self.actor_state, actor_batch)
+            metrics.append({key: float(value) for key, value in tree_to_host(actor_metrics).items()})
 
-            for indices in self._iterate_minibatches(critic_batch["returns"].shape[0]):
-                critic_mb = {key: value[indices] for key, value in critic_batch.items()}
-                self.critic_state, critic_metrics = self._critic_update_step(self.critic_state, critic_mb)
-                metrics.append({key: float(value) for key, value in tree_to_host(critic_metrics).items()})
+            self.critic_state, critic_metrics = self._critic_update_step(self.critic_state, critic_batch)
+            metrics.append({key: float(value) for key, value in tree_to_host(critic_metrics).items()})
 
         return stack_metrics(metrics)
-
-    def _pci_value_proxy(
-        self,
-        delta: jnp.ndarray,
-        values: jnp.ndarray,
-        last_value: jnp.ndarray,
-    ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        """env_critic value를 delta 스케일로 맞춰 PCI GAE의 bootstrap 값으로 사용.
-
-        use_pci_value_proxy=False(기본값): zero bootstrapping (기존 동작)
-        use_pci_value_proxy=True:  env_value × (std(delta) / std(values))
-
-        centralized critic일 때 values가 (T,E)이므로 (T,E,N)으로 broadcast.
-        """
-        if not self.use_pci_value_proxy:
-            return jnp.zeros_like(delta), jnp.zeros_like(delta[0])
-
-        # centralized critic: (T,E) → (T,E,N)
-        proxy_v  = values
-        proxy_lv = last_value
-        if proxy_v.ndim < delta.ndim:
-            proxy_v  = jnp.repeat(proxy_v[..., None],  self.num_agents, axis=-1)
-            proxy_lv = jnp.repeat(proxy_lv[..., None], self.num_agents, axis=-1)
-
-        # delta와 values의 스케일을 맞춤:
-        #   V^pci(s) ≈ coef × V^env(s)
-        #   coef = std(delta) / std(values)  (양수 보장, 분모 clamp)
-        delta_std = jnp.std(delta)
-        value_std = jnp.std(proxy_v)
-        coef = delta_std / jnp.clip(value_std, a_min=1e-8)
-
-        return coef * proxy_v, coef * proxy_lv
 
     def update(self, **_: Any) -> Dict[str, float]:
         if self.latest_rollout is None:
@@ -1175,13 +1137,10 @@ class JAXRPCIAlgorithm:
             self.gae_lambda,
         )
 
-        pci_proxy_values, pci_proxy_last_value = self._pci_value_proxy(
-            delta, values, last_value
-        )
         pci_advantages, _ = compute_gae(
             delta,
-            pci_proxy_values,
-            pci_proxy_last_value,
+            jnp.zeros_like(delta),
+            jnp.zeros_like(delta[0]),
             rollout["dones"],
             self.gamma,
             self.gae_lambda,
