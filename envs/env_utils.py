@@ -152,12 +152,11 @@ def create_environment(env_config) -> MultiAgentEnv:
             smacv2_unit_type_generation=config_dict.get('smacv2_unit_type_generation', False),
             use_allowed_targets=config_dict.get('use_allowed_targets', False),
             allowed_targets=config_dict.get('allowed_targets', None),
+            use_partial_damage_restore=config_dict.get('use_partial_damage_restore', False),
             use_cooperative_kill_bonus=config_dict.get('use_cooperative_kill_bonus', False),
             cooperative_kill_window=config_dict.get('cooperative_kill_window', 2),
             cooperative_kill_bonus=config_dict.get('cooperative_kill_bonus', 2.0),
             cooperative_kill_owner_ratio=config_dict.get('cooperative_kill_owner_ratio', 0.7),
-            use_hp_regen=config_dict.get('use_hp_regen', False),
-            hp_regen_amount=config_dict.get('hp_regen_amount', 20.0),
         )
     
     else:

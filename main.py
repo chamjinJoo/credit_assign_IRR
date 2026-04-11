@@ -658,12 +658,11 @@ def main():
                 smacv2_unit_type_generation=getattr(env_config, 'smacv2_unit_type_generation', False),
                 use_allowed_targets=getattr(env_config, 'use_allowed_targets', False),
                 allowed_targets=getattr(env_config, 'allowed_targets', None),
+                use_partial_damage_restore=getattr(env_config, 'use_partial_damage_restore', False),
                 use_cooperative_kill_bonus=getattr(env_config, 'use_cooperative_kill_bonus', False),
                 cooperative_kill_window=getattr(env_config, 'cooperative_kill_window', 2),
                 cooperative_kill_bonus=getattr(env_config, 'cooperative_kill_bonus', 2.0),
                 cooperative_kill_owner_ratio=getattr(env_config, 'cooperative_kill_owner_ratio', 0.7),
-                use_hp_regen=getattr(env_config, 'use_hp_regen', False),
-                hp_regen_amount=getattr(env_config, 'hp_regen_amount', 20.0),
             )
         elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
             from envs import VMASNavigationEnv, VMASDispersionEnv
@@ -715,12 +714,18 @@ def main():
             # For SMAX (JaxMARL)
             elif env_class_name in ['SMAXWrapper', 'SMAXBatchWrapper']:
                 map_name = getattr(config.environment, 'map_name', None)
+                post_parts = []
+                if getattr(config.environment, 'use_allowed_targets', False):
+                    post_parts.append('tar')
+                if getattr(config.environment, 'use_cooperative_kill_bonus', False):
+                    post_parts.append('c.b.')
+                post = '+'.join(post_parts)
                 if map_name:
-                    config.wandb.run_name = f"smax_{map_name}"
+                    config.wandb.run_name = f"smax_{map_name}" + (f"_{post}" if post else "")
                 else:
                     n_allies = env.num_agents
                     n_enemies = env.num_enemies
-                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}"
+                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}" + (f"_{post}" if post else "")
             else:
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()

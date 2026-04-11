@@ -61,11 +61,6 @@ environment:
   cooperative_kill_bonus: 0.5
   cooperative_kill_owner_ratio: 0.7
 
-  # HP Regen: if an agent attack enemy out of target allocation, 
-  # Its attack will trigger HP regen for the enemy. -> no/less damage
-  use_hp_regen: false                # required pair 모두 공격 시에만 regen 억제
-  hp_regen_amount: 20.0              # HP 회복량
-
 wandb:
   use_wandb: true
   project: "pci-marl-smax-jax"

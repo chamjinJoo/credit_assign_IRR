@@ -162,12 +162,11 @@ class EnvironmentConfig:
     use_allowed_targets: bool = False
     allowed_target_window: int = 2
     allowed_targets: Optional[Dict[int, Any]] = None
+    use_partial_damage_restore: bool = False
     use_cooperative_kill_bonus: bool = False
     cooperative_kill_window: int = 2
     cooperative_kill_bonus: float = 2.0
     cooperative_kill_owner_ratio: float = 0.7
-    use_hp_regen: bool = False
-    hp_regen_amount: float = 20.0
     map_width: int = 32
     map_height: int = 32
     world_steps_per_env_step: int = 8
@@ -272,9 +271,9 @@ class EnvironmentConfig:
                 'map_name', 'max_steps',
                 'use_individual_rewards', 'enemy_shoots', 'attack_mode',
                 'use_allowed_targets', 'allowed_target_window', 'allowed_targets',
+                'use_partial_damage_restore',
                 'use_cooperative_kill_bonus',
                 'cooperative_kill_window', 'cooperative_kill_bonus', 'cooperative_kill_owner_ratio',
-                'use_hp_regen', 'hp_regen_amount',
                 'map_width', 'map_height', 'world_steps_per_env_step',
                 'time_per_step', 'see_enemy_actions', 'won_battle_bonus',
                 'walls_cause_death', 'observation_type',

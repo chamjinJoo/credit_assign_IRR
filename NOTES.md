@@ -339,3 +339,8 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.04.10
 * Fix JAX `rpci` compute_causal_rewards function fallback. -> r_factual - baseline(=0 for fallback)
 * Fix alive_masking in SMAX. -> in SMAX dead agent action is fix as stop, not no-op.
+
+# 26.04.11
+* Change `use_allocated_targets` option SMAX.
+  * do not masking action space
+  * unify with hp-regen option: damage is ignored or diminished if attack a non-allocated enemey.
