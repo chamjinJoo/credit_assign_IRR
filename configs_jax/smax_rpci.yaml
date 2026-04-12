@@ -66,7 +66,7 @@ environment:
   
   # [Tar] Target Allocation: directly masking actions in Wrapper.
   use_allowed_targets: true
-  use_partial_damage_restore: false
+  use_partial_damage_restore: true
 
   # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
   use_cooperative_kill_bonus: false 

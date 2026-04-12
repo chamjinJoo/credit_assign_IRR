@@ -46,11 +46,11 @@ training:
 # Environment Configuration
 environment:
   env_name: "LBForaging"
-  num_agents: 2
-  field_size: 8
+  num_agents: 3
+  field_size: 11
   max_food: 2
-  player_level: [1, 1]
-  food_level: [1, 2]
+  player_level: [1, 2]
+  food_level: [1, 3]
   sight: 2
   max_episode_steps: 50
   force_coop: true
@@ -59,7 +59,7 @@ environment:
 # Weights & Biases Configuration
 wandb:
   use_wandb: false
-  project: "pci-mappo-lbforaging"
+  project: "pci-maarl-lbforaging"
   run_name: false # for dynamically generating run_name with env_id 
   tags: ["pci", "mappo", "multi-agent", "lbforaging"]
 

@@ -7,6 +7,7 @@ import gymnasium as gym
 import matplotlib.pyplot as plt
 import copy
 import torch
+from envs.smax_target_env import swap_to_target_aware_inner_smax
 MATPLOTLIB_AVAILABLE = True
 
 class MultiAgentEnv(ABC):
@@ -986,7 +987,8 @@ class LBForagingWrapper(MultiAgentEnv):
         force_coop: bool = False,
         player_level: Tuple[int, int] = (1, 1),
         food_level: Tuple[int, int] = (1, 3),
-        grid_observation: bool = True
+        grid_observation: bool = True,
+        obs_noise_std: float = 0.0
     ):
         super().__init__(num_agents=num_agents, seed=seed)
         
@@ -997,6 +999,8 @@ class LBForagingWrapper(MultiAgentEnv):
         self.food_level = food_level
         self.max_episode_steps = max_episode_steps
         self.force_coop = force_coop
+        self.grid_observation = grid_observation
+        self.obs_noise_std = obs_noise_std
 
         from gymnasium.envs.registration import register
         env_id = f"Foraging-{field_size}x{field_size}-{num_agents}p-{max_food}f"
@@ -1629,7 +1633,6 @@ class MPESimpleSpreadEnv(MultiAgentEnv):
     def close(self):
         self._env.close()
 
-
 class VMASWrapper(MultiAgentEnv):
     """
     Wrapper for VMAS scenarios using VMAS native vectorization when n_envs > 1.
@@ -1964,7 +1967,6 @@ class VMASWrapper(MultiAgentEnv):
         if hasattr(self._env, "close"):
             self._env.close()
 
-
 class VMASNavigationEnv(VMASWrapper):
     """VMAS navigation benchmark."""
 
@@ -1989,7 +1991,6 @@ class VMASNavigationEnv(VMASWrapper):
             **scenario_kwargs,
         )
 
-
 class VMASDispersionEnv(VMASWrapper):
     """VMAS dispersion benchmark."""
 
@@ -2013,7 +2014,6 @@ class VMASDispersionEnv(VMASWrapper):
             continuous_actions=continuous_actions,
             **scenario_kwargs,
         )
-
 
 class SMAXWrapper(MultiAgentEnv):
     """
@@ -2101,6 +2101,7 @@ class SMAXWrapper(MultiAgentEnv):
 
         step = num_enemies / max(1, num_allies)
         window = min(num_enemies, max(2, math.ceil(step) + 1))
+        # window = 3 # target size hard coding
         allowed_targets: Dict[int, List[int]] = {}
         for ally_id in range(num_allies):
             start = round(ally_id * step)
@@ -2180,6 +2181,22 @@ class SMAXWrapper(MultiAgentEnv):
                     merged[agent_id].sort()
 
         return merged
+
+    @staticmethod
+    def _build_allowed_target_matrix(
+        num_allies: int,
+        num_enemies: int,
+        allowed_targets: Optional[Dict[int, List[int]]],
+    ) -> np.ndarray:
+        matrix = np.ones((num_allies, num_enemies), dtype=np.float32)
+        if allowed_targets is None:
+            return matrix
+        matrix.fill(0.0)
+        for agent_id in range(num_allies):
+            for enemy_id in allowed_targets.get(agent_id, []):
+                if 0 <= enemy_id < num_enemies:
+                    matrix[agent_id, enemy_id] = 1.0
+        return matrix
 
     @staticmethod
     def _build_cooperative_kill_reward_tables(
@@ -2333,14 +2350,6 @@ class SMAXWrapper(MultiAgentEnv):
         else:
             self.allowed_targets = None
         self.use_partial_damage_restore = bool(use_partial_damage_restore)
-        self._allowed_target_matrix_np = np.ones((_num_allies, _num_enemies), dtype=np.float32)
-        if self.allowed_targets is not None:
-            self._allowed_target_matrix_np.fill(0.0)
-            for agent_id in range(_num_allies):
-                for enemy_id in self.allowed_targets.get(agent_id, []):
-                    if 0 <= enemy_id < _num_enemies:
-                        self._allowed_target_matrix_np[agent_id, enemy_id] = 1.0
-        self._allowed_target_matrix_jax = self._jnp.array(self._allowed_target_matrix_np)
 
         self.cooperative_kill_required_agents = self._build_cooperative_kill_assignments(
             _num_allies,
@@ -2354,6 +2363,21 @@ class SMAXWrapper(MultiAgentEnv):
                 self.cooperative_kill_required_agents,
                 _num_allies,
             )
+        self._allowed_target_matrix_np = self._build_allowed_target_matrix(
+            _num_allies,
+            _num_enemies,
+            self.allowed_targets,
+        )
+        self._allowed_target_matrix_jax = self._jnp.array(self._allowed_target_matrix_np)
+        if self.use_allowed_targets:
+            self._env = swap_to_target_aware_inner_smax(
+                self._env,
+                enemy_shoots=enemy_shoots,
+                attack_mode=attack_mode,
+                env_kwargs=env_kwargs,
+                allowed_target_matrix=self._allowed_target_matrix_np,
+                use_partial_damage_restore=self.use_partial_damage_restore,
+            )
         self._coop_required_mask_np, self._coop_reward_weights_np = (
             self._build_cooperative_kill_reward_tables(
                 self.cooperative_kill_required_agents,
@@ -2366,7 +2390,7 @@ class SMAXWrapper(MultiAgentEnv):
 
         if self.use_allowed_targets:
             mode = "partial" if self.use_partial_damage_restore else "full"
-            print(f"[SMAXWrapper] allowed_targets ({mode} damage restore): {self.allowed_targets}")
+            print(f"[SMAXWrapper] allowed_targets ({mode} source-level damage mask): {self.allowed_targets}")
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXWrapper] cooperative_kill_bonus: "
@@ -2479,13 +2503,13 @@ class SMAXWrapper(MultiAgentEnv):
         self._coop_attack_memory = attack_memory
         return bonus.astype(np.float32), np.where(coop_success)[0].tolist()
 
-    def _compute_restore_fraction_numpy(self, actions_by_agent: Dict[int, int]) -> np.ndarray:
-        restore_fraction = np.zeros(self.num_enemies, dtype=np.float32)
+    def _compute_damage_masked_enemy_mask_numpy(
+        self,
+        actions_by_agent: Dict[int, int],
+    ) -> np.ndarray:
+        masked_enemies = np.zeros(self.num_enemies, dtype=np.bool_)
         if not self.use_allowed_targets or self.allowed_targets is None:
-            return restore_fraction
-
-        total_attacks = np.zeros(self.num_enemies, dtype=np.float32)
-        off_target_attacks = np.zeros(self.num_enemies, dtype=np.float32)
+            return masked_enemies
 
         for agent_id in range(self.num_agents):
             action = int(actions_by_agent.get(agent_id, 0))
@@ -2494,52 +2518,10 @@ class SMAXWrapper(MultiAgentEnv):
             enemy_id = action - self._num_movement_actions
             if enemy_id < 0 or enemy_id >= self.num_enemies:
                 continue
-            total_attacks[enemy_id] += 1.0
             if self._allowed_target_matrix_np[agent_id, enemy_id] <= 0.0:
-                off_target_attacks[enemy_id] += 1.0
+                masked_enemies[enemy_id] = True
 
-        if self.use_partial_damage_restore:
-            valid = total_attacks > 0.0
-            restore_fraction[valid] = off_target_attacks[valid] / total_attacks[valid]
-        else:
-            restore_fraction = (off_target_attacks > 0.0).astype(np.float32)
-        return restore_fraction
-
-    def _apply_allowed_target_damage_mask_numpy(self, prev_state, next_state, actions_by_agent):
-        if not self.use_allowed_targets or self.allowed_targets is None:
-            return next_state, []
-
-        enemy_slice = slice(self._env.num_allies, self._env.num_allies + self.num_enemies)
-        prev_health = np.array(prev_state.state.unit_health, dtype=np.float32)
-        next_health = np.array(next_state.state.unit_health, dtype=np.float32)
-        prev_enemy_health = prev_health[enemy_slice]
-        next_enemy_health = next_health[enemy_slice]
-        inflicted_damage = np.maximum(prev_enemy_health - next_enemy_health, 0.0)
-        restore_fraction = self._compute_restore_fraction_numpy(actions_by_agent)
-        restored_damage = inflicted_damage * restore_fraction
-
-        if not np.any(restored_damage > 1e-6):
-            return next_state, []
-
-        corrected_enemy_health = np.minimum(
-            prev_enemy_health,
-            next_enemy_health + restored_damage,
-        )
-        corrected_health = next_health.copy()
-        corrected_health[enemy_slice] = corrected_enemy_health
-
-        corrected_alive = np.array(next_state.state.unit_alive, dtype=np.bool_)
-        corrected_alive[enemy_slice] = corrected_enemy_health > 0.0
-
-        corrected_inner = next_state.state.replace(
-            unit_health=self._jnp.array(corrected_health),
-            unit_alive=self._jnp.array(corrected_alive),
-        )
-        corrected_state = next_state.replace(state=corrected_inner)
-        corrected_terminal = self._env.is_terminal(corrected_state)
-        corrected_inner = corrected_inner.replace(terminal=corrected_terminal)
-        corrected_state = corrected_state.replace(state=corrected_inner)
-        return corrected_state, np.where(restored_damage > 1e-6)[0].tolist()
+        return masked_enemies
 
     def _compute_team_reward_numpy(self, prev_state, next_state) -> float:
         health_before = np.array(prev_state.state.unit_health, dtype=np.float32)
@@ -2606,11 +2588,10 @@ class SMAXWrapper(MultiAgentEnv):
         self._rng, step_key = self._jax.random.split(self._rng)
         _, next_state, _, _, _ = \
             self._env.step_env(step_key, self._state, jax_actions)
-        self._state, damage_masked_enemies = self._apply_allowed_target_damage_mask_numpy(
-            prev_state,
-            next_state,
-            actions,
-        )
+        self._state = next_state
+        damage_masked_enemies = np.where(
+            self._compute_damage_masked_enemy_mask_numpy(actions)
+        )[0].tolist()
         obs_dict = self._env.get_obs(self._state)
         observations = {}
         for i, key in enumerate(self._agent_keys):
@@ -2841,15 +2822,6 @@ class SMAXBatchWrapper(MultiAgentEnv):
                 )
         else:
             self.allowed_targets = None
-        self._allowed_target_matrix_np = np.ones((_num_allies, _num_enemies), dtype=np.float32)
-        if self.allowed_targets is not None:
-            self._allowed_target_matrix_np.fill(0.0)
-            for agent_id in range(_num_allies):
-                for enemy_id in self.allowed_targets.get(agent_id, []):
-                    if 0 <= enemy_id < _num_enemies:
-                        self._allowed_target_matrix_np[agent_id, enemy_id] = 1.0
-        self._allowed_target_matrix_jax = jnp.array(self._allowed_target_matrix_np)
-
         self.cooperative_kill_required_agents = SMAXWrapper._build_cooperative_kill_assignments(
             _num_allies,
             _num_enemies,
@@ -2861,6 +2833,21 @@ class SMAXBatchWrapper(MultiAgentEnv):
                 self.allowed_targets,
                 self.cooperative_kill_required_agents,
                 _num_allies,
+            )
+        self._allowed_target_matrix_np = SMAXWrapper._build_allowed_target_matrix(
+            _num_allies,
+            _num_enemies,
+            self.allowed_targets,
+        )
+        self._allowed_target_matrix_jax = jnp.array(self._allowed_target_matrix_np)
+        if self.use_allowed_targets:
+            self._env = swap_to_target_aware_inner_smax(
+                self._env,
+                enemy_shoots=enemy_shoots,
+                attack_mode=attack_mode,
+                env_kwargs=env_kwargs,
+                allowed_target_matrix=self._allowed_target_matrix_np,
+                use_partial_damage_restore=self.use_partial_damage_restore,
             )
 
         self._coop_required_mask_np, self._coop_reward_weights_np = (
@@ -2887,29 +2874,9 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self._batch_avail = jax.jit(jax.vmap(self._env.get_avail_actions))
         self._batch_terminal = jax.jit(jax.vmap(self._env.is_terminal))
 
-        def _single_env_step_auto_reset(step_key, reset_key, env_state, env_actions):
-            obs, new_state, rewards, dones, infos = self._env.step_env(step_key, env_state, env_actions)
-            del infos
-
-            all_done = dones["__all__"]
-            battle_won = ~jnp.any(new_state.state.unit_alive[self._env.num_allies:])
-
-            def _reset_branch(_):
-                reset_obs, reset_state = self._env.reset(reset_key)
-                return reset_obs, reset_state
-
-            def _keep_branch(_):
-                return obs, new_state
-
-            final_obs, final_state = jax.lax.cond(all_done, _reset_branch, _keep_branch, operand=None)
-            avail = self._env.get_avail_actions(final_state)
-            return final_obs, final_state, rewards, dones, avail, battle_won
-
-        self._batch_step_auto_reset = jax.jit(jax.vmap(_single_env_step_auto_reset))
-
         if self.use_allowed_targets:
             mode = "partial" if self.use_partial_damage_restore else "full"
-            print(f"[SMAXBatchWrapper] allowed_targets ({mode} damage restore): {self.allowed_targets}")
+            print(f"[SMAXBatchWrapper] allowed_targets ({mode} source-level damage mask): {self.allowed_targets}")
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXBatchWrapper] cooperative_kill_bonus: "
@@ -3079,9 +3046,9 @@ class SMAXBatchWrapper(MultiAgentEnv):
         bonus = event_scale @ self._coop_reward_weights_jax
         return bonus, updated_memory, coop_success
 
-    def _compute_restore_fraction_jax(self, actions):
+    def _compute_damage_masked_enemy_mask_jax(self, actions):
         if not self.use_allowed_targets or self.allowed_targets is None:
-            return self._jnp.zeros((actions.shape[0], self.num_enemies), dtype=self._jnp.float32)
+            return self._jnp.zeros((actions.shape[0], self.num_enemies), dtype=bool)
 
         attack_mask = actions >= self._num_movement_actions
         attack_targets = self._jnp.clip(
@@ -3099,39 +3066,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
             attack_one_hot * (1.0 - self._allowed_target_matrix_jax[None, :, :]),
             axis=1,
         )
-
-        if self.use_partial_damage_restore:
-            total_counts = self._jnp.sum(attack_one_hot, axis=1)
-            return self._jnp.where(total_counts > 0.0, off_target_counts / total_counts, 0.0)
-        return (off_target_counts > 0.0).astype(self._jnp.float32)
-
-    def _apply_allowed_target_damage_mask_jax(self, prev_env_state, next_env_state, actions):
-        if not self.use_allowed_targets or self.allowed_targets is None:
-            zero_mask = self._jnp.zeros((actions.shape[0], self.num_enemies), dtype=bool)
-            return next_env_state, zero_mask
-
-        enemy_slice = slice(self._env.num_allies, self._env.num_allies + self.num_enemies)
-        prev_enemy_health = prev_env_state.state.unit_health[:, enemy_slice]
-        next_enemy_health = next_env_state.state.unit_health[:, enemy_slice]
-        inflicted_damage = self._jnp.maximum(prev_enemy_health - next_enemy_health, 0.0)
-        restore_fraction = self._compute_restore_fraction_jax(actions)
-        restored_damage = inflicted_damage * restore_fraction
-        corrected_enemy_health = self._jnp.minimum(
-            prev_enemy_health,
-            next_enemy_health + restored_damage,
-        )
-
-        corrected_health = next_env_state.state.unit_health.at[:, enemy_slice].set(corrected_enemy_health)
-        corrected_alive = next_env_state.state.unit_alive.at[:, enemy_slice].set(corrected_enemy_health > 0.0)
-        corrected_inner = next_env_state.state.replace(
-            unit_health=corrected_health,
-            unit_alive=corrected_alive,
-        )
-        corrected_state = next_env_state.replace(state=corrected_inner)
-        corrected_terminal = self._batch_terminal(corrected_state)
-        corrected_inner = corrected_inner.replace(terminal=corrected_terminal)
-        corrected_state = corrected_state.replace(state=corrected_inner)
-        return corrected_state, restored_damage > 1e-6
+        return off_target_counts > 0.0
 
     def _compute_team_rewards_jax(self, prev_env_state, next_env_state):
         health_before = prev_env_state.state.unit_health
@@ -3222,10 +3157,9 @@ class SMAXBatchWrapper(MultiAgentEnv):
         _, new_states, _, _, _ = self._batch_step(
             step_keys_arr, self._batch_states, jax_actions
         )
-        corrected_states, damage_masked = self._apply_allowed_target_damage_mask_jax(
-            self._batch_states,
-            new_states,
-            self._jnp.array(actions_np, dtype=self._jnp.int32),
+        corrected_states = new_states
+        damage_masked = self._compute_damage_masked_enemy_mask_jax(
+            self._jnp.array(actions_np, dtype=self._jnp.int32)
         )
         obs_b = self._batch_obs(corrected_states)
         self._jax.block_until_ready(obs_b)
@@ -3358,11 +3292,6 @@ class SMAXBatchWrapper(MultiAgentEnv):
             env_state,
             jax_actions,
         )
-        next_env_state, _ = self._apply_allowed_target_damage_mask_jax(
-            env_state,
-            next_env_state,
-            actions,
-        )
         obs_b = self._batch_obs(next_env_state)
         next_enemy_health = next_env_state.state.unit_health[:, self._env.num_allies:]
         next_enemy_alive = next_env_state.state.unit_alive[:, self._env.num_allies:]
@@ -3427,14 +3356,6 @@ class SMAXBatchWrapper(MultiAgentEnv):
         obs_np = np.array(obs_b)
         return [
             {i: obs_np[e, i].astype(np.float32) for i in range(self.num_agents)}
-            for e in range(self.n_envs)
-        ]
-
-    def _rew_to_list(self, rew_b) -> List:
-        import numpy as np
-        rew_np = {k: np.array(rew_b[k]) for k in self._agent_keys}
-        return [
-            {i: float(rew_np[k][e]) for i, k in enumerate(self._agent_keys)}
             for e in range(self.n_envs)
         ]
 

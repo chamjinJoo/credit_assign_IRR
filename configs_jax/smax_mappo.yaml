@@ -52,14 +52,17 @@ environment:
   smacv2_position_generation: true
   smacv2_unit_type_generation: true
 
-  # Target Allocation: directly masking actions in Wrapper.
-  use_allowed_targets: false      # 비활성화: action masking 대신 hp_regen 사용
+  # [Tar] Target Allocation: directly masking actions in Wrapper.
+  use_allowed_targets: true
+  use_partial_damage_restore: true
 
-  # Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
-  use_cooperative_kill_bonus: true  # hp_regen과 중복 방지, 필요 시 활성화
+  # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
+  use_cooperative_kill_bonus: false 
+  cooperative_bonus_mode: "kill" # kill | damage
   cooperative_kill_window: 2
   cooperative_kill_bonus: 0.5
   cooperative_kill_owner_ratio: 0.7
+  cooperative_size: 2
 
 wandb:
   use_wandb: true

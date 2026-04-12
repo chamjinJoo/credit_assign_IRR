@@ -323,18 +323,12 @@ class JAXTrainer(Trainer):
                 avail_np = np.stack(
                     [np.array(avail_dict[k]) for k in agent_keys], axis=0
                 )  # (num_agents, action_dim)
-                if getattr(self.env, "use_allowed_targets", False):
-                    avail_np = avail_np * self.env._avail_mask_np
                 avail_batch = jnp.array(avail_np)[None]  # (1, num_agents, action_dim)
 
                 # 정책으로 행동 결정
                 actions, runner_state = self.algorithm.greedy_actions(
                     obs_batch, avail_batch, runner_state
                 )  # actions: (1, num_agents)
-
-                # allowed_targets sanitize
-                if getattr(self.env, "use_allowed_targets", False):
-                    actions = self.env._sanitize_actions_jax(actions)
 
                 # inner env용 actions dict 생성: {ally_key: scalar_action}
                 actions_dict = {k: actions[0, i] for i, k in enumerate(agent_keys)}

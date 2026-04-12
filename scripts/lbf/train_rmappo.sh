@@ -20,6 +20,15 @@ seed=42
 eval "$(conda shell.bash hook)"
 conda activate pcimarl
 
-python main.py --env ${env} --config ${config} --model ${model} --use-value-parameter-sharing ${use_value_parameter_sharing} \
-    --recurrent-N ${recurrent_N} --n-rollout-threads ${n_rollout_threads} --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --log-interval ${log_interval} --device ${device} --seed ${seed} --use-wandb --wandb-project pci-marl-lbf
+python main.py --env ${env} --config ${config} \
+    --model ${model} \
+    --use-value-parameter-sharing ${use_value_parameter_sharing} \
+    --recurrent-N ${recurrent_N} \
+    --n-rollout-threads ${n_rollout_threads} \
+    --max-steps ${max_steps_per_iteration} \
+    --max-iterations ${max_iterations} \
+    --log-interval ${log_interval} \
+    --device ${device} \
+    --seed ${seed} \
+    --use-wandb \
+    --wandb-project pci-marl-lbf
