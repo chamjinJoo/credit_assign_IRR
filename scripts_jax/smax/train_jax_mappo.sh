@@ -15,7 +15,7 @@ max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 device="cuda"  # recommended to use cuda if available, but default to cpu for safety
-seeds=(42 1 2 31 32)
+seeds=(42)
 run_in_background=false
 
 # test=false

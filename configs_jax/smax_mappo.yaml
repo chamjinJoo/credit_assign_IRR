@@ -19,7 +19,7 @@ algorithm:
   batch_size: 0 # unused
   num_batches: 4
   use_centralized_critic: true
-  add_agent_id: true
+  add_agent_id: false
 
 training:
   max_iterations: 1600

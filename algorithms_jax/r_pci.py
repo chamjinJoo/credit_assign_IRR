@@ -194,7 +194,7 @@ class JAXRPCIAlgorithm:
                 bridge_key,
                 (
                     jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
-                    jnp.zeros((1, (num_agents - 1) * obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, (num_agents - 1) * self.policy_obs_dim), dtype=jnp.float32),
                     jnp.zeros((1, self.bridge_hidden_dim), dtype=jnp.float32),
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
@@ -336,23 +336,15 @@ class JAXRPCIAlgorithm:
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
         env_for_actor = self._env_advantages_for_actor(env_advantages)
         orig_shape = env_for_actor.shape  # (T, E, N)
-        # Normalize each agent's slice independently (vectorized over agent dim).
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
-        env_norm = self._normalize_columns(env_flat)
-        pci_res  = self._normalize_columns(pci_flat)
 
-        # 1st normalization and combine:
-        combined = (env_norm + causal_lambda * pci_res).reshape(orig_shape)
-        # No 1st normalization:
-        # combined = (env_flat + causal_lambda * pci_res).reshape(orig_shape)
+        combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
 
-        env_norm = env_norm.reshape(orig_shape)
-        pci_res  = pci_res.reshape(orig_shape)
         info = {
-            "env_adv_std": float(jnp.std(env_norm)),
-            "pci_adv_res_std": float(jnp.std(pci_res)),
-            "pci_bonus_std": float(jnp.std(causal_lambda * pci_res)),
+            "env_adv_std": float(jnp.std(env_flat)),
+            "pci_adv_res_std": float(jnp.std(pci_flat)),
+            "pci_bonus_std": float(jnp.std(causal_lambda * pci_flat)),
             "combined_adv_std": float(jnp.std(combined)),
         }
         return combined, info
@@ -751,8 +743,7 @@ class JAXRPCIAlgorithm:
 
         obs_flat = rollout["obs"].reshape(flat_batch, self.num_agents, self.policy_obs_dim)
         local_obs = obs_flat.reshape(-1, self.policy_obs_dim)
-        raw_obs_flat = obs_flat[..., :self.obs_dim]
-        others_obs = gather_other_agent_obs(raw_obs_flat).reshape(-1, (self.num_agents - 1) * self.obs_dim)
+        others_obs = gather_other_agent_obs(obs_flat).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
         if self.use_recurrent_policy:
             hidden_all = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
             z = hidden_all.reshape(-1, self.actor_state_dim)
@@ -791,8 +782,7 @@ class JAXRPCIAlgorithm:
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
         obs = rollout["obs"]
         local_obs = obs.reshape(-1, self.policy_obs_dim)
-        raw_obs = obs[..., :self.obs_dim]
-        others_obs = gather_other_agent_obs(raw_obs).reshape(-1, (self.num_agents - 1) * self.obs_dim)
+        others_obs = gather_other_agent_obs(obs).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
         if self.use_recurrent_policy:
             hidden_others = gather_other_agent_obs(rollout["actor_hidden"]).reshape(-1, self.bridge_hidden_dim)
         else:

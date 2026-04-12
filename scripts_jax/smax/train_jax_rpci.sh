@@ -19,7 +19,7 @@ n_rollout_threads=8
 max_iterations=1600
 max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2
-device="cpu"
+device="cuda"
 seeds=(42)
 run_in_background=false
 
