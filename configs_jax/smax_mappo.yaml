@@ -54,7 +54,6 @@ environment:
 
   # Target Allocation: directly masking actions in Wrapper.
   use_allowed_targets: false      # 비활성화: action masking 대신 hp_regen 사용
-  allowed_target_window: 2
 
   # Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
   use_cooperative_kill_bonus: true  # hp_regen과 중복 방지, 필요 시 활성화

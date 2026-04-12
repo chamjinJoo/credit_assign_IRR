@@ -23,6 +23,8 @@ device="cuda"
 seeds=(42)
 run_in_background=false
 
+#checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"
+
 # conda activation (optional)
 if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"

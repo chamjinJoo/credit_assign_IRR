@@ -857,6 +857,7 @@ class JAXRPCIAlgorithm:
                 x_hid_norm = _standardize(batch["x_hid"])
                 gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
                 gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
+
             eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
             # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci. Remove it?
             reg_gram = self.tikhonov_gamma * eye + self.stabilizer_lambda * gram
@@ -865,6 +866,7 @@ class JAXRPCIAlgorithm:
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
             outcome_bridge_loss = jnp.mean(per_sample_loss)
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
+            
             diag = jnp.diag(gram)
             total_sum = jnp.sum(gram) - jnp.sum(diag)
             off_count = gram.shape[0] * max(gram.shape[0] - 1, 1)

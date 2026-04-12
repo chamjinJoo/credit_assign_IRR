@@ -154,6 +154,8 @@ def create_environment(env_config) -> MultiAgentEnv:
             allowed_targets=config_dict.get('allowed_targets', None),
             use_partial_damage_restore=config_dict.get('use_partial_damage_restore', False),
             use_cooperative_kill_bonus=config_dict.get('use_cooperative_kill_bonus', False),
+            cooperative_bonus_mode=config_dict.get('cooperative_bonus_mode', 'kill'),
+            cooperative_size=config_dict.get('cooperative_size', 2),
             cooperative_kill_window=config_dict.get('cooperative_kill_window', 2),
             cooperative_kill_bonus=config_dict.get('cooperative_kill_bonus', 2.0),
             cooperative_kill_owner_ratio=config_dict.get('cooperative_kill_owner_ratio', 0.7),

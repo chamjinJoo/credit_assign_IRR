@@ -66,6 +66,9 @@ class JAXRPCIAlgorithm:
         stabilizer_lambda: float = 1.0,
         normalize_returns: bool = True,
         use_recurrent_policy: bool = True,
+        print_bridge_predictions: bool = False,
+        bridge_prediction_print_samples: int = 1,
+        bridge_prediction_print_interval: int = 50,
         seed: int = 42,
         **_: Any,
     ):
@@ -94,6 +97,9 @@ class JAXRPCIAlgorithm:
         self.num_batches = max(1, num_batches)
         self.normalize_returns = normalize_returns
         self.use_recurrent_policy = use_recurrent_policy
+        self.print_bridge_predictions = bool(print_bridge_predictions)
+        self.bridge_prediction_print_samples = max(1, int(bridge_prediction_print_samples))
+        self.bridge_prediction_print_interval = max(1, int(bridge_prediction_print_interval))
         self.attack_action_threshold = self._infer_attack_action_threshold(action_dim)
         # SMAX: stop (attack_threshold-1) is always available even for dead agents.
         # SMAC: action 0 (no-op) is the dead-only action.
@@ -115,6 +121,7 @@ class JAXRPCIAlgorithm:
         self.stabilizer_lambda = stabilizer_lambda
         self.training_steps = 0
         self.latest_rollout: Optional[Dict[str, Any]] = None
+        self._bridge_prediction_debug_lines: list[str] = []
         self._rollout_fns: Dict[int, Any] = {}
 
         self.policy_obs_dim = obs_dim + num_agents if add_agent_id else obs_dim
@@ -334,7 +341,12 @@ class JAXRPCIAlgorithm:
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
         env_norm = self._normalize_columns(env_flat)
         pci_res  = self._normalize_columns(pci_flat)
+
+        # 1st normalization and combine:
         combined = (env_norm + causal_lambda * pci_res).reshape(orig_shape)
+        # No 1st normalization:
+        # combined = (env_flat + causal_lambda * pci_res).reshape(orig_shape)
+
         env_norm = env_norm.reshape(orig_shape)
         pci_res  = pci_res.reshape(orig_shape)
         info = {
@@ -844,6 +856,104 @@ class JAXRPCIAlgorithm:
         no_valid_cf_rate = jnp.mean(no_valid_cf.astype(jnp.float32))
         return actual_pred, baseline, all_preds, no_valid_cf_rate
 
+    def _update_bridge_prediction_debug_lines(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        actions: jnp.ndarray,
+        reward_targets: jnp.ndarray,
+        probs: jnp.ndarray,
+        avail_actions: jnp.ndarray,
+        actual_pred: jnp.ndarray,
+        baseline: jnp.ndarray,
+        all_preds: jnp.ndarray,
+    ) -> None:
+        if not self.print_bridge_predictions:
+            self._bridge_prediction_debug_lines = []
+            return
+
+        actions_np = tree_to_host(actions)
+        reward_targets_np = tree_to_host(reward_targets)
+        probs_np = tree_to_host(probs)
+        avail_np = tree_to_host(avail_actions)
+        actual_np = tree_to_host(actual_pred)
+        baseline_np = tree_to_host(baseline)
+        all_preds_np = tree_to_host(all_preds)
+
+        rollout_actions = rollout["actions"]
+        time_steps, num_envs, _ = rollout_actions.shape
+        flat_states = time_steps * num_envs
+
+        if self.action_dim > 1:
+            alive_flat = tree_to_host(self._alive_from_avail(rollout["avail_actions"]).reshape(-1))
+            state_alive = alive_flat.reshape(flat_states, self.num_agents).any(axis=-1)
+        else:
+            state_alive = jnp.ones((flat_states,), dtype=bool)
+            state_alive = tree_to_host(state_alive)
+
+        selected_states = []
+        for state_idx in range(flat_states):
+            if bool(state_alive[state_idx]):
+                selected_states.append(state_idx)
+            if len(selected_states) >= self.bridge_prediction_print_samples:
+                break
+
+        if not selected_states:
+            self._bridge_prediction_debug_lines = ["Bridge predictions: no alive rollout states available."]
+            return
+
+        sampled_coords = [(state_idx // num_envs, state_idx % num_envs) for state_idx in selected_states]
+        lines = [
+            f"Bridge predictions averaged over {len(selected_states)} rollout states: {sampled_coords}"
+        ]
+        for agent_id in range(self.num_agents):
+            flat_indices = [state_idx * self.num_agents + agent_id for state_idx in selected_states]
+            factual_preds = []
+            baseline_preds = []
+            target_preds = []
+            action_parts = []
+
+            for flat_idx in flat_indices:
+                factual_pred = actual_np[flat_idx]
+                baseline_pred = baseline_np[flat_idx]
+                target_pred = reward_targets_np[flat_idx]
+                factual_preds.append(float(factual_pred[0]) if getattr(factual_pred, "shape", ()) else float(factual_pred))
+                baseline_preds.append(float(baseline_pred[0]) if getattr(baseline_pred, "shape", ()) else float(baseline_pred))
+                target_preds.append(float(target_pred[0]) if getattr(target_pred, "shape", ()) else float(target_pred))
+
+            for action_id in range(self.action_dim):
+                pred_values = []
+                prob_values = []
+                factual_hits = 0
+                avail_hits = 0
+                for flat_idx in flat_indices:
+                    pred = all_preds_np[flat_idx, action_id]
+                    pred_values.append(float(pred[0]) if getattr(pred, "shape", ()) else float(pred))
+                    prob_values.append(float(probs_np[flat_idx, action_id]))
+                    factual_hits += int(int(actions_np[flat_idx]) == action_id)
+                    avail_hits += int(avail_np[flat_idx, action_id] > 0)
+                action_parts.append(
+                    f"{action_id}:{sum(pred_values)/len(pred_values):.4f}"
+                    + f"(p={sum(prob_values)/len(prob_values):.3f},"
+                    + f"f={factual_hits/len(flat_indices):.2f},"
+                    + f"avail={avail_hits/len(flat_indices):.2f})"
+                )
+
+            lines.append(
+                "  "
+                + f"agent {agent_id}: target_mean={sum(target_preds)/len(target_preds):.4f}, "
+                + f"factual_mean={sum(factual_preds)/len(factual_preds):.4f}, "
+                + f"baseline_mean={sum(baseline_preds)/len(baseline_preds):.4f}, "
+                + f"delta_mean={(sum(target_preds)/len(target_preds)) - (sum(baseline_preds)/len(baseline_preds)):.4f}, "
+                + f"actions=[{' | '.join(action_parts)}]"
+            )
+
+        self._bridge_prediction_debug_lines = lines
+
+    def consume_bridge_prediction_debug_lines(self) -> list[str]:
+        lines = list(self._bridge_prediction_debug_lines)
+        self._bridge_prediction_debug_lines = []
+        return lines
+
     @partial(jax.jit, static_argnums=0)
     def _actor_update_step(
         self,
@@ -1085,6 +1195,7 @@ class JAXRPCIAlgorithm:
         if baseline_type not in ("weighted", "averaged"):
             raise ValueError(f"Unsupported baseline_type for JAXRPCIAlgorithm: {baseline_type}")
         if self.bridge_state is None or self.get_current_causal_lambda() == 0.0:
+            self._bridge_prediction_debug_lines = []
             zeros = jnp.zeros(rollout["actions"].shape + (self.num_agents,), dtype=jnp.float32)
             return zeros, {
                 "causal_lambda": self.get_current_causal_lambda(),
@@ -1113,6 +1224,17 @@ class JAXRPCIAlgorithm:
             valid_non_factual = factual_mask * avail_actions  # (B*N, action_dim)
             denom = jnp.clip(valid_non_factual.sum(axis=-1, keepdims=True), a_min=1.0)
             baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
+
+        self._update_bridge_prediction_debug_lines(
+            rollout,
+            actions,
+            reward_targets,
+            probs,
+            avail_actions,
+            actual_pred,
+            baseline,
+            all_preds,
+        )
 
         actual_team_reward = reward_targets
         raw_effects = actual_team_reward - baseline

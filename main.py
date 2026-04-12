@@ -376,6 +376,9 @@ def create_algorithm(env, config):
             clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
             tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
             stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
+            print_bridge_predictions=getattr(algorithm_config, 'print_bridge_predictions', False),
+            bridge_prediction_print_samples=getattr(algorithm_config, 'bridge_prediction_print_samples', 1),
+            bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
             seed=getattr(config.training, 'seed', 42),
         )
     elif algorithm_type == 'coma':
@@ -660,6 +663,8 @@ def main():
                 allowed_targets=getattr(env_config, 'allowed_targets', None),
                 use_partial_damage_restore=getattr(env_config, 'use_partial_damage_restore', False),
                 use_cooperative_kill_bonus=getattr(env_config, 'use_cooperative_kill_bonus', False),
+                cooperative_bonus_mode=getattr(env_config, 'cooperative_bonus_mode', 'kill'),
+                cooperative_size=getattr(env_config, 'cooperative_size', 2),
                 cooperative_kill_window=getattr(env_config, 'cooperative_kill_window', 2),
                 cooperative_kill_bonus=getattr(env_config, 'cooperative_kill_bonus', 2.0),
                 cooperative_kill_owner_ratio=getattr(env_config, 'cooperative_kill_owner_ratio', 0.7),

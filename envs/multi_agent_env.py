@@ -2114,8 +2114,10 @@ class SMAXWrapper(MultiAgentEnv):
         num_allies: int,
         num_enemies: int,
         allowed_targets: Optional[Dict[int, List[int]]] = None,
+        cooperative_size: int = 2,
     ) -> Dict[int, List[int]]:
         required_agents: Dict[int, List[int]] = {}
+        cooperative_size = max(1, int(cooperative_size))
 
         for enemy_id in range(num_enemies):
             allowed_agents = []
@@ -2126,31 +2128,32 @@ class SMAXWrapper(MultiAgentEnv):
                     if enemy_id in allowed_targets.get(agent_id, [])
                 ]
 
-            if not allowed_agents:
-                owner = enemy_id % max(1, num_allies)
-                if num_allies <= 1:
-                    required_agents[enemy_id] = [owner]
-                else:
-                    required_agents[enemy_id] = [owner, (owner + 1) % num_allies]
-                continue
-
             preferred_owner = enemy_id % max(1, num_allies)
-            owner = preferred_owner if preferred_owner in allowed_agents else allowed_agents[0]
-            if num_allies <= 1:
-                required_agents[enemy_id] = [owner]
-                continue
+            primary_pool = allowed_agents if allowed_agents else list(range(num_allies))
+            owner = preferred_owner if preferred_owner in primary_pool else primary_pool[0]
 
-            partner = None
+            coalition: List[int] = [owner]
+            seen = {owner}
+            target_size = min(cooperative_size, num_allies)
+
             for offset in range(1, num_allies):
-                candidate = (owner + offset) % num_allies
-                if candidate in allowed_agents and candidate != owner:
-                    partner = candidate
+                if len(coalition) >= target_size:
                     break
+                candidate = (owner + offset) % num_allies
+                if candidate in primary_pool and candidate not in seen:
+                    coalition.append(candidate)
+                    seen.add(candidate)
 
-            if partner is None:
-                partner = (owner + 1) % num_allies
+            if len(coalition) < target_size:
+                for offset in range(1, num_allies):
+                    if len(coalition) >= target_size:
+                        break
+                    candidate = (owner + offset) % num_allies
+                    if candidate not in seen:
+                        coalition.append(candidate)
+                        seen.add(candidate)
 
-            required_agents[enemy_id] = [owner, partner] if partner != owner else [owner]
+            required_agents[enemy_id] = coalition
 
         return required_agents
 
@@ -2234,9 +2237,11 @@ class SMAXWrapper(MultiAgentEnv):
         allowed_targets: Dict[int, List[int]] = None,
         use_partial_damage_restore: bool = False,
         use_cooperative_kill_bonus: bool = False,
+        cooperative_bonus_mode: str = "kill",
         cooperative_kill_window: int = 2,
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
+        cooperative_size: int = 2,
         **kwargs
     ):
         try:
@@ -2287,6 +2292,13 @@ class SMAXWrapper(MultiAgentEnv):
         self.map_name = map_name
         self.max_steps = max_steps
         self.use_cooperative_kill_bonus = use_cooperative_kill_bonus
+        self.cooperative_bonus_mode = str(cooperative_bonus_mode).lower()
+        if self.cooperative_bonus_mode not in ("kill", "damage"):
+            raise ValueError(
+                f"Unsupported cooperative_bonus_mode: {cooperative_bonus_mode}. "
+                "Use 'kill' or 'damage'."
+            )
+        self.cooperative_size = max(1, int(cooperative_size))
         self.cooperative_kill_window = max(1, int(cooperative_kill_window))
         self.cooperative_kill_bonus = float(cooperative_kill_bonus)
         self.cooperative_kill_owner_ratio = float(cooperative_kill_owner_ratio)
@@ -2334,6 +2346,7 @@ class SMAXWrapper(MultiAgentEnv):
             _num_allies,
             _num_enemies,
             self.allowed_targets,
+            self.cooperative_size,
         )
         if self.use_allowed_targets and self.use_cooperative_kill_bonus:
             self.allowed_targets = self._augment_allowed_targets_with_required_agents(
@@ -2357,6 +2370,8 @@ class SMAXWrapper(MultiAgentEnv):
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXWrapper] cooperative_kill_bonus: "
+                f"mode={self.cooperative_bonus_mode}, "
+                f"cooperative_size={self.cooperative_size}, "
                 f"window={self.cooperative_kill_window}, bonus={self.cooperative_kill_bonus}, "
                 f"required_agents={self.cooperative_kill_required_agents}"
             )
@@ -2423,6 +2438,9 @@ class SMAXWrapper(MultiAgentEnv):
 
     def _apply_cooperative_kill_bonus_numpy(
         self,
+        enemy_unit_types: np.ndarray,
+        prev_enemy_health: np.ndarray,
+        next_enemy_health: np.ndarray,
         prev_enemy_alive: np.ndarray,
         next_enemy_alive: np.ndarray,
         actions_by_agent: Dict[int, int],
@@ -2439,16 +2457,25 @@ class SMAXWrapper(MultiAgentEnv):
                     attack_memory[agent_id, enemy_id] = self.cooperative_kill_window
 
         killed_mask = prev_enemy_alive & (~next_enemy_alive)
+        damage = np.maximum(prev_enemy_health - next_enemy_health, 0.0)
+        damage_ratio = damage / np.maximum(
+            self._unit_type_health_np[np.array(enemy_unit_types, dtype=np.int32)],
+            1.0e-8,
+        )
+        damaged_mask = damage > 1.0e-8
         recent_attacks = attack_memory > 0
         coop_ready = np.all(
             np.where(self._coop_required_mask_np, recent_attacks.T, True),
             axis=-1,
         )
-        coop_success = killed_mask & coop_ready
+        if self.cooperative_bonus_mode == "kill":
+            coop_success = killed_mask & coop_ready
+            event_scale = coop_success.astype(np.float32) * self.cooperative_kill_bonus
+        else:
+            coop_success = damaged_mask & coop_ready
+            event_scale = damage_ratio.astype(np.float32) * coop_success.astype(np.float32) * self.cooperative_kill_bonus
 
-        bonus = coop_success.astype(np.float32) @ (
-            self.cooperative_kill_bonus * self._coop_reward_weights_np
-        )
+        bonus = event_scale @ self._coop_reward_weights_np
         self._coop_attack_memory = attack_memory
         return bonus.astype(np.float32), np.where(coop_success)[0].tolist()
 
@@ -2561,6 +2588,14 @@ class SMAXWrapper(MultiAgentEnv):
             prev_state.state.unit_alive[self._env.num_allies:],
             dtype=np.bool_,
         )
+        prev_enemy_health = np.array(
+            prev_state.state.unit_health[self._env.num_allies:],
+            dtype=np.float32,
+        )
+        enemy_unit_types = np.array(
+            prev_state.state.unit_types[self._env.num_allies:],
+            dtype=np.int32,
+        )
 
         # Dict[int, int] → Dict[str, jnp.int32]
         jax_actions = {
@@ -2588,7 +2623,14 @@ class SMAXWrapper(MultiAgentEnv):
             self._state.state.unit_alive[self._env.num_allies:],
             dtype=np.bool_,
         )
+        next_enemy_health = np.array(
+            self._state.state.unit_health[self._env.num_allies:],
+            dtype=np.float32,
+        )
         coop_bonus, cooperative_kills = self._apply_cooperative_kill_bonus_numpy(
+            enemy_unit_types,
+            prev_enemy_health,
+            next_enemy_health,
             prev_enemy_alive,
             next_enemy_alive,
             actions,
@@ -2702,6 +2744,8 @@ class SMAXBatchWrapper(MultiAgentEnv):
         allowed_targets: Dict[int, List[int]] = None,
         use_partial_damage_restore: bool = False,
         use_cooperative_kill_bonus: bool = True,
+        cooperative_bonus_mode: str = "kill",
+        cooperative_size: int = 2,
         cooperative_kill_window: int = 2,
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
@@ -2763,6 +2807,13 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self.max_steps = max_steps
         self.use_individual_rewards = use_individual_rewards
         self.use_cooperative_kill_bonus = use_cooperative_kill_bonus
+        self.cooperative_bonus_mode = str(cooperative_bonus_mode).lower()
+        if self.cooperative_bonus_mode not in ("kill", "damage"):
+            raise ValueError(
+                f"Unsupported cooperative_bonus_mode: {cooperative_bonus_mode}. "
+                "Use 'kill' or 'damage'."
+            )
+        self.cooperative_size = max(1, int(cooperative_size))
         self.cooperative_kill_window = max(1, int(cooperative_kill_window))
         self.cooperative_kill_bonus = float(cooperative_kill_bonus)
         self.cooperative_kill_owner_ratio = float(cooperative_kill_owner_ratio)
@@ -2803,6 +2854,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
             _num_allies,
             _num_enemies,
             self.allowed_targets,
+            self.cooperative_size,
         )
         if self.use_allowed_targets and self.use_cooperative_kill_bonus:
             self.allowed_targets = SMAXWrapper._augment_allowed_targets_with_required_agents(
@@ -2861,6 +2913,8 @@ class SMAXBatchWrapper(MultiAgentEnv):
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXBatchWrapper] cooperative_kill_bonus: "
+                f"mode={self.cooperative_bonus_mode}, "
+                f"cooperative_size={self.cooperative_size}, "
                 f"window={self.cooperative_kill_window}, bonus={self.cooperative_kill_bonus}, "
                 f"required_agents={self.cooperative_kill_required_agents}"
             )
@@ -2935,6 +2989,9 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self,
         attack_memory: np.ndarray,
         actions: np.ndarray,
+        enemy_unit_types: np.ndarray,
+        prev_enemy_health: np.ndarray,
+        next_enemy_health: np.ndarray,
         prev_enemy_alive: np.ndarray,
         next_enemy_alive: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -2955,21 +3012,31 @@ class SMAXBatchWrapper(MultiAgentEnv):
             )
 
         killed_mask = prev_enemy_alive & (~next_enemy_alive)
+        enemy_max_health = np.maximum(self._unit_type_health_np[enemy_unit_types], 1.0e-8)
+        damage = np.maximum(prev_enemy_health - next_enemy_health, 0.0)
+        damage_ratio = damage / enemy_max_health
+        damaged_mask = damage > 1.0e-8
         recent_attacks = np.transpose(updated_memory > 0, (0, 2, 1))
         coop_ready = np.all(
             np.where(self._coop_required_mask_np[None, :, :], recent_attacks, True),
             axis=-1,
         )
-        coop_success = killed_mask & coop_ready
-        bonus = coop_success.astype(np.float32) @ (
-            self.cooperative_kill_bonus * self._coop_reward_weights_np
-        )
+        if self.cooperative_bonus_mode == "kill":
+            coop_success = killed_mask & coop_ready
+            event_scale = coop_success.astype(np.float32) * self.cooperative_kill_bonus
+        else:
+            coop_success = damaged_mask & coop_ready
+            event_scale = damage_ratio.astype(np.float32) * coop_success.astype(np.float32) * self.cooperative_kill_bonus
+        bonus = event_scale @ self._coop_reward_weights_np
         return bonus.astype(np.float32), updated_memory, coop_success
 
     def _apply_cooperative_kill_bonus_jax(
         self,
         attack_memory,
         actions,
+        enemy_unit_types,
+        prev_enemy_health,
+        next_enemy_health,
         prev_enemy_alive,
         next_enemy_alive,
     ):
@@ -2994,15 +3061,22 @@ class SMAXBatchWrapper(MultiAgentEnv):
         updated_memory = self._jnp.maximum(updated_memory, current_targets)
 
         killed_mask = prev_enemy_alive & (~next_enemy_alive)
+        enemy_max_health = self._jnp.maximum(self._unit_type_health_jax[enemy_unit_types], 1.0e-8)
+        damage = self._jnp.maximum(prev_enemy_health - next_enemy_health, 0.0)
+        damage_ratio = damage / enemy_max_health
+        damaged_mask = damage > 1.0e-8
         recent_attacks = self._jnp.transpose(updated_memory > 0, (0, 2, 1))
         coop_ready = self._jnp.all(
             self._jnp.where(self._coop_required_mask_jax[None, :, :], recent_attacks, True),
             axis=-1,
         )
-        coop_success = killed_mask & coop_ready
-        bonus = coop_success.astype(self._jnp.float32) @ (
-            self.cooperative_kill_bonus * self._coop_reward_weights_jax
-        )
+        if self.cooperative_bonus_mode == "kill":
+            coop_success = killed_mask & coop_ready
+            event_scale = coop_success.astype(self._jnp.float32) * self.cooperative_kill_bonus
+        else:
+            coop_success = damaged_mask & coop_ready
+            event_scale = damage_ratio.astype(self._jnp.float32) * coop_success.astype(self._jnp.float32) * self.cooperative_kill_bonus
+        bonus = event_scale @ self._coop_reward_weights_jax
         return bonus, updated_memory, coop_success
 
     def _compute_restore_fraction_jax(self, actions):
@@ -3133,6 +3207,14 @@ class SMAXBatchWrapper(MultiAgentEnv):
             self._batch_states.state.unit_alive[:, self._env.num_allies:],
             dtype=np.bool_,
         )
+        prev_enemy_health = np.array(
+            self._batch_states.state.unit_health[:, self._env.num_allies:],
+            dtype=np.float32,
+        )
+        enemy_unit_types = np.array(
+            self._batch_states.state.unit_types[:, self._env.num_allies:],
+            dtype=np.int32,
+        )
 
         self._rng, *step_keys = self._jax.random.split(self._rng, self.n_envs + 1)
         step_keys_arr = self._jnp.stack(step_keys)
@@ -3151,6 +3233,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
             corrected_states.state.unit_alive[:, self._env.num_allies:],
             dtype=np.bool_,
         )
+        next_enemy_health = np.array(
+            corrected_states.state.unit_health[:, self._env.num_allies:],
+            dtype=np.float32,
+        )
         rew_stacked = np.array(
             self._compute_team_rewards_jax(self._batch_states, corrected_states),
             dtype=np.float32,
@@ -3158,6 +3244,9 @@ class SMAXBatchWrapper(MultiAgentEnv):
         coop_bonus, self._coop_attack_memory_np, _ = self._apply_cooperative_kill_bonus_numpy_batch(
             self._coop_attack_memory_np,
             actions_np,
+            enemy_unit_types,
+            prev_enemy_health,
+            next_enemy_health,
             prev_enemy_alive,
             next_enemy_alive,
         )
@@ -3262,6 +3351,8 @@ class SMAXBatchWrapper(MultiAgentEnv):
         rng, *step_keys = self._jax.random.split(rng, self.n_envs + 1)
         step_keys_arr = self._jnp.stack(step_keys)
         prev_enemy_alive = env_state.state.unit_alive[:, self._env.num_allies:]
+        enemy_unit_types = env_state.state.unit_types[:, self._env.num_allies:]
+        prev_enemy_health = env_state.state.unit_health[:, self._env.num_allies:]
         _, next_env_state, _, _, _ = self._batch_step(
             step_keys_arr,
             env_state,
@@ -3273,12 +3364,16 @@ class SMAXBatchWrapper(MultiAgentEnv):
             actions,
         )
         obs_b = self._batch_obs(next_env_state)
+        next_enemy_health = next_env_state.state.unit_health[:, self._env.num_allies:]
         next_enemy_alive = next_env_state.state.unit_alive[:, self._env.num_allies:]
         battle_won = ~self._jnp.any(next_enemy_alive, axis=-1)
         rewards_stacked = self._compute_team_rewards_jax(env_state, next_env_state)
         coop_bonus, coop_attack_memory, _ = self._apply_cooperative_kill_bonus_jax(
             coop_attack_memory,
             actions,
+            enemy_unit_types,
+            prev_enemy_health,
+            next_enemy_health,
             prev_enemy_alive,
             next_enemy_alive,
         )

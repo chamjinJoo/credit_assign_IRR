@@ -344,3 +344,4 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * Change `use_allocated_targets` option SMAX.
   * do not masking action space
   * unify with hp-regen option: damage is ignored or diminished if attack a non-allocated enemey.
+  

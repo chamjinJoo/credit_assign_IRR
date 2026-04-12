@@ -1125,6 +1125,20 @@ class Trainer:
                 if self._is_eval_only_advantage_metric(key):
                     continue
                 self._log_update_metric_line(key, value, update_info)
+
+        bridge_print_interval = max(
+            1,
+            int(getattr(self.algorithm, "bridge_prediction_print_interval", 50)),
+        )
+        if (
+            hasattr(self.algorithm, "consume_bridge_prediction_debug_lines")
+            and self.iteration % bridge_print_interval == 0
+        ):
+            bridge_debug_lines = self.algorithm.consume_bridge_prediction_debug_lines()
+            if bridge_debug_lines:
+                self.logger.info("  Bridge Prediction Debug:")
+                for line in bridge_debug_lines:
+                    self.logger.info(f"    {line}")
         
         # Log to wandb
         if self.use_wandb:

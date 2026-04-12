@@ -52,6 +52,9 @@ class AlgorithmConfig:
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     train_naivepredictor: bool = False  # Train naive predictor for causal baseline
+    print_bridge_predictions: bool = False  # Print console-only bridge predictions during training
+    bridge_prediction_print_samples: int = 10  # Number of rollout states to average per log event
+    bridge_prediction_print_interval: int = 50  # Print bridge predictions every N iterations
 
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior
@@ -160,10 +163,11 @@ class EnvironmentConfig:
     enemy_shoots: bool = True
     attack_mode: str = "closest"
     use_allowed_targets: bool = False
-    allowed_target_window: int = 2
     allowed_targets: Optional[Dict[int, Any]] = None
     use_partial_damage_restore: bool = False
     use_cooperative_kill_bonus: bool = False
+    cooperative_bonus_mode: str = "kill"
+    coop_size: int = 2
     cooperative_kill_window: int = 2
     cooperative_kill_bonus: float = 2.0
     cooperative_kill_owner_ratio: float = 0.7
@@ -270,9 +274,11 @@ class EnvironmentConfig:
             'smax': {
                 'map_name', 'max_steps',
                 'use_individual_rewards', 'enemy_shoots', 'attack_mode',
-                'use_allowed_targets', 'allowed_target_window', 'allowed_targets',
+                'use_allowed_targets', 'allowed_targets',
                 'use_partial_damage_restore',
                 'use_cooperative_kill_bonus',
+                'cooperative_bonus_mode',
+                'coop_size',
                 'cooperative_kill_window', 'cooperative_kill_bonus', 'cooperative_kill_owner_ratio',
                 'map_width', 'map_height', 'world_steps_per_env_step',
                 'time_per_step', 'see_enemy_actions', 'won_battle_bonus',
