@@ -24,9 +24,16 @@ algorithm:
   global_reward: true
   use_centralized_critic: false
   add_agent_id: true             # 무조건 true, false시 성능 급감. IPPO/MAPPO도 마찬가지
-  causal_lambda: 1.0
+  
   causal_lambda_schedule: false
+  causal_lambda_start: 0.0
+  causal_lambda_final: 1.0
+  causal_lambda_startingpoint: 640000    # 100 iter (steps/iter = 6400) — bridge만 먼저 학습
+  causal_lambda_warmup_steps: 960000     # 150 iter (steps/iter = 6400) 동안 0→1 선형 증가
+  causal_lambda: 1.0
+  
   clip_delta: 0.0
+  
   tikhonov_gamma: 1.0e-4
   normalize_returns: true
   print_bridge_predictions: true # debugging flag to print bridge predictions.

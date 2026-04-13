@@ -13,8 +13,10 @@ VERY_NEGATIVE = -1.0e9
 
 # Orthogonal initializer with ReLU gain (sqrt(2)), matching Torch MLPBase(use_orthogonal=True)
 _ORTH_RELU = nn.initializers.orthogonal(scale=math.sqrt(2))
-# Orthogonal initializer with unit scale, used for GRU kernels and output layers
+# Orthogonal initializer with unit scale, used for GRU kernels and critic output layers
 _ORTH_UNIT = nn.initializers.orthogonal(scale=1.0)
+# Orthogonal initializer with small scale for actor output layer (near-uniform initial policy)
+_ORTH_ACTOR_OUT = nn.initializers.orthogonal(scale=0.01)
 
 
 def make_gru_cell(hidden_dim: int) -> nn.GRUCell:
@@ -40,9 +42,9 @@ class RecurrentActor(nn.Module):
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         # Matches Torch RNNPolicyNetwork:
-        #   Linear → ReLU → LayerNorm → GRU → LayerNorm → Linear(logits)
+        #   Linear(orth,√2) → ReLU → LayerNorm → GRU(orth) → LayerNorm → Linear(orth,0.01)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
-        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
 
@@ -51,7 +53,7 @@ class RecurrentActor(nn.Module):
         new_hidden, core_out = gru(hidden, x)
         core_out = nn.LayerNorm()(core_out)
 
-        logits = nn.Dense(self.action_dim)(core_out)
+        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_ACTOR_OUT)(core_out)
         return new_hidden, logits
 
 
@@ -68,9 +70,9 @@ class RecurrentCritic(nn.Module):
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         # Matches Torch RNNValueNetwork:
-        #   Linear → ReLU → LayerNorm → GRU → LayerNorm → Linear(value)
+        #   Linear(orth,√2) → ReLU → LayerNorm → GRU(orth) → LayerNorm → Linear(orth,1.0)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
-        x = nn.Dense(self.hidden_dim)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
 
@@ -79,7 +81,7 @@ class RecurrentCritic(nn.Module):
         new_hidden, core_out = gru(hidden, x)
         core_out = nn.LayerNorm()(core_out)
 
-        values = nn.Dense(self.output_dim)(core_out)
+        values = nn.Dense(self.output_dim, kernel_init=_ORTH_UNIT)(core_out)
         if self.output_dim == 1:
             values = values.squeeze(-1)
         return new_hidden, values
@@ -104,7 +106,7 @@ class FeedForwardActor(nn.Module):
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        logits = nn.Dense(self.action_dim)(x)
+        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_ACTOR_OUT)(x)
         return hidden, logits
 
 
@@ -127,7 +129,7 @@ class FeedForwardCritic(nn.Module):
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        values = nn.Dense(self.output_dim)(x)
+        values = nn.Dense(self.output_dim, kernel_init=_ORTH_UNIT)(x)
         if self.output_dim == 1:
             values = values.squeeze(-1)
         return hidden, values
@@ -158,7 +160,7 @@ class CausalBridgeNetwork(nn.Module):
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        return nn.Dense(self.num_agents)(x)
+        return nn.Dense(self.num_agents, kernel_init=_ORTH_UNIT)(x)
 
 
 def make_train_state(

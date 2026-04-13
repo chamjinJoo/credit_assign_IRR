@@ -344,4 +344,8 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * Change `use_allocated_targets` option SMAX.
   * do not masking action space
   * unify with hp-regen option: damage is ignored or diminished if attack a non-allocated enemey.
-  
+
+# 26.04.13
+* Fix handling no available counterfactual (cf) baseline case -> if no vaild cf, set delta=0 so that only using raw reward.
+* Fix Adv normalization to mask dead agent. Dead information affected to others during normalization. 
+* Fix layer init.

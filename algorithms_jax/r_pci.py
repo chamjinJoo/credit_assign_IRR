@@ -295,12 +295,27 @@ class JAXRPCIAlgorithm:
         std = jnp.clip(signal.std(), a_min=1.0e-8)
         return (signal - signal.mean()) / std
 
-    def _normalize_actor_advantages(self, advantages: jnp.ndarray) -> jnp.ndarray:
+    def _normalize_actor_advantages(
+        self,
+        advantages: jnp.ndarray,
+        alive_masks: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
         if advantages.shape[0] <= 1:
             return jnp.zeros_like(advantages)
-        centered = advantages - advantages.mean(axis=0, keepdims=True)
-        sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
-        denom = jnp.maximum(advantages.shape[0] - 1, 1)
+        if alive_masks is not None:
+            # Compute mean/std only over alive agent steps so dead agents'
+            # near-zero advantages do not distort the normalization statistics.
+            w = alive_masks.astype(jnp.float32)          # (T*E, N)
+            counts = w.sum(axis=0, keepdims=True)         # (1, N)
+            safe_counts = jnp.maximum(counts, 1.0)
+            mean = (advantages * w).sum(axis=0, keepdims=True) / safe_counts
+            centered = advantages - mean
+            sq_sum = (jnp.square(centered) * w).sum(axis=0, keepdims=True)
+            denom = jnp.maximum(counts - 1.0, 1.0)       # Bessel correction
+        else:
+            centered = advantages - advantages.mean(axis=0, keepdims=True)
+            sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
+            denom = jnp.maximum(advantages.shape[0] - 1, 1)
         std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
         return centered / std
 
@@ -682,7 +697,7 @@ class JAXRPCIAlgorithm:
         else:
             adv = advantages
         adv = adv.reshape(total_steps, self.num_agents)
-        adv = self._normalize_actor_advantages(adv)
+        adv = self._normalize_actor_advantages(adv, alive_masks)
 
         return {
             "obs": obs,
@@ -844,7 +859,7 @@ class JAXRPCIAlgorithm:
         no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
         baseline = jnp.where(no_valid_cf[:, None], jnp.zeros_like(baseline), baseline)
         no_valid_cf_rate = jnp.mean(no_valid_cf.astype(jnp.float32))
-        return actual_pred, baseline, all_preds, no_valid_cf_rate
+        return actual_pred, baseline, all_preds, no_valid_cf_rate, no_valid_cf
 
     def _update_bridge_prediction_debug_lines(
         self,
@@ -1063,7 +1078,12 @@ class JAXRPCIAlgorithm:
             return jnp.exp(-gamma * dists_sq)
 
         z_norm = _standardize(batch["z"])
-        x_obs_norm = _standardize(batch["x_obs"])
+        # Standardize only the continuous obs features; keep agent_id one-hot (raw 0/1) as-is
+        # so it acts as a categorical selector in the kernel rather than being inflated by
+        # feature-wise normalization (one-hot std ≈ sqrt(1/N*(1-1/N)) is small → large scale-up).
+        x_obs_cont = batch["x_obs"][:, :self.obs_dim]
+        x_obs_id   = batch["x_obs"][:, self.obs_dim:]   # shape (B, num_agents); empty if add_agent_id=False
+        x_obs_norm = jnp.concatenate([_standardize(x_obs_cont), x_obs_id], axis=-1)
         action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
 
         gamma_z = 1.0 / max(1, batch["z"].shape[-1])
@@ -1141,8 +1161,6 @@ class JAXRPCIAlgorithm:
             rollout = self.latest_rollout
         if rollout is None:
             return {}
-        if self.get_current_causal_lambda() == 0.0:
-            return {"outcome_bridge_loss": 0.0, "action_bridge_loss": 0.0}
         if self.bridge_state is None:
             return {"outcome_bridge_loss": 0.0, "action_bridge_loss": 0.0}
 
@@ -1194,7 +1212,7 @@ class JAXRPCIAlgorithm:
             }
 
         local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions = self._bridge_inputs(rollout)
-        actual_pred, baseline_weighted, all_preds, no_valid_cf_rate = self._bridge_predictions(
+        actual_pred, baseline_weighted, all_preds, no_valid_cf_rate, no_valid_cf = self._bridge_predictions(
             self.bridge_state.params,
             local_obs,
             others_obs,
@@ -1206,14 +1224,14 @@ class JAXRPCIAlgorithm:
 
         if baseline_type == "weighted":
             baseline = baseline_weighted
+            # no_valid_cf: policy concentrates prob on factual action → renorm ≈ 0
+            effective_no_valid_cf = no_valid_cf
         else:  # averaged
-            # Factual action을 제외한 가능한 action들의 단순 평균
-            # all_preds: (B*N, action_dim, reward_dim)
-            # avail_actions, actions: (B*N, action_dim)
             factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
             valid_non_factual = factual_mask * avail_actions  # (B*N, action_dim)
             denom = jnp.clip(valid_non_factual.sum(axis=-1, keepdims=True), a_min=1.0)
             baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
+            effective_no_valid_cf = valid_non_factual.sum(axis=-1) <= 0  # (B*N,)
 
         self._update_bridge_prediction_debug_lines(
             rollout,
@@ -1228,8 +1246,12 @@ class JAXRPCIAlgorithm:
 
         actual_team_reward = reward_targets
         raw_effects = actual_team_reward - baseline
+        # Mask out samples where the baseline is undefined:
+        #   weighted  → no available counterfactual probability mass (no_valid_cf)
+        #   averaged  → no available non-factual action at all
+        raw_effects = jnp.where(effective_no_valid_cf[:, None], jnp.zeros_like(raw_effects), raw_effects)
 
-        # raw_effects = actual_pred - baseline 
+        # raw_effects = actual_pred - baseline
         # the final r^i = r - lambda_c*(h_factual - E[h_cf])
         
         if self.action_dim > 1:
@@ -1247,11 +1269,27 @@ class JAXRPCIAlgorithm:
             c_matrix = c_matrix * alive[..., :, None] * alive[..., None, :]
 
         delta = c_matrix.sum(axis=-1)
+
+        alive_flat = alive.reshape(-1).astype(jnp.bool_)   # (T*E*N,)
+        dead_fraction = float(jnp.mean(~alive_flat))
+        no_valid_cf_flat = no_valid_cf                       # (T*E*N,)
+        alive_count = jnp.sum(alive_flat).astype(jnp.float32)
+        dead_count  = jnp.sum(~alive_flat).astype(jnp.float32)
+        no_valid_cf_rate_alive = float(
+            jnp.sum(no_valid_cf_flat & alive_flat) / jnp.maximum(alive_count, 1.0)
+        )
+        no_valid_cf_rate_dead = float(
+            jnp.sum(no_valid_cf_flat & ~alive_flat) / jnp.maximum(dead_count, 1.0)
+        )
+
         info = {
             "causal_lambda": self.get_current_causal_lambda(),
             "delta_mean": float(jnp.mean(delta)),
             "delta_std": float(jnp.std(delta)),
             "no_valid_cf_rate": float(no_valid_cf_rate),
+            "no_valid_cf_rate_alive": no_valid_cf_rate_alive,   # policy entropy 지표
+            "no_valid_cf_rate_dead": no_valid_cf_rate_dead,     # 항상 ≈1.0 (sanity check)
+            "dead_agent_fraction": dead_fraction,               # 팀 생존율 지표
         }
         return c_matrix, info
 
@@ -1291,6 +1329,7 @@ class JAXRPCIAlgorithm:
         c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="weighted")
         delta = c_matrix.sum(axis=-1)
         delta = jnp.where(jnp.abs(delta) < self.clip_delta, 0.0, delta)
+        # delta = jnp.maximum(delta, 0.0) # ReLU
         metrics.update(pci_metrics)
 
         raw_team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
