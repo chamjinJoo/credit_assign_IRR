@@ -11,12 +11,12 @@ from flax.training import train_state
 
 VERY_NEGATIVE = -1.0e9
 
-# Orthogonal initializer with ReLU gain (sqrt(2)), matching Torch MLPBase(use_orthogonal=True)
+# Orthogonal initializer with ReLU gain (sqrt(2)) — hidden Dense layers
 _ORTH_RELU = nn.initializers.orthogonal(scale=math.sqrt(2))
-# Orthogonal initializer with unit scale, used for GRU kernels and critic output layers
+# Orthogonal initializer, unit scale — GRU kernels, critic/bridge output layers
 _ORTH_UNIT = nn.initializers.orthogonal(scale=1.0)
-# Orthogonal initializer with small scale for actor output layer (near-uniform initial policy)
-_ORTH_ACTOR_OUT = nn.initializers.orthogonal(scale=0.01)
+# Orthogonal initializer, small scale — actor output logits (near-uniform initial policy)
+_ORTH_POLICY = nn.initializers.orthogonal(scale=0.01)
 
 
 def make_gru_cell(hidden_dim: int) -> nn.GRUCell:
@@ -41,8 +41,8 @@ class RecurrentActor(nn.Module):
         hidden: jnp.ndarray,
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        # Matches Torch RNNPolicyNetwork:
-        #   Linear(orth,√2) → ReLU → LayerNorm → GRU(orth) → LayerNorm → Linear(orth,0.01)
+        # Standard orthogonal init (on-policy convention):
+        #   Dense(orth,√2) → ReLU → LayerNorm → GRU(orth,1) → LayerNorm → Dense(orth,0.01)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
@@ -53,7 +53,7 @@ class RecurrentActor(nn.Module):
         new_hidden, core_out = gru(hidden, x)
         core_out = nn.LayerNorm()(core_out)
 
-        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_ACTOR_OUT)(core_out)
+        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_POLICY)(core_out)
         return new_hidden, logits
 
 
@@ -69,8 +69,8 @@ class RecurrentCritic(nn.Module):
         hidden: jnp.ndarray,
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        # Matches Torch RNNValueNetwork:
-        #   Linear(orth,√2) → ReLU → LayerNorm → GRU(orth) → LayerNorm → Linear(orth,1.0)
+        # Standard orthogonal init (on-policy convention):
+        #   Dense(orth,√2) → ReLU → LayerNorm → GRU(orth,1) → LayerNorm → Dense(orth,1)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
@@ -106,7 +106,7 @@ class FeedForwardActor(nn.Module):
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_ACTOR_OUT)(x)
+        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_POLICY)(x)
         return hidden, logits
 
 

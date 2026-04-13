@@ -348,4 +348,4 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.04.13
 * Fix handling no available counterfactual (cf) baseline case -> if no vaild cf, set delta=0 so that only using raw reward.
 * Fix Adv normalization to mask dead agent. Dead information affected to others during normalization. 
-* Fix layer init.
+* Fix layer init for JAX. refer to `algorithms_jax/common.py`.
