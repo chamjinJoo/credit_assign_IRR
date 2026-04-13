@@ -163,6 +163,7 @@ class EnvironmentConfig:
     enemy_shoots: bool = True
     attack_mode: str = "closest"
     use_allowed_targets: bool = False
+    allowed_target_window: Optional[int] = None
     allowed_targets: Optional[Dict[int, Any]] = None
     use_partial_damage_restore: bool = False
     use_cooperative_kill_bonus: bool = False
@@ -274,7 +275,7 @@ class EnvironmentConfig:
             'smax': {
                 'map_name', 'max_steps',
                 'use_individual_rewards', 'enemy_shoots', 'attack_mode',
-                'use_allowed_targets', 'allowed_targets',
+                'use_allowed_targets', 'allowed_target_window', 'allowed_targets',
                 'use_partial_damage_restore',
                 'use_cooperative_kill_bonus',
                 'cooperative_bonus_mode',

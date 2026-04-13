@@ -660,6 +660,7 @@ def main():
                 smacv2_position_generation=getattr(env_config, 'smacv2_position_generation', False),
                 smacv2_unit_type_generation=getattr(env_config, 'smacv2_unit_type_generation', False),
                 use_allowed_targets=getattr(env_config, 'use_allowed_targets', False),
+                allowed_target_window=getattr(env_config, 'allowed_target_window', None),
                 allowed_targets=getattr(env_config, 'allowed_targets', None),
                 use_partial_damage_restore=getattr(env_config, 'use_partial_damage_restore', False),
                 use_cooperative_kill_bonus=getattr(env_config, 'use_cooperative_kill_bonus', False),
@@ -726,11 +727,11 @@ def main():
                     post_parts.append('c.b.')
                 post = '+'.join(post_parts)
                 if map_name:
-                    config.wandb.run_name = f"smax_{map_name}" + (f"_{post}" if post else "")
+                    config.wandb.run_name = f"smax_{map_name}" + (f"_{post}" if post else "") + "_w=3"
                 else:
                     n_allies = env.num_agents
                     n_enemies = env.num_enemies
-                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}" + (f"_{post}" if post else "")
+                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}" + (f"_{post}" if post else "") + "_w=3"
             else:
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()

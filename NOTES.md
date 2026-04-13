@@ -348,4 +348,9 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.04.13
 * Fix handling no available counterfactual (cf) baseline case -> if no vaild cf, set delta=0 so that only using raw reward.
 * Fix Adv normalization to mask dead agent. Dead information affected to others during normalization. 
-* Fix layer init for JAX. refer to `algorithms_jax/common.py`.
+* Fix layer init for JAX. refer to `algorithms_jax/common.py`. 
+  * **solve the reproductability problem over different seeds!**
+  * help initial exploration by setting uniform policy distribution at the every beginning.
+  * not additional effect on baselines `mappo`, `ippo`.
+* No significant effect of entropy coeff. 0.01 on `mappo`.
+* smacv2_5units | target | window=2 seems too difficult. `mappo` success rates are near 0.1.

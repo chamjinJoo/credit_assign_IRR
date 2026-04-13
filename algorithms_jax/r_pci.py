@@ -319,18 +319,6 @@ class JAXRPCIAlgorithm:
         std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
         return centered / std
 
-    def _combine_env_and_pci_advantages(
-        self,
-        env_advantages: jnp.ndarray,
-        pci_signal: jnp.ndarray,
-        causal_lambda: float,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        env_norm = self._normalize_advantage_signal(env_advantages)
-        pci_norm = self._normalize_advantage_signal(pci_signal)
-        combined = env_norm + causal_lambda * pci_norm
-        # combined = (1-causal_lambda) * env_norm + causal_lambda * pci_norm # convex combination
-        return combined, env_norm, pci_norm
-
     def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
         if env_advantages.ndim == 2:
             return jnp.repeat(env_advantages[..., None], self.num_agents, axis=-1)

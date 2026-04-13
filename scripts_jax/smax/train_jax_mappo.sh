@@ -14,8 +14,8 @@ n_rollout_threads=8
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
-device="cuda"  # recommended to use cuda if available, but default to cpu for safety
-seeds=(42)
+device="cpu"  # recommended to use cuda if available, but default to cpu for safety
+seeds=(32)
 run_in_background=false
 
 # test=false

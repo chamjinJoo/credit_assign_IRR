@@ -2096,12 +2096,15 @@ class SMAXWrapper(MultiAgentEnv):
     def _build_default_allowed_targets(
         num_allies: int,
         num_enemies: int,
+        allowed_target_window: Optional[int] = None,
     ) -> Dict[int, List[int]]:
         import math
 
         step = num_enemies / max(1, num_allies)
-        window = min(num_enemies, max(2, math.ceil(step) + 1))
-        # window = 3 # target size hard coding
+        if allowed_target_window is None:
+            window = min(num_enemies, max(2, math.ceil(step) + 1))
+        else:
+            window = min(num_enemies, max(1, int(allowed_target_window)))
         allowed_targets: Dict[int, List[int]] = {}
         for ally_id in range(num_allies):
             start = round(ally_id * step)
@@ -2251,6 +2254,7 @@ class SMAXWrapper(MultiAgentEnv):
         smacv2_position_generation: bool = False,
         smacv2_unit_type_generation: bool = False,
         use_allowed_targets: bool = False,
+        allowed_target_window: Optional[int] = None,
         allowed_targets: Dict[int, List[int]] = None,
         use_partial_damage_restore: bool = False,
         use_cooperative_kill_bonus: bool = False,
@@ -2341,12 +2345,17 @@ class SMAXWrapper(MultiAgentEnv):
 
         # allowed_targets 설정 (StagHuntEnv의 required_agents 패턴과 동일)
         self.use_allowed_targets = use_allowed_targets
+        self.allowed_target_window = None if allowed_target_window is None else max(1, int(allowed_target_window))
         self._num_movement_actions = self._env.num_movement_actions  # 통상 5
         if use_allowed_targets:
             if allowed_targets is not None:
                 self.allowed_targets = allowed_targets
             else:
-                self.allowed_targets = self._build_default_allowed_targets(_num_allies, _num_enemies)
+                self.allowed_targets = self._build_default_allowed_targets(
+                    _num_allies,
+                    _num_enemies,
+                    self.allowed_target_window,
+                )
         else:
             self.allowed_targets = None
         self.use_partial_damage_restore = bool(use_partial_damage_restore)
@@ -2390,7 +2399,10 @@ class SMAXWrapper(MultiAgentEnv):
 
         if self.use_allowed_targets:
             mode = "partial" if self.use_partial_damage_restore else "full"
-            print(f"[SMAXWrapper] allowed_targets ({mode} source-level damage mask): {self.allowed_targets}")
+            print(
+                f"[SMAXWrapper] allowed_targets ({mode} source-level damage mask, "
+                f"window={self.allowed_target_window}): {self.allowed_targets}"
+            )
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXWrapper] cooperative_kill_bonus: "
@@ -2722,6 +2734,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
         smacv2_position_generation: bool = False,
         smacv2_unit_type_generation: bool = False,
         use_allowed_targets: bool = True,
+        allowed_target_window: Optional[int] = None,
         allowed_targets: Dict[int, List[int]] = None,
         use_partial_damage_restore: bool = False,
         use_cooperative_kill_bonus: bool = True,
@@ -2805,6 +2818,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self.action_dim = self._env.num_ally_actions
         self._num_movement_actions = self._env.num_movement_actions
         self.use_partial_damage_restore = bool(use_partial_damage_restore)
+        self.allowed_target_window = None if allowed_target_window is None else max(1, int(allowed_target_window))
         self._unit_type_health_jax = jnp.array(self._env.unit_type_health)
         self._unit_type_health_np = np.array(self._env.unit_type_health, dtype=np.float32)
         self._use_self_play_reward = bool(self._env.use_self_play_reward)
@@ -2819,6 +2833,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
                 self.allowed_targets = SMAXWrapper._build_default_allowed_targets(
                     _num_allies,
                     _num_enemies,
+                    self.allowed_target_window,
                 )
         else:
             self.allowed_targets = None
@@ -2876,7 +2891,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         if self.use_allowed_targets:
             mode = "partial" if self.use_partial_damage_restore else "full"
-            print(f"[SMAXBatchWrapper] allowed_targets ({mode} source-level damage mask): {self.allowed_targets}")
+            print(
+                f"[SMAXBatchWrapper] allowed_targets ({mode} source-level damage mask, "
+                f"window={self.allowed_target_window}): {self.allowed_targets}"
+            )
         if self.use_cooperative_kill_bonus:
             print(
                 "[SMAXBatchWrapper] cooperative_kill_bonus: "

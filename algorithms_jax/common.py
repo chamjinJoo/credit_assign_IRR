@@ -11,13 +11,11 @@ from flax.training import train_state
 
 VERY_NEGATIVE = -1.0e9
 
-# Orthogonal initializer with ReLU gain (sqrt(2)) — hidden Dense layers
-_ORTH_RELU = nn.initializers.orthogonal(scale=math.sqrt(2))
-# Orthogonal initializer, unit scale — GRU kernels, critic/bridge output layers
-_ORTH_UNIT = nn.initializers.orthogonal(scale=1.0)
-# Orthogonal initializer, small scale — actor output logits (near-uniform initial policy)
-_ORTH_POLICY = nn.initializers.orthogonal(scale=0.01)
-
+# ------- Network Initialization follows the convention. -------
+_ORTH_RELU = nn.initializers.orthogonal(scale=math.sqrt(2)) # Orthogonal initializer with ReLU gain (sqrt(2)) — hidden Dense layers
+_ORTH_UNIT = nn.initializers.orthogonal(scale=1.0) # Orthogonal initializer, unit scale — GRU kernels, critic/bridge output layers
+_ORTH_POLICY = nn.initializers.orthogonal(scale=0.01) # Orthogonal initializer, small scale — actor output logits (near-uniform initial policy)
+# ---------------------------------------------------------------
 
 def make_gru_cell(hidden_dim: int) -> nn.GRUCell:
     # Torch RNNLayer applies nn.init.orthogonal_ to all GRU weight matrices.

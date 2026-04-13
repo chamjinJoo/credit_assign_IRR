@@ -1490,7 +1490,7 @@ class rPCIAlgorithm:
                     w_t_all, z_t_batch, full_obs_batch, actions_batch, rewards_batch,
                     hidden_states_batch=hidden_states_batch,
                     dones_batch=dones_batch,
-                    baseline_type='weighted', # weighted / averaged / max
+                    baseline_type='averaged', # weighted / averaged / max
                     available_actions_batch=available_actions_batch,
                     prev_actions_batch=prev_actions_batch_cr,
                     debug=_do_causal_debug
@@ -2060,19 +2060,6 @@ class rPCIAlgorithm:
         std = signal.std(unbiased=False).clamp_min(1e-8)
         return (signal - signal.mean()) / std
 
-    def _orthogonalize_advantage_signal(
-        self,
-        base_signal: torch.Tensor,
-        aux_signal: torch.Tensor,
-    ) -> torch.Tensor:
-        base_centered = base_signal - base_signal.mean()
-        aux_centered = aux_signal - aux_signal.mean()
-        denom = torch.dot(base_centered, base_centered)
-        if denom.abs() < 1e-8:
-            return aux_centered
-        projection = torch.dot(aux_centered, base_centered) / (denom + 1e-8)
-        return aux_centered - projection * base_centered
-
     def _combine_env_and_pci_advantages(
         self,
         env_advantages: torch.Tensor,
@@ -2082,6 +2069,7 @@ class rPCIAlgorithm:
         env_norm = self._normalize_advantage_signal(env_advantages)
         pci_norm = self._normalize_advantage_signal(pci_signal)
         combined = env_norm + causal_lambda * pci_norm
+        combined = env_advantages + causal_lambda * pci_signal # no normalization
         return combined, env_norm, pci_norm
     
     def _ensure_advantage_storage(self, transition: Dict):
