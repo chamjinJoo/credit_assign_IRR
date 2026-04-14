@@ -112,6 +112,12 @@ class JAXRPCIAlgorithm:
             self._dead_only_action_idx: Optional[int] = self.attack_action_threshold - 1
         else:
             self._dead_only_action_idx = None  # use avail[1:].sum() fallback
+        allowed_target_matrix = getattr(self.env, "_allowed_target_matrix_jax", None)
+        if allowed_target_matrix is None:
+            allowed_target_matrix = getattr(self.env, "_allowed_target_matrix_np", None)
+        self._allowed_target_matrix = (
+            None if allowed_target_matrix is None else jnp.asarray(allowed_target_matrix, dtype=jnp.float32)
+        )
 
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
@@ -501,13 +507,15 @@ class JAXRPCIAlgorithm:
     ) -> Dict[str, float]:
         """Per-agent delta split into 3 action categories for SMAX target allocation.
 
-        target_attack    : action >= attack_threshold AND avail[action] > 0
-                           (agent attacked an enemy within their allowed window)
-        non_target_attack: action >= attack_threshold AND avail[action] == 0
-                           (attack outside window — should not occur with masking;
-                            useful as a diagnostic sanity check)
+        target_attack    : action >= attack_threshold AND chosen enemy is within
+                           the agent's allowed target set.
+        non_target_attack: action >= attack_threshold AND chosen enemy is outside
+                           the agent's allowed target set.
         other_action     : action < attack_threshold
                            (move / stop)
+
+        If the environment does not expose an allowed-target matrix, fall back to
+        the older avail-action based categorisation.
         """
         if self.attack_action_threshold is None:
             return {}
@@ -521,16 +529,30 @@ class JAXRPCIAlgorithm:
         else:
             alive_f = jnp.ones_like(actions, dtype=jnp.float32)
 
-        # avail value of the action actually taken
-        action_avail = jnp.take_along_axis(
-            avail_actions, actions[..., None].astype(jnp.int32), axis=-1
-        ).squeeze(-1)                                                   # (T, E, N)
-
         is_attack = (actions >= thr).astype(jnp.float32)               # (T, E, N)
 
-        # category masks (alive agents only)
-        target_mask     = alive_f * is_attack * (action_avail > 0).astype(jnp.float32)
-        nontarget_mask  = alive_f * is_attack * (action_avail == 0).astype(jnp.float32)
+        if self._allowed_target_matrix is not None:
+            num_targets = self._allowed_target_matrix.shape[-1]
+            attack_targets = jnp.clip(actions - thr, 0, num_targets - 1)
+            chosen_target_one_hot = jax.nn.one_hot(
+                attack_targets.astype(jnp.int32),
+                num_targets,
+                dtype=jnp.float32,
+            )
+            chosen_target_allowed = jnp.sum(
+                chosen_target_one_hot * self._allowed_target_matrix[None, None, :, :],
+                axis=-1,
+            )
+            target_mask    = alive_f * is_attack * (chosen_target_allowed > 0).astype(jnp.float32)
+            nontarget_mask = alive_f * is_attack * (chosen_target_allowed <= 0).astype(jnp.float32)
+        else:
+            # Fallback for environments without explicit target-allocation metadata.
+            action_avail = jnp.take_along_axis(
+                avail_actions, actions[..., None].astype(jnp.int32), axis=-1
+            ).squeeze(-1)                                               # (T, E, N)
+            target_mask    = alive_f * is_attack * (action_avail > 0).astype(jnp.float32)
+            nontarget_mask = alive_f * is_attack * (action_avail == 0).astype(jnp.float32)
+
         other_mask      = alive_f * (1.0 - is_attack)
 
         categories = [
