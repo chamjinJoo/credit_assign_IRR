@@ -494,6 +494,68 @@ class JAXRPCIAlgorithm:
                 metrics[f"{key_prefix}_mean"]  = means_h[agent_id][a]
         return metrics
 
+    def _categorized_action_delta_metrics(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        delta: jnp.ndarray,
+    ) -> Dict[str, float]:
+        """Per-agent delta split into 3 action categories for SMAX target allocation.
+
+        target_attack    : action >= attack_threshold AND avail[action] > 0
+                           (agent attacked an enemy within their allowed window)
+        non_target_attack: action >= attack_threshold AND avail[action] == 0
+                           (attack outside window — should not occur with masking;
+                            useful as a diagnostic sanity check)
+        other_action     : action < attack_threshold
+                           (move / stop)
+        """
+        if self.attack_action_threshold is None:
+            return {}
+
+        actions       = rollout["actions"]        # (T, E, N)
+        avail_actions = rollout["avail_actions"]  # (T, E, N, action_dim)
+        thr = self.attack_action_threshold
+
+        if self.action_dim > 1:
+            alive_f = self._alive_from_avail(avail_actions).astype(jnp.float32)  # (T, E, N)
+        else:
+            alive_f = jnp.ones_like(actions, dtype=jnp.float32)
+
+        # avail value of the action actually taken
+        action_avail = jnp.take_along_axis(
+            avail_actions, actions[..., None].astype(jnp.int32), axis=-1
+        ).squeeze(-1)                                                   # (T, E, N)
+
+        is_attack = (actions >= thr).astype(jnp.float32)               # (T, E, N)
+
+        # category masks (alive agents only)
+        target_mask     = alive_f * is_attack * (action_avail > 0).astype(jnp.float32)
+        nontarget_mask  = alive_f * is_attack * (action_avail == 0).astype(jnp.float32)
+        other_mask      = alive_f * (1.0 - is_attack)
+
+        categories = [
+            ("target_attack",     target_mask),
+            ("non_target_attack", nontarget_mask),
+            ("other_action",      other_mask),
+        ]
+
+        # Compute per-agent counts and means vectorised over (T, E), then move to host once.
+        all_counts = {}
+        all_means  = {}
+        for cat_name, cat_mask in categories:
+            counts    = cat_mask.sum(axis=(0, 1))                         # (N,)
+            delta_sum = (delta * cat_mask).sum(axis=(0, 1))               # (N,)
+            means     = jnp.where(counts > 0, delta_sum / jnp.maximum(counts, 1.0e-8), 0.0)
+            all_counts[cat_name] = [float(v) for v in tree_to_host(counts)]
+            all_means[cat_name]  = [float(v) for v in tree_to_host(means)]
+
+        metrics: Dict[str, float] = {}
+        for agent_id in range(self.num_agents):
+            for cat_name, _ in categories:
+                metrics[f"delta_agent{agent_id}_{cat_name}_count"] = all_counts[cat_name][agent_id]
+                metrics[f"delta_agent{agent_id}_{cat_name}_mean"]  = all_means[cat_name][agent_id]
+        return metrics
+
     @partial(jax.jit, static_argnums=0)
     def _policy_step(
         self,
@@ -735,6 +797,7 @@ class JAXRPCIAlgorithm:
             rollout_out = dict(rollout)
             rollout_out["last_next_obs_aug"] = next_obs_aug                      # (E, N, obs_dim)
             rollout_out["last_next_actor_hidden"] = next_runner["actor_hidden"]  # (E, N, hidden_dim)
+            rollout_out["last_next_avail"] = next_avail                          # (E, N, action_dim)
             return rng, states, next_obs, next_avail, next_runner, rollout_out, last_value
 
         self._rollout_fns[horizon] = jax.jit(rollout_fn)
@@ -1467,6 +1530,13 @@ class JAXRPCIAlgorithm:
         else:
             env_rewards = rollout["rewards"]
 
+        # mask dead agents' values to 0 before GAE
+        if not self.use_centralized_critic and self.action_dim > 1:
+            alive_ten = self._alive_from_avail(rollout["avail_actions"]).astype(jnp.float32)  # (T, E, N)
+            values = values * alive_ten
+            last_alive = self._alive_from_avail(rollout["last_next_avail"]).astype(jnp.float32)  # (E, N)
+            last_value = last_value * last_alive
+
         env_advantages, returns = compute_gae(
             env_rewards,
             values,
@@ -1487,6 +1557,15 @@ class JAXRPCIAlgorithm:
                 rollout["last_next_obs_aug"],       # (E, N, obs_dim)
                 rollout["last_next_actor_hidden"],  # (E, N, hidden_dim)
             )
+            # Mask dead agents' delta_values to 0 before GAE.
+            # dones is episode-level (T, E) so compute_gae alone cannot distinguish
+            # mid-episode agent death: a dead agent's delta_values would otherwise
+            # bootstrap back into earlier alive timesteps via the GAE recursion.
+            if self.action_dim > 1:
+                alive_ten = self._alive_from_avail(rollout["avail_actions"]).astype(jnp.float32)  # (T, E, N)
+                delta_values = delta_values * alive_ten
+                last_alive = self._alive_from_avail(rollout["last_next_avail"]).astype(jnp.float32)  # (E, N)
+                last_delta_value = last_delta_value * last_alive
             pci_advantages, delta_returns = compute_gae(
                 delta,
                 delta_values,
@@ -1551,7 +1630,7 @@ class JAXRPCIAlgorithm:
                 causal_lambda,
             )
         )
-        metrics.update(self._per_action_delta_metrics(rollout, delta))
+        metrics.update(self._categorized_action_delta_metrics(rollout, delta))
 
         metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])
