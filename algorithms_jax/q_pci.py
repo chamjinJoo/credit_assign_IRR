@@ -48,37 +48,6 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
                 self.max_grad_norm,
             )
 
-    def _normalize_advantage_signal(self, signal: jnp.ndarray) -> jnp.ndarray:
-        if signal.size <= 1:
-            return jnp.zeros_like(signal)
-        std = jnp.clip(signal.std(), a_min=1.0e-8)
-        return (signal - signal.mean()) / std
-
-    def _orthogonalize_advantage_signal(
-        self,
-        base_signal: jnp.ndarray,
-        aux_signal: jnp.ndarray,
-    ) -> jnp.ndarray:
-        base_centered = base_signal - base_signal.mean()
-        aux_centered = aux_signal - aux_signal.mean()
-        denom = jnp.dot(base_centered, base_centered)
-        projection = jnp.where(
-            denom > 1.0e-8,
-            jnp.dot(aux_centered, base_centered) / (denom + 1.0e-8),
-            0.0,
-        )
-        return aux_centered - projection * base_centered
-
-    def _combine_env_and_pci_advantages(
-        self,
-        env_advantages: jnp.ndarray,
-        pci_signal: jnp.ndarray,
-        causal_lambda: float,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        env_norm = self._normalize_advantage_signal(env_advantages)
-        pci_norm = self._normalize_advantage_signal(pci_signal)
-        combined = env_norm + causal_lambda * pci_norm
-        return combined, env_norm, pci_norm
 
     def _team_rewards(self, rollout: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         return rollout["rewards"].sum(axis=-1) / self.num_agents
@@ -88,10 +57,6 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
             return self._team_rewards(rollout)
         return rollout["rewards"]
 
-    def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
-        if env_advantages.ndim == 2:
-            return jnp.repeat(env_advantages[..., None], self.num_agents, axis=-1)
-        return env_advantages
 
     def _team_bootstrap_values(self, rollout: Dict[str, jnp.ndarray]) -> jnp.ndarray:
         values = rollout["values"]
@@ -145,13 +110,20 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
                 team_targets = (team_targets - mean) / std
             targets = jnp.repeat(team_targets, self.num_agents, axis=0)
 
+        # Filter out dead agents (match RPCI _causal_batch): dead agents have no
+        # meaningful action choices, so including them contaminates bridge training.
+        if self.action_dim > 1:
+            alive_mask = self._alive_from_avail(rollout["avail_actions"]).reshape(-1)
+        else:
+            alive_mask = jnp.ones((flat_batch * self.num_agents,), dtype=bool)
+
         return {
-            "z": z.astype(jnp.float32),
-            "w": others_obs.astype(jnp.float32),
-            "x_obs": local_obs.astype(jnp.float32),
-            "x_hid": hidden_others.astype(jnp.float32),
-            "actions": actions.astype(jnp.int32),
-            "targets": targets.astype(jnp.float32),
+            "z": z[alive_mask].astype(jnp.float32),
+            "w": others_obs[alive_mask].astype(jnp.float32),
+            "x_obs": local_obs[alive_mask].astype(jnp.float32),
+            "x_hid": hidden_others[alive_mask].astype(jnp.float32),
+            "actions": actions[alive_mask].astype(jnp.int32),
+            "targets": targets[alive_mask].astype(jnp.float32),
         }
 
     @staticmethod
@@ -204,10 +176,15 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
         factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
         probs_counterfactual = probs * factual_mask * avail_actions
         renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
-        renormalized_probs = probs_counterfactual / jnp.clip(renorm, a_min=1.0e-8)
+        # clip 1e-10: match RPCI so that near-zero renorm still produces a valid
+        # renormalized distribution rather than blowing up.
+        renormalized_probs = probs_counterfactual / jnp.clip(renorm, a_min=1.0e-10)
         baseline = jnp.sum(renormalized_probs[..., None] * q_values, axis=1)
         no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
-        baseline = jnp.where(no_valid_cf[:, None], actual_pred, baseline)
+        # fallback zeros (match RPCI): when no counterfactual exists, baseline=0
+        # → δ = actual_pred, preserving the signal.
+        # (original QPCI used actual_pred → δ=0, killing the signal)
+        baseline = jnp.where(no_valid_cf[:, None], jnp.zeros_like(baseline), baseline)
 
         causal_advantages = jnp.sum(actual_pred - baseline, axis=-1)
         return actual_pred, q_values, v_bridge, causal_advantages
@@ -229,7 +206,12 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
             residuals = batch["targets"] - preds
 
             z_norm = self._standardize(batch["z"])
-            x_obs_norm = self._standardize(batch["x_obs"])
+            # Match RPCI _compute_gram: standardize only continuous obs features;
+            # keep agent_id one-hot (last num_agents dims) as raw 0/1 so the kernel
+            # treats them as categorical selectors rather than inflating their scale.
+            x_obs_cont = batch["x_obs"][:, :self.obs_dim]
+            x_obs_id   = batch["x_obs"][:, self.obs_dim:]
+            x_obs_norm = jnp.concatenate([self._standardize(x_obs_cont), x_obs_id], axis=-1)
             action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
 
             gamma_z = 1.0 / max(1, batch["z"].shape[-1])
@@ -279,12 +261,11 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
 
         causal_batch = self._q_bridge_batch(rollout)
         metrics = []
-        for _ in range(self.bridge_epoch):
-            self.rng, perm_key = jax.random.split(self.rng)
-            perm = jax.random.permutation(perm_key, causal_batch["actions"].shape[0])
-            for start in range(0, causal_batch["actions"].shape[0], self.causal_mini_batch_size):
-                indices = perm[start:start + self.causal_mini_batch_size]
-                batch = {key: value[indices] for key, value in causal_batch.items()}
+        total = causal_batch["actions"].shape[0]
+        for start in range(0, total, self.causal_mini_batch_size):
+            end = min(start + self.causal_mini_batch_size, total)
+            batch = {key: value[start:end] for key, value in causal_batch.items()}
+            for _ in range(self.bridge_epoch):
                 self.bridge_state, batch_metrics = self._q_bridge_update_step(self.bridge_state, batch)
                 metrics.append({key: float(value) for key, value in tree_to_host(batch_metrics).items()})
 
@@ -328,7 +309,9 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
 
         causal_advantages = causal_advantages.reshape(rollout["actions"].shape)
         if self.action_dim > 1:
-            alive = (rollout["avail_actions"][..., 1:].sum(axis=-1) > 0).astype(jnp.float32)
+            # Use _alive_from_avail (match RPCI): handles SMAX stop-action correctly.
+            # Original used avail[..., 1:].sum() > 0 which misclassifies dead SMAX agents.
+            alive = self._alive_from_avail(rollout["avail_actions"]).astype(jnp.float32)
             causal_advantages = causal_advantages * alive
 
         info = {
@@ -338,38 +321,6 @@ class JAXQPCIAlgorithm(JAXRPCIAlgorithm):
             "v_bridge_mean": float(jnp.mean(v_bridge)),
         }
         return causal_advantages, info
-
-    def _combine_actor_advantages(
-        self,
-        env_advantages: jnp.ndarray,
-        pci_advantages: jnp.ndarray,
-        causal_lambda: float,
-    ) -> tuple[jnp.ndarray, Dict[str, float]]:
-        env_for_actor = self._env_advantages_for_actor(env_advantages)
-        combined_agents = []
-        env_norm_agents = []
-        pci_res_agents = []
-
-        for agent_id in range(self.num_agents):
-            combined, env_norm, pci_res = self._combine_env_and_pci_advantages(
-                env_for_actor[..., agent_id].reshape(-1),
-                pci_advantages[..., agent_id].reshape(-1),
-                causal_lambda,
-            )
-            combined_agents.append(combined.reshape(env_for_actor.shape[:2]))
-            env_norm_agents.append(env_norm.reshape(env_for_actor.shape[:2]))
-            pci_res_agents.append(pci_res.reshape(env_for_actor.shape[:2]))
-
-        combined_adv = jnp.stack(combined_agents, axis=-1)
-        env_norm = jnp.stack(env_norm_agents, axis=-1)
-        pci_res = jnp.stack(pci_res_agents, axis=-1)
-        info = {
-            "env_adv_std": float(jnp.std(env_norm)),
-            "pci_adv_res_std": float(jnp.std(pci_res)),
-            "pci_bonus_std": float(jnp.std(causal_lambda * pci_res)),
-            "combined_adv_std": float(jnp.std(combined_adv)),
-        }
-        return combined_adv, info
 
     def update(self, **_: Any) -> Dict[str, float]:
         if self.latest_rollout is None:

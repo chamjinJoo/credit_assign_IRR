@@ -67,6 +67,7 @@ class AlgorithmConfig:
     # JAX RPCI scalability options
     bridge_pool_others: bool = False   # True: mean-pool others' obs/hidden (N-invariant bridge input)
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
+    use_delta_critic: bool = False      # True: per-agent V^i_delta critic for TD-style PCI advantages
 
     # Agent ID feature
     add_agent_id: bool = False  # If True, concatenate agent_id one-hot vector to observations

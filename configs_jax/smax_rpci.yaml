@@ -35,8 +35,9 @@ algorithm:
   clip_delta: 0.0
 
   # Scalability options (false = original behavior)
-  bridge_pool_others: true    # true: mean-pool others' obs/hidden → N-invariant bridge input
+  bridge_pool_others: false    # true: mean-pool others' obs/hidden → N-invariant bridge input
   normalize_pci_signal: false  # true: per-agent normalize PCI before combining with env_adv
+  use_delta_critic: true       # true: per-agent V^i_delta critic for TD-style PCI advantages
 
   tikhonov_gamma: 1.0e-4
   normalize_returns: true
@@ -77,8 +78,8 @@ environment:
   
   # [Tar] Target Allocation: directly masking actions in Wrapper.
   use_allowed_targets: true
-  allowed_target_window: 3
   use_partial_damage_restore: true
+  allowed_target_window: 4
 
   # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
   use_cooperative_kill_bonus: false 

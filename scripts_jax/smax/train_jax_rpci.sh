@@ -10,7 +10,7 @@ model="jax-rpci"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # rpci settings
-use_centralized_critic=true # false: IPPO-critic / true: MAPPO-critic
+use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 
@@ -20,7 +20,7 @@ max_iterations=1600
 max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2
 device="cuda"
-seeds=(42 1 2 31 32)
+seeds=(42 1)
 run_in_background=false
 
 #checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"

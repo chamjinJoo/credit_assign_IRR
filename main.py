@@ -381,6 +381,7 @@ def create_algorithm(env, config):
             bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
             bridge_pool_others=getattr(algorithm_config, 'bridge_pool_others', False),
             normalize_pci_signal=getattr(algorithm_config, 'normalize_pci_signal', False),
+            use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
             seed=getattr(config.training, 'seed', 42),
         )
     elif algorithm_type == 'coma':
@@ -729,7 +730,7 @@ def main():
                     post_parts.append(f"w={config.environment.allowed_target_window}")
                 if getattr(config.environment, 'use_cooperative_kill_bonus', False):
                     post_parts.append('c.b.')
-                post = '+'.join(post_parts)
+                post = '_'.join(post_parts)
                 if map_name:
                     config.wandb.run_name = f"smax_{map_name}" + (f"_{post}" if post else "")
                 else:

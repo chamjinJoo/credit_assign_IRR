@@ -10,6 +10,7 @@ import jax.numpy as jnp
 
 from .common import (
     CausalBridgeNetwork,
+    DeltaCritic,
     FeedForwardActor,
     FeedForwardCritic,
     RecurrentActor,
@@ -71,6 +72,7 @@ class JAXRPCIAlgorithm:
         bridge_prediction_print_interval: int = 50,
         bridge_pool_others: bool = False,
         normalize_pci_signal: bool = False,
+        use_delta_critic: bool = False,
         seed: int = 42,
         **_: Any,
     ):
@@ -142,8 +144,10 @@ class JAXRPCIAlgorithm:
             if bridge_pool_others
             else (num_agents - 1) * self.actor_state_dim  # concat: grows with N
         )
+        self.use_delta_critic = use_delta_critic
         print("bridge_pool_others:", bridge_pool_others, "→ bridge_hidden_dim:", self.bridge_hidden_dim)
         print("normalize_pci_signal:", normalize_pci_signal)
+        print("use_delta_critic:", use_delta_critic)
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
         self.rng = jax.random.PRNGKey(seed)
@@ -217,6 +221,25 @@ class JAXRPCIAlgorithm:
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
                 lr_bridge,
+                max_grad_norm,
+            )
+
+        self.delta_critic_state = None
+        if use_delta_critic:
+            delta_critic_input_dim = self.policy_obs_dim + self.actor_state_dim
+            self.delta_critic_model = DeltaCritic(
+                hidden_dim=hidden_dim,
+                input_dim=delta_critic_input_dim,
+            )
+            self.rng, delta_critic_key = jax.random.split(self.rng)
+            self.delta_critic_state = make_train_state(
+                self.delta_critic_model,
+                delta_critic_key,
+                (
+                    jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, self.actor_state_dim), dtype=jnp.float32),
+                ),
+                lr_critic,
                 max_grad_norm,
             )
 
@@ -552,6 +575,64 @@ class JAXRPCIAlgorithm:
             values_flat.reshape(n_envs, self.num_agents),
         )
 
+    @partial(jax.jit, static_argnums=0)
+    def _delta_value_step(
+        self,
+        delta_critic_params: Dict[str, Any],
+        obs: jnp.ndarray,           # (..., policy_obs_dim)
+        actor_hidden: jnp.ndarray,  # (..., actor_state_dim)
+    ) -> jnp.ndarray:               # (...)
+        orig_shape = obs.shape[:-1]
+        flat_obs = obs.reshape(-1, self.policy_obs_dim)
+        if self.actor_state_dim > 0:
+            flat_hidden = actor_hidden.reshape(-1, self.actor_state_dim)
+        else:
+            flat_hidden = jnp.zeros((flat_obs.shape[0], 0), dtype=jnp.float32)
+        values_flat = self.delta_critic_state.apply_fn(
+            {"params": delta_critic_params}, flat_obs, flat_hidden
+        )
+        return values_flat.reshape(orig_shape)
+
+    @partial(jax.jit, static_argnums=0)
+    def _compute_delta_values(
+        self,
+        delta_critic_params: Dict[str, Any],
+        obs: jnp.ndarray,           # (T, E, N, policy_obs_dim)
+        actor_hidden: jnp.ndarray,  # (T, E, N, actor_state_dim)
+    ) -> jnp.ndarray:               # (T, E, N)
+        T, E, N = obs.shape[:3]
+        flat_obs = obs.reshape(T * E * N, self.policy_obs_dim)
+        if self.actor_state_dim > 0:
+            flat_hidden = actor_hidden.reshape(T * E * N, self.actor_state_dim)
+        else:
+            flat_hidden = jnp.zeros((T * E * N, 0), dtype=jnp.float32)
+        values_flat = self.delta_critic_state.apply_fn(
+            {"params": delta_critic_params}, flat_obs, flat_hidden
+        )
+        return values_flat.reshape(T, E, N)
+
+    @partial(jax.jit, static_argnums=0)
+    def _delta_critic_update_step(
+        self,
+        delta_critic_state: Any,
+        obs: jnp.ndarray,           # (T*E*N, policy_obs_dim)
+        actor_hidden: jnp.ndarray,  # (T*E*N, actor_state_dim)
+        delta_returns: jnp.ndarray, # (T*E*N,)
+        loss_masks: jnp.ndarray,    # (T*E*N,)
+    ):
+        def loss_fn(params):
+            values = delta_critic_state.apply_fn(
+                {"params": params}, obs, actor_hidden
+            )
+            denom = jnp.sum(loss_masks) + 1.0e-8
+            value_loss = jnp.sum(jnp.square(values - delta_returns) * loss_masks) / denom
+            return self.value_coef * value_loss, {"delta_critic_loss": value_loss}
+
+        grads, metrics = jax.grad(loss_fn, has_aux=True)(delta_critic_state.params)
+        new_state = delta_critic_state.apply_gradients(grads=grads)
+        metrics["delta_critic_grad_norm"] = global_norm(grads)
+        return new_state, metrics
+
     def _get_rollout_fn(self, env: Any, horizon: int):
         if horizon in self._rollout_fns:
             return self._rollout_fns[horizon]
@@ -651,7 +732,10 @@ class JAXRPCIAlgorithm:
                 next_runner["prev_actions"],
                 next_runner["done_prev"],
             )
-            return rng, states, next_obs, next_avail, next_runner, rollout, last_value
+            rollout_out = dict(rollout)
+            rollout_out["last_next_obs_aug"] = next_obs_aug                      # (E, N, obs_dim)
+            rollout_out["last_next_actor_hidden"] = next_runner["actor_hidden"]  # (E, N, hidden_dim)
+            return rng, states, next_obs, next_avail, next_runner, rollout_out, last_value
 
         self._rollout_fns[horizon] = jax.jit(rollout_fn)
         return self._rollout_fns[horizon]
@@ -1288,9 +1372,6 @@ class JAXRPCIAlgorithm:
 
         actual_team_reward = reward_targets
         raw_effects = actual_team_reward - baseline
-        # Mask out samples where the baseline is undefined:
-        #   weighted  → no available counterfactual probability mass (no_valid_cf)
-        #   averaged  → no available non-factual action at all
         raw_effects = jnp.where(effective_no_valid_cf[:, None], jnp.zeros_like(raw_effects), raw_effects)
 
         # raw_effects = actual_pred - baseline
@@ -1395,14 +1476,64 @@ class JAXRPCIAlgorithm:
             self.gae_lambda,
         )
 
-        pci_advantages, _ = compute_gae(
-            delta,
-            jnp.zeros_like(delta),
-            jnp.zeros_like(delta[0]),
-            rollout["dones"],
-            self.gamma,
-            self.gae_lambda,
-        )
+        if self.use_delta_critic and self.delta_critic_state is not None:
+            delta_values = self._compute_delta_values(
+                self.delta_critic_state.params,
+                rollout["obs"],           # (T, E, N, obs_dim)
+                rollout["actor_hidden"],  # (T, E, N, hidden_dim)
+            )
+            last_delta_value = self._delta_value_step(
+                self.delta_critic_state.params,
+                rollout["last_next_obs_aug"],       # (E, N, obs_dim)
+                rollout["last_next_actor_hidden"],  # (E, N, hidden_dim)
+            )
+            pci_advantages, delta_returns = compute_gae(
+                delta,
+                delta_values,
+                last_delta_value,
+                rollout["dones"],
+                self.gamma,
+                self.gae_lambda,
+            )
+            # Train delta critic for ppo_epochs on the full batch
+            T, E, N = delta.shape
+            total = T * E * N
+            flat_obs = rollout["obs"].reshape(total, self.policy_obs_dim)
+            if self.actor_state_dim > 0:
+                flat_hidden = rollout["actor_hidden"].reshape(total, self.actor_state_dim)
+            else:
+                flat_hidden = jnp.zeros((total, 0), dtype=jnp.float32)
+            flat_delta_returns = delta_returns.reshape(total)
+            flat_masks = jnp.broadcast_to(
+                rollout["masks"].reshape(rollout["masks"].shape + (1,)),
+                rollout["actions"].shape,
+            ).reshape(total)
+            if self.action_dim > 1:
+                flat_alive = self._alive_from_avail(rollout["avail_actions"]).astype(jnp.float32).reshape(total)
+            else:
+                flat_alive = jnp.ones((total,), dtype=jnp.float32)
+            flat_loss_masks = flat_masks * flat_alive
+            raw_dc: list = []
+            for _ in range(self.ppo_epochs):
+                self.delta_critic_state, dc_metrics = self._delta_critic_update_step(
+                    self.delta_critic_state,
+                    flat_obs,
+                    flat_hidden,
+                    flat_delta_returns,
+                    flat_loss_masks,
+                )
+                raw_dc.append(dc_metrics)
+            for bm in raw_dc:
+                metrics.update({k: float(v) for k, v in tree_to_host(bm).items()})
+        else:
+            pci_advantages, _ = compute_gae(
+                delta,
+                jnp.zeros_like(delta),
+                jnp.zeros_like(delta[0]),
+                rollout["dones"],
+                self.gamma,
+                self.gae_lambda,
+            )
 
         combined_advantages, combine_metrics = self._combine_actor_advantages(
             env_advantages,
@@ -1454,6 +1585,7 @@ class JAXRPCIAlgorithm:
             "actor_state": serialization.to_state_dict(self.actor_state),
             "critic_state": serialization.to_state_dict(self.critic_state),
             "bridge_state": serialization.to_state_dict(self.bridge_state) if self.bridge_state is not None else None,
+            "delta_critic_state": serialization.to_state_dict(self.delta_critic_state) if self.delta_critic_state is not None else None,
             "rng": tree_to_host(self.rng),
             "bridge_rng": tree_to_host(self.bridge_rng),
             "training_steps": self.training_steps,
@@ -1464,6 +1596,8 @@ class JAXRPCIAlgorithm:
         self.critic_state = serialization.from_state_dict(self.critic_state, state_dict["critic_state"])
         if self.bridge_state is not None and state_dict.get("bridge_state") is not None:
             self.bridge_state = serialization.from_state_dict(self.bridge_state, state_dict["bridge_state"])
+        if self.delta_critic_state is not None and state_dict.get("delta_critic_state") is not None:
+            self.delta_critic_state = serialization.from_state_dict(self.delta_critic_state, state_dict["delta_critic_state"])
         self.rng = jnp.asarray(state_dict["rng"])
         if "bridge_rng" in state_dict:
             self.bridge_rng = jnp.asarray(state_dict["bridge_rng"])

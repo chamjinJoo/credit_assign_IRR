@@ -133,6 +133,33 @@ class FeedForwardCritic(nn.Module):
         return hidden, values
 
 
+class DeltaCritic(nn.Module):
+    """Per-agent feedforward value network for delta (PCI) returns.
+
+    Input : concatenation of (obs^i_t, actor_hidden^i_t).
+            actor_hidden already encodes the temporal history when using a
+            recurrent policy, so no extra GRU is needed here.
+    Output: scalar V^i_delta — estimated value of the delta return stream.
+    """
+
+    hidden_dim: int
+    input_dim: int  # policy_obs_dim + actor_state_dim
+
+    @nn.compact
+    def __call__(self, obs: jnp.ndarray, actor_hidden: jnp.ndarray) -> jnp.ndarray:
+        if actor_hidden.shape[-1] > 0:
+            x = jnp.concatenate([obs, actor_hidden], axis=-1)
+        else:
+            x = obs
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.relu(x)
+        x = nn.LayerNorm()(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.relu(x)
+        x = nn.LayerNorm()(x)
+        return nn.Dense(1, kernel_init=_ORTH_UNIT)(x).squeeze(-1)
+
+
 class CausalBridgeNetwork(nn.Module):
     hidden_dim: int
     action_dim: int
