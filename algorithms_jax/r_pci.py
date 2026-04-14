@@ -69,6 +69,8 @@ class JAXRPCIAlgorithm:
         print_bridge_predictions: bool = False,
         bridge_prediction_print_samples: int = 1,
         bridge_prediction_print_interval: int = 50,
+        bridge_pool_others: bool = False,
+        normalize_pci_signal: bool = False,
         seed: int = 42,
         **_: Any,
     ):
@@ -127,11 +129,21 @@ class JAXRPCIAlgorithm:
         self.policy_obs_dim = obs_dim + num_agents if add_agent_id else obs_dim
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
-        # Current proxy setting:
-        #   W^i_t = other agents' current observations
-        #   Z^i_t = agent i's previous hidden state h^i_{t-1}
-        #   X^i_t = (o^i_t, h^{-i}_{t-1})
-        self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
+        # Proxy setting (controlled by bridge_pool_others):
+        #   W^i_t = others' obs  (concat if False, mean-pool if True)
+        #   Z^i_t = h^i_{t-1}
+        #   X^i_t = (o^i_t, others' hidden)
+        # bridge_pool_others=False (default): concat → dim grows O(N)  [original]
+        # bridge_pool_others=True:  mean-pool → fixed dim regardless of N  [scalable]
+        self.bridge_pool_others = bridge_pool_others
+        self.normalize_pci_signal = normalize_pci_signal
+        self.bridge_hidden_dim = (
+            self.actor_state_dim                           # mean-pooled: fixed dim
+            if bridge_pool_others
+            else (num_agents - 1) * self.actor_state_dim  # concat: grows with N
+        )
+        print("bridge_pool_others:", bridge_pool_others, "→ bridge_hidden_dim:", self.bridge_hidden_dim)
+        print("normalize_pci_signal:", normalize_pci_signal)
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
         self.rng = jax.random.PRNGKey(seed)
@@ -189,12 +201,18 @@ class JAXRPCIAlgorithm:
 
         self.bridge_state = None
         if self.bridge_model is not None:
+            # others_obs dim: mean-pooled → policy_obs_dim; concat → (N-1)*policy_obs_dim
+            bridge_others_obs_dim = (
+                self.policy_obs_dim
+                if bridge_pool_others
+                else (num_agents - 1) * self.policy_obs_dim
+            )
             self.bridge_state = make_train_state(
                 self.bridge_model,
                 bridge_key,
                 (
                     jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
-                    jnp.zeros((1, (num_agents - 1) * self.policy_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, bridge_others_obs_dim), dtype=jnp.float32),
                     jnp.zeros((1, self.bridge_hidden_dim), dtype=jnp.float32),
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
@@ -342,12 +360,18 @@ class JAXRPCIAlgorithm:
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
-        combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
+        # normalize_pci_signal=True : per-agent normalize before combining so that
+        #   λ is a scale-invariant coefficient (N-robust, bridge-convergence-robust).
+        # normalize_pci_signal=False: raw pci_flat added directly  [original]
+        pci_for_combine = (
+            self._normalize_columns(pci_flat) if self.normalize_pci_signal else pci_flat
+        )
+        combined = (env_flat + causal_lambda * pci_for_combine).reshape(orig_shape)
 
         info = {
             "env_adv_std": float(jnp.std(env_flat)),
-            "pci_adv_res_std": float(jnp.std(pci_flat)),
-            "pci_bonus_std": float(jnp.std(causal_lambda * pci_flat)),
+            "pci_adv_res_std": float(jnp.std(pci_for_combine)),
+            "pci_bonus_std": float(jnp.std(causal_lambda * pci_for_combine)),
             "combined_adv_std": float(jnp.std(combined)),
         }
         return combined, info
@@ -746,11 +770,25 @@ class JAXRPCIAlgorithm:
 
         obs_flat = rollout["obs"].reshape(flat_batch, self.num_agents, self.policy_obs_dim)
         local_obs = obs_flat.reshape(-1, self.policy_obs_dim)
-        others_obs = gather_other_agent_obs(obs_flat).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
+        if self.bridge_pool_others:
+            # Mean-pool: others_obs dim = policy_obs_dim (N-invariant)
+            n = self.num_agents
+            others_obs = (
+                (obs_flat.sum(axis=-2, keepdims=True) - obs_flat) / max(n - 1, 1)
+            ).reshape(-1, self.policy_obs_dim)
+        else:
+            # Concat: others_obs dim = (N-1) * policy_obs_dim  [original]
+            others_obs = gather_other_agent_obs(obs_flat).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
         if self.use_recurrent_policy:
             hidden_all = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
             z = hidden_all.reshape(-1, self.actor_state_dim)
-            hidden_others = gather_other_agent_obs(hidden_all).reshape(-1, self.bridge_hidden_dim)
+            if self.bridge_pool_others:
+                n = self.num_agents
+                hidden_others = (
+                    (hidden_all.sum(axis=-2, keepdims=True) - hidden_all) / max(n - 1, 1)
+                ).reshape(-1, self.actor_state_dim)
+            else:
+                hidden_others = gather_other_agent_obs(hidden_all).reshape(-1, self.bridge_hidden_dim)
         else:
             z = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
             hidden_others = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
@@ -784,10 +822,26 @@ class JAXRPCIAlgorithm:
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
         obs = rollout["obs"]
+        time_steps, n_envs = obs.shape[:2]
+        flat_batch = time_steps * n_envs
         local_obs = obs.reshape(-1, self.policy_obs_dim)
-        others_obs = gather_other_agent_obs(obs).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
+        if self.bridge_pool_others:
+            n = self.num_agents
+            obs_4d = obs.reshape(flat_batch, n, self.policy_obs_dim)
+            others_obs = (
+                (obs_4d.sum(axis=-2, keepdims=True) - obs_4d) / max(n - 1, 1)
+            ).reshape(-1, self.policy_obs_dim)
+        else:
+            others_obs = gather_other_agent_obs(obs).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
         if self.use_recurrent_policy:
-            hidden_others = gather_other_agent_obs(rollout["actor_hidden"]).reshape(-1, self.bridge_hidden_dim)
+            if self.bridge_pool_others:
+                n = self.num_agents
+                hidden_4d = rollout["actor_hidden"].reshape(flat_batch, n, self.actor_state_dim)
+                hidden_others = (
+                    (hidden_4d.sum(axis=-2, keepdims=True) - hidden_4d) / max(n - 1, 1)
+                ).reshape(-1, self.actor_state_dim)
+            else:
+                hidden_others = gather_other_agent_obs(rollout["actor_hidden"]).reshape(-1, self.bridge_hidden_dim)
         else:
             hidden_others = jnp.zeros((local_obs.shape[0], 0), dtype=jnp.float32)
         actions = rollout["actions"].reshape(-1)

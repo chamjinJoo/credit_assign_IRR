@@ -379,6 +379,8 @@ def create_algorithm(env, config):
             print_bridge_predictions=getattr(algorithm_config, 'print_bridge_predictions', False),
             bridge_prediction_print_samples=getattr(algorithm_config, 'bridge_prediction_print_samples', 1),
             bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
+            bridge_pool_others=getattr(algorithm_config, 'bridge_pool_others', False),
+            normalize_pci_signal=getattr(algorithm_config, 'normalize_pci_signal', False),
             seed=getattr(config.training, 'seed', 42),
         )
     elif algorithm_type == 'coma':
@@ -723,15 +725,17 @@ def main():
                 post_parts = []
                 if getattr(config.environment, 'use_allowed_targets', False):
                     post_parts.append('tar')
+                if getattr(config.environment, 'allowed_target_window', False):
+                    post_parts.append(f"w={config.environment.allowed_target_window}")
                 if getattr(config.environment, 'use_cooperative_kill_bonus', False):
                     post_parts.append('c.b.')
                 post = '+'.join(post_parts)
                 if map_name:
-                    config.wandb.run_name = f"smax_{map_name}" + (f"_{post}" if post else "") + "_w=3"
+                    config.wandb.run_name = f"smax_{map_name}" + (f"_{post}" if post else "")
                 else:
                     n_allies = env.num_agents
                     n_enemies = env.num_enemies
-                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}" + (f"_{post}" if post else "") + "_w=3"
+                    config.wandb.run_name = f"smax_{n_allies}v{n_enemies}" + (f"_{post}" if post else "")
             else:
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()

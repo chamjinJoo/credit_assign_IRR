@@ -10,7 +10,7 @@ model="jax-rpci"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # rpci settings
-use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
+use_centralized_critic=true # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 

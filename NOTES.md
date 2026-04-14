@@ -353,4 +353,10 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
   * help initial exploration by setting uniform policy distribution at the every beginning.
   * not additional effect on baselines `mappo`, `ippo`.
 * No significant effect of entropy coeff. 0.01 on `mappo`.
+  
 * smacv2_5units | target | window=2 seems too difficult. `mappo` success rates are near 0.1.
+* 5m_vs_6m | target | window=3 seems too difficult.
+
+# 26.04.14
+* TODO: scalability of rpci.
+  * test mean pool input of bridge. others obs and hidden state
