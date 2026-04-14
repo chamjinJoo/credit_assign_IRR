@@ -1389,7 +1389,7 @@ class JAXRPCIAlgorithm:
         rollout: Dict[str, jnp.ndarray],
         baseline_type: str = "weighted",
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
-        if baseline_type not in ("weighted", "averaged"):
+        if baseline_type not in ("weighted", "averaged", "max"):
             raise ValueError(f"Unsupported baseline_type for JAXRPCIAlgorithm: {baseline_type}")
         if self.bridge_state is None or self.get_current_causal_lambda() == 0.0:
             self._bridge_prediction_debug_lines = []
@@ -1415,12 +1415,21 @@ class JAXRPCIAlgorithm:
             baseline = baseline_weighted
             # no_valid_cf: policy concentrates prob on factual action → renorm ≈ 0
             effective_no_valid_cf = no_valid_cf
-        else:  # averaged
+        elif baseline_type == "averaged":
             factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
             valid_non_factual = factual_mask * avail_actions  # (B*N, action_dim)
             denom = jnp.clip(valid_non_factual.sum(axis=-1, keepdims=True), a_min=1.0)
             baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
             effective_no_valid_cf = valid_non_factual.sum(axis=-1) <= 0  # (B*N,)
+        else:  # max
+            factual_mask = 1.0 - jax.nn.one_hot(
+                actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32
+            )
+            valid_non_factual = (factual_mask > 0) & (avail_actions > 0)
+            masked_preds = jnp.where(valid_non_factual[..., None], all_preds, -jnp.inf)
+            baseline = jnp.max(masked_preds, axis=1)
+            effective_no_valid_cf = ~jnp.any(valid_non_factual, axis=1)
+            baseline = jnp.where(effective_no_valid_cf[:, None], actual_pred, baseline)
 
         self._update_bridge_prediction_debug_lines(
             rollout,
