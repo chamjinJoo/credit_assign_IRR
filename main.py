@@ -340,9 +340,10 @@ def create_algorithm(env, config):
             normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
             seed=getattr(config.training, 'seed', 42),
         )
+    
     elif algorithm_type in ['jax_rpci', 'jax_rippo', 'jax_rmappo', 'jax_rppo']:
         algorithm = JAXRPCIAlgorithm(
-            # env=env,
+            env=env,
             num_agents=env.num_agents,
             obs_dim=base_obs_dim,
             action_dim=env.get_action_dim(),

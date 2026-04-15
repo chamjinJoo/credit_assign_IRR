@@ -69,7 +69,7 @@ class JAXTrainer(Trainer):
                 obs,
                 avail,
                 rewards,
-                _,
+                agent_dones,
                 dones_all,
                 battle_won,
             ) = self.eval_env.step_jax_pure(eval_rng, batch_states, actions)
@@ -87,11 +87,16 @@ class JAXTrainer(Trainer):
                 self.algorithm.action_dim,
                 dtype=jnp.float32,
             )
+            agent_done_prev = jnp.maximum(
+                jnp.asarray(agent_dones, dtype=jnp.float32),
+                jnp.asarray(dones_all, dtype=jnp.float32)[:, None],
+            )
             next_prev_actions = next_prev_actions * (
-                1.0 - jnp.asarray(dones_all, dtype=jnp.float32)[:, None, None]
+                1.0 - agent_done_prev[..., None]
             )
             runner_state["prev_actions"] = next_prev_actions
             runner_state["done_prev"] = jnp.asarray(dones_all, dtype=jnp.float32)
+            runner_state["agent_done_prev"] = agent_done_prev
 
             for env_idx in range(eval_envs):
                 if dones_np[env_idx] and collected < num_episodes:
@@ -344,10 +349,15 @@ class JAXTrainer(Trainer):
 
                 # RNN 상태 갱신 (n_envs=1 기준)
                 done_val = jnp.array([float(dones["__all__"])])  # (1,)
+                agent_done_val = jnp.array(
+                    [[float(dones[i] or dones["__all__"]) for i in range(self.env.num_agents)]],
+                    dtype=jnp.float32,
+                )
                 next_prev = jax.nn.one_hot(actions, action_dim, dtype=jnp.float32)
-                next_prev = next_prev * (1.0 - done_val)[:, None, None]
+                next_prev = next_prev * (1.0 - agent_done_val)[..., None]
                 runner_state["prev_actions"] = next_prev
                 runner_state["done_prev"] = done_val
+                runner_state["agent_done_prev"] = agent_done_val
 
                 if bool(dones["__all__"]):
                     alive_enemies = np.array(state.state.unit_alive[num_allies:])

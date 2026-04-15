@@ -362,3 +362,7 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
   * test mean pool input of bridge. others obs and hidden state 
     -> not significant: capacity of bridge network is enough. [Eliminiated]
   * delta critic: replacing reward-to-go with an actual advantage, $A^i_{\delta,t} = \delta^i_t + \gamma V_{\delta,t+1}^i - V_{\delta,t}^i$.
+  
+# 26.04.15
+* Find that ippo and mappo have used dead-agent masking fallback since the env object did not delivered.
+* Dead agent masking logic이 computational cost를 많이 소비함. (fallback으로 설정시 rpci 2.5s/iter로 감소됨.)

@@ -3236,13 +3236,17 @@ class SMAXBatchWrapper(MultiAgentEnv):
         damage_masked_np = np.array(damage_masked)
         damage_masked_lists = [np.where(damage_masked_np[e])[0].tolist() for e in range(self.n_envs)]
 
+        agent_dones_np = np.logical_not(
+            np.array(corrected_states.state.unit_alive[:, : self.num_agents])
+        )
+
         return (
             self._obs_to_list(final_obs_b),
             [
                 {agent_id: float(rew_stacked[e, agent_id]) for agent_id in range(self.num_agents)}
                 for e in range(self.n_envs)
             ],
-            self._dones_to_list(all_done_np),
+            self._dones_to_list(agent_dones_np),
             self._infos_to_list(corrected_states, all_done_np, damage_masked_lists),
             self._avail_to_list(avail_b),
         )
@@ -3311,6 +3315,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
             jax_actions,
         )
         obs_b = self._batch_obs(next_env_state)
+        agent_dones = ~next_env_state.state.unit_alive[:, : self.num_agents]
         next_enemy_health = next_env_state.state.unit_health[:, self._env.num_allies:]
         next_enemy_alive = next_env_state.state.unit_alive[:, self._env.num_allies:]
         battle_won = ~self._jnp.any(next_enemy_alive, axis=-1)
@@ -3353,7 +3358,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
             final_obs_b,
             self._mask_avail_jax(self._stack_agent_dict(avail_b)),
             rewards_stacked,
-            self._jnp.broadcast_to(done_flags[:, None], (self.n_envs, self.num_agents)),
+            agent_dones,
             done_flags,
             battle_won,
         )
@@ -3377,8 +3382,8 @@ class SMAXBatchWrapper(MultiAgentEnv):
             for e in range(self.n_envs)
         ]
 
-    def _dones_to_list(self, all_done_np) -> List:
-        return [{i: bool(all_done_np[e]) for i in range(self.num_agents)}
+    def _dones_to_list(self, done_np) -> List:
+        return [{i: bool(done_np[e, i]) for i in range(self.num_agents)}
                 for e in range(self.n_envs)]
 
     def _infos_to_list(self, new_states, all_done_np, damage_masked_lists=None) -> List:
