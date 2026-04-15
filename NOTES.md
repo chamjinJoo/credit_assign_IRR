@@ -359,5 +359,6 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 
 # 26.04.14
 * TODO: scalability of rpci.
-  * test mean pool input of bridge. others obs and hidden state -> not significant: capacity of bridge network is enough.
+  * test mean pool input of bridge. others obs and hidden state 
+    -> not significant: capacity of bridge network is enough. [Eliminiated]
   * delta critic: replacing reward-to-go with an actual advantage, $A^i_{\delta,t} = \delta^i_t + \gamma V_{\delta,t+1}^i - V_{\delta,t}^i$.

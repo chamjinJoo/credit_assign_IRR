@@ -70,7 +70,6 @@ class JAXRPCIAlgorithm:
         print_bridge_predictions: bool = False,
         bridge_prediction_print_samples: int = 1,
         bridge_prediction_print_interval: int = 50,
-        bridge_pool_others: bool = False,
         normalize_pci_signal: bool = False,
         use_delta_critic: bool = False,
         seed: int = 42,
@@ -108,6 +107,7 @@ class JAXRPCIAlgorithm:
         # SMAX: stop (attack_threshold-1) is always available even for dead agents.
         # SMAC: action 0 (no-op) is the dead-only action.
         env_name = self.env.__class__.__name__
+        print(f"Environment name: {env_name}")
         if env_name in ('SMAXBatchWrapper', 'SMAXWrapper') and self.attack_action_threshold is not None:
             self._dead_only_action_idx: Optional[int] = self.attack_action_threshold - 1
         else:
@@ -137,21 +137,9 @@ class JAXRPCIAlgorithm:
         self.policy_obs_dim = obs_dim + num_agents if add_agent_id else obs_dim
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
-        # Proxy setting (controlled by bridge_pool_others):
-        #   W^i_t = others' obs  (concat if False, mean-pool if True)
-        #   Z^i_t = h^i_{t-1}
-        #   X^i_t = (o^i_t, others' hidden)
-        # bridge_pool_others=False (default): concat → dim grows O(N)  [original]
-        # bridge_pool_others=True:  mean-pool → fixed dim regardless of N  [scalable]
-        self.bridge_pool_others = bridge_pool_others
         self.normalize_pci_signal = normalize_pci_signal
-        self.bridge_hidden_dim = (
-            self.actor_state_dim                           # mean-pooled: fixed dim
-            if bridge_pool_others
-            else (num_agents - 1) * self.actor_state_dim  # concat: grows with N
-        )
+        self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
         self.use_delta_critic = use_delta_critic
-        print("bridge_pool_others:", bridge_pool_others, "→ bridge_hidden_dim:", self.bridge_hidden_dim)
         print("normalize_pci_signal:", normalize_pci_signal)
         print("use_delta_critic:", use_delta_critic)
         self.bridge_output_dim = 1 if global_reward else num_agents
@@ -212,11 +200,7 @@ class JAXRPCIAlgorithm:
         self.bridge_state = None
         if self.bridge_model is not None:
             # others_obs dim: mean-pooled → policy_obs_dim; concat → (N-1)*policy_obs_dim
-            bridge_others_obs_dim = (
-                self.policy_obs_dim
-                if bridge_pool_others
-                else (num_agents - 1) * self.policy_obs_dim
-            )
+            bridge_others_obs_dim = (num_agents - 1) * self.policy_obs_dim
             self.bridge_state = make_train_state(
                 self.bridge_model,
                 bridge_key,
@@ -335,6 +319,43 @@ class JAXRPCIAlgorithm:
             stop = avail_actions[..., self._dead_only_action_idx]
             return (avail_actions.sum(axis=-1) - stop) > 0
         return avail_actions[..., 1:].sum(axis=-1) > 0
+
+    def _mask_obs_keep_agent_id(
+        self,
+        obs: jnp.ndarray,
+        alive_mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        alive_f = alive_mask.astype(obs.dtype)[..., None]
+        if not self.add_agent_id:
+            return obs * alive_f
+        obs_cont = obs[..., :self.obs_dim] * alive_f
+        obs_id = obs[..., self.obs_dim:]
+        return jnp.concatenate([obs_cont, obs_id], axis=-1)
+
+    def _other_obs_for_bridge(
+        self,
+        obs: jnp.ndarray,
+        alive_mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        masked_obs = self._mask_obs_keep_agent_id(obs, alive_mask)
+
+        return gather_other_agent_obs(masked_obs).reshape(
+            obs.shape[:-1] + ((self.num_agents - 1) * self.policy_obs_dim,)
+        )
+
+    def _other_hidden_for_bridge(
+        self,
+        hidden: jnp.ndarray,
+        alive_mask: jnp.ndarray,
+    ) -> jnp.ndarray:
+        if hidden.shape[-1] == 0:
+            return hidden
+        alive_f = alive_mask.astype(hidden.dtype)[..., None]
+        masked_hidden = hidden * alive_f
+
+        return gather_other_agent_obs(masked_hidden).reshape(
+            hidden.shape[:-1] + ((self.num_agents - 1) * hidden.shape[-1],)
+        )
 
     def _normalize_advantage_signal(self, signal: jnp.ndarray) -> jnp.ndarray:
         if signal.size <= 1:
@@ -737,16 +758,27 @@ class JAXRPCIAlgorithm:
 
                 actor_hidden_prev = current_runner["actor_hidden"]
                 critic_hidden_prev = current_runner["critic_hidden"]
-                prev_actions_prev = current_runner["prev_actions"]
+                raw_prev_actions_prev = current_runner["prev_actions"]
+                actor_prev_actions_prev = raw_prev_actions_prev
+                critic_prev_actions_prev = raw_prev_actions_prev
                 prev_obs_prev = current_runner["prev_obs"]
                 done_prev = current_runner["done_prev"]
+                if self.action_dim > 1:
+                    current_alive = self._alive_from_avail(current_avail).astype(jnp.float32)
+                    actor_hidden_prev = actor_hidden_prev * current_alive[..., None]
+                    actor_prev_actions_prev = actor_prev_actions_prev * current_alive[..., None]
+                    # For global-reward decentralized critics, keep dead agents'
+                    # critic history intact so value bootstrap remains coherent.
+                    if not self.use_centralized_critic and not self.global_reward:
+                        critic_hidden_prev = critic_hidden_prev * current_alive[..., None]
+                        critic_prev_actions_prev = critic_prev_actions_prev * current_alive[..., None]
 
                 actor_hidden_next, actions, log_probs, probs = self._policy_step(
                     actor_params,
                     obs_aug,
                     current_avail,
                     actor_hidden_prev,
-                    prev_actions_prev,
+                    actor_prev_actions_prev,
                     done_prev,
                     action_rng,
                     False,
@@ -755,7 +787,7 @@ class JAXRPCIAlgorithm:
                     critic_params,
                     obs_aug,
                     critic_hidden_prev,
-                    prev_actions_prev,
+                    critic_prev_actions_prev,
                     done_prev,
                 )
 
@@ -772,6 +804,11 @@ class JAXRPCIAlgorithm:
 
                 next_prev_actions = action_one_hot(actions, self.action_dim)
                 next_prev_actions = next_prev_actions * (1.0 - dones_all)[:, None, None]
+                if self.action_dim > 1:
+                    next_alive = self._alive_from_avail(next_avail).astype(jnp.float32)
+                    actor_hidden_next = actor_hidden_next * next_alive[..., None]
+                    if not self.use_centralized_critic and not self.global_reward:
+                        critic_hidden_next = critic_hidden_next * next_alive[..., None]
 
                 next_runner = {
                     "actor_hidden": actor_hidden_next,
@@ -794,7 +831,7 @@ class JAXRPCIAlgorithm:
                     "values": values.astype(jnp.float32),
                     "actor_hidden": actor_hidden_prev.astype(jnp.float32),
                     "critic_hidden": critic_hidden_prev.astype(jnp.float32),
-                    "prev_actions": prev_actions_prev.astype(jnp.float32),
+                    "prev_actions": raw_prev_actions_prev.astype(jnp.float32),
                     "battle_won": battle_won.astype(jnp.float32),
                 }
                 next_carry = (
@@ -939,25 +976,19 @@ class JAXRPCIAlgorithm:
 
         obs_flat = rollout["obs"].reshape(flat_batch, self.num_agents, self.policy_obs_dim)
         local_obs = obs_flat.reshape(-1, self.policy_obs_dim)
-        if self.bridge_pool_others:
-            # Mean-pool: others_obs dim = policy_obs_dim (N-invariant)
-            n = self.num_agents
-            others_obs = (
-                (obs_flat.sum(axis=-2, keepdims=True) - obs_flat) / max(n - 1, 1)
-            ).reshape(-1, self.policy_obs_dim)
+        if self.action_dim > 1:
+            alive_by_agent = self._alive_from_avail(rollout["avail_actions"]).reshape(
+                flat_batch, self.num_agents
+            )
         else:
-            # Concat: others_obs dim = (N-1) * policy_obs_dim  [original]
-            others_obs = gather_other_agent_obs(obs_flat).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
+            alive_by_agent = jnp.ones((flat_batch, self.num_agents), dtype=bool)
+        others_obs = self._other_obs_for_bridge(obs_flat, alive_by_agent).reshape(-1, (self.num_agents-1)*self.policy_obs_dim)
         if self.use_recurrent_policy:
             hidden_all = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
             z = hidden_all.reshape(-1, self.actor_state_dim)
-            if self.bridge_pool_others:
-                n = self.num_agents
-                hidden_others = (
-                    (hidden_all.sum(axis=-2, keepdims=True) - hidden_all) / max(n - 1, 1)
-                ).reshape(-1, self.actor_state_dim)
-            else:
-                hidden_others = gather_other_agent_obs(hidden_all).reshape(-1, self.bridge_hidden_dim)
+            hidden_others = self._other_hidden_for_bridge(hidden_all, alive_by_agent).reshape(
+                -1, self.bridge_hidden_dim
+            )
         else:
             z = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
             hidden_others = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
@@ -973,6 +1004,7 @@ class JAXRPCIAlgorithm:
                 axis=2,
             ).reshape(-1, self.num_agents)
 
+        # final dead agent masking to exclude dataset when the focal agent is dead.
         if self.action_dim > 1:
             alive_mask = (
                 self._alive_from_avail(rollout["avail_actions"])
@@ -994,23 +1026,19 @@ class JAXRPCIAlgorithm:
         time_steps, n_envs = obs.shape[:2]
         flat_batch = time_steps * n_envs
         local_obs = obs.reshape(-1, self.policy_obs_dim)
-        if self.bridge_pool_others:
-            n = self.num_agents
-            obs_4d = obs.reshape(flat_batch, n, self.policy_obs_dim)
-            others_obs = (
-                (obs_4d.sum(axis=-2, keepdims=True) - obs_4d) / max(n - 1, 1)
-            ).reshape(-1, self.policy_obs_dim)
+        obs_4d = obs.reshape(flat_batch, self.num_agents, self.policy_obs_dim)
+        if self.action_dim > 1:
+            alive_by_agent = self._alive_from_avail(rollout["avail_actions"]).reshape(
+                flat_batch, self.num_agents
+            )
         else:
-            others_obs = gather_other_agent_obs(obs).reshape(-1, (self.num_agents - 1) * self.policy_obs_dim)
+            alive_by_agent = jnp.ones((flat_batch, self.num_agents), dtype=bool)
+        others_obs = self._other_obs_for_bridge(obs_4d, alive_by_agent).reshape(-1, (self.num_agents-1)*self.policy_obs_dim)
         if self.use_recurrent_policy:
-            if self.bridge_pool_others:
-                n = self.num_agents
-                hidden_4d = rollout["actor_hidden"].reshape(flat_batch, n, self.actor_state_dim)
-                hidden_others = (
-                    (hidden_4d.sum(axis=-2, keepdims=True) - hidden_4d) / max(n - 1, 1)
-                ).reshape(-1, self.actor_state_dim)
-            else:
-                hidden_others = gather_other_agent_obs(rollout["actor_hidden"]).reshape(-1, self.bridge_hidden_dim)
+            hidden_4d = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
+            hidden_others = self._other_hidden_for_bridge(hidden_4d, alive_by_agent).reshape(
+                -1, self.bridge_hidden_dim
+            )
         else:
             hidden_others = jnp.zeros((local_obs.shape[0], 0), dtype=jnp.float32)
         actions = rollout["actions"].reshape(-1)
@@ -1475,6 +1503,7 @@ class JAXRPCIAlgorithm:
             alive = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32)
         else:
             alive = jnp.ones_like(rollout["actions"], dtype=jnp.float32)
+            
         if self.global_reward:
             actor_team_effects = raw_effects.reshape(rollout["actions"].shape + (1,))
             alive_counts = jnp.clip(alive.sum(axis=-1, keepdims=True), a_min=1.0)
@@ -1536,7 +1565,7 @@ class JAXRPCIAlgorithm:
         if self.latest_rollout is None:
             return {}
 
-        rollout = self.latest_rollout
+        rollout = self.latest_rollout # training data for one iteration. handled in runner_jax/trainer.py
         metrics = {}
         causal_lambda = self.get_current_causal_lambda()
 
@@ -1561,8 +1590,15 @@ class JAXRPCIAlgorithm:
         else:
             env_rewards = rollout["rewards"]
 
-        # mask dead agents' values to 0 before GAE
-        if not self.use_centralized_critic and self.action_dim > 1:
+        '''
+        mask dead agents' values to 0 before GAE — only for global_reward=False.
+        With global_reward=True, team rewards continue after an agent's death, so
+        the IPPO critic V is trained to predict non-zero future team value for dead states.
+        Forcing V_{t+1}=0 would introduce a negative bias at the last alive step and
+        degrade performance.  With individual rewards (global_reward=False), a dead
+        agent earns nothing, so V=0 is semantically correct.
+        '''
+        if not self.use_centralized_critic and self.action_dim > 1 and not self.global_reward:
             alive_ten = self._alive_from_avail(rollout["avail_actions"]).astype(jnp.float32)  # (T, E, N)
             values = values * alive_ten
             last_alive = self._alive_from_avail(rollout["last_next_avail"]).astype(jnp.float32)  # (E, N)
@@ -1676,12 +1712,18 @@ class JAXRPCIAlgorithm:
     ) -> tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
         obs_aug = self._augment_obs(obs)
         self.rng, action_rng = jax.random.split(self.rng)
+        actor_hidden = runner_state["actor_hidden"]
+        prev_actions = runner_state["prev_actions"]
+        if self.action_dim > 1:
+            current_alive = self._alive_from_avail(avail_actions).astype(jnp.float32)
+            actor_hidden = actor_hidden * current_alive[..., None]
+            prev_actions = prev_actions * current_alive[..., None]
         actor_hidden_next, actions, _, _ = self._policy_step(
             self.actor_state.params,
             obs_aug,
             avail_actions,
-            runner_state["actor_hidden"],
-            runner_state["prev_actions"],
+            actor_hidden,
+            prev_actions,
             runner_state["done_prev"],
             action_rng,
             True,

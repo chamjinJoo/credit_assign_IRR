@@ -10,4 +10,4 @@ class JAXPPOAlgorithm(JAXRPCIAlgorithm):
         kwargs.setdefault("causal_lambda", 0.0)
         kwargs.setdefault("bridge_epoch", 0)
         kwargs["global_reward"] = True
-        super().__init__(env=None, *args, **kwargs)
+        super().__init__(*args, **kwargs)

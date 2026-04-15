@@ -65,7 +65,6 @@ class AlgorithmConfig:
     normalize_returns: bool = True  # Normalize return targets when supported
 
     # JAX RPCI scalability options
-    bridge_pool_others: bool = False   # True: mean-pool others' obs/hidden (N-invariant bridge input)
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
     use_delta_critic: bool = False      # True: per-agent V^i_delta critic for TD-style PCI advantages
 

@@ -13,7 +13,7 @@ algorithm:
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2
-  entropy_coef: 0.01
+  entropy_coef: 0.0
   value_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 4
@@ -35,7 +35,6 @@ algorithm:
   clip_delta: 0.0
 
   # Scalability options (false = original behavior)
-  bridge_pool_others: false    # true: mean-pool others' obs/hidden → N-invariant bridge input
   normalize_pci_signal: false  # true: per-agent normalize PCI before combining with env_adv
   use_delta_critic: false       # true: per-agent V^i_delta critic for TD-style PCI advantages
 

@@ -235,6 +235,7 @@ def create_algorithm(env, config):
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', 256),
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
         )
+    
     elif algorithm_type == 'mappo':
         algorithm = MAPPOAlgorithm(
             num_agents=env.num_agents,
@@ -256,7 +257,8 @@ def create_algorithm(env, config):
             global_reward=getattr(algorithm_config, 'global_reward', True),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
         )
-    elif algorithm_type == 'ippo':
+    
+    elif algorithm_type == 'rippo':
         algorithm = IPPOAlgorithm(
             num_agents=env.num_agents,
             obs_dim=effective_obs_dim,
@@ -275,8 +277,10 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
+    
     elif algorithm_type in ['jax_ppo', 'jax_ippo', 'jax_mappo']:
         algorithm = JAXPPOAlgorithm(
+            env=env,
             num_agents=env.num_agents,
             obs_dim=base_obs_dim,
             action_dim=env.get_action_dim(),
@@ -298,6 +302,7 @@ def create_algorithm(env, config):
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
             seed=getattr(config.training, 'seed', 42),
         )
+    
     elif algorithm_type in ['jax_qpci', 'jax_q_pci']:
         algorithm = JAXQPCIAlgorithm(
             env=env,
@@ -337,7 +342,7 @@ def create_algorithm(env, config):
         )
     elif algorithm_type in ['jax_rpci', 'jax_rippo', 'jax_rmappo', 'jax_rppo']:
         algorithm = JAXRPCIAlgorithm(
-            env=env,
+            # env=env,
             num_agents=env.num_agents,
             obs_dim=base_obs_dim,
             action_dim=env.get_action_dim(),
@@ -379,7 +384,6 @@ def create_algorithm(env, config):
             print_bridge_predictions=getattr(algorithm_config, 'print_bridge_predictions', False),
             bridge_prediction_print_samples=getattr(algorithm_config, 'bridge_prediction_print_samples', 1),
             bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
-            bridge_pool_others=getattr(algorithm_config, 'bridge_pool_others', False),
             normalize_pci_signal=getattr(algorithm_config, 'normalize_pci_signal', False),
             use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
             seed=getattr(config.training, 'seed', 42),

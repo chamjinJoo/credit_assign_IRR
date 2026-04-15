@@ -5,9 +5,10 @@ network:
   lr_actor: 5.0e-4
   lr_critic: 5.0e-4
   recurrent_N: 1
+  use_recurrent_policy: true
 
 algorithm:
-  type: "jax_ippo"
+  type: "jax_rippo"
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2
@@ -18,6 +19,7 @@ algorithm:
   batch_size: 0 # unused
   num_batches: 4
   use_centralized_critic: false
+  global_reward: true
   add_agent_id: true
 
 training:
@@ -52,8 +54,8 @@ environment:
   smacv2_unit_type_generation: true
 
   # [Tar] Target Allocation: directly masking actions in Wrapper.
-  use_allowed_targets: true
-  allowed_target_window: 3
+  use_allowed_targets: false
+  allowed_target_window: 4
   use_partial_damage_restore: true
 
   # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
