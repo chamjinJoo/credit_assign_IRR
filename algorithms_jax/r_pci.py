@@ -641,7 +641,7 @@ class JAXRPCIAlgorithm:
                 done_prev = current_runner["done_prev"]
                 agent_done_prev = current_runner["agent_done_prev"]
                 actor_reset_masks = agent_done_prev
-                critic_reset_masks = done_prev if self.use_centralized_critic else agent_done_prev
+                critic_reset_masks = done_prev
 
                 actor_hidden_next, actions, log_probs, probs = self._policy_step(
                     actor_params,
@@ -863,6 +863,7 @@ class JAXRPCIAlgorithm:
             hidden_others = jnp.zeros((n_flat, 0), dtype=jnp.float32)
 
         actions = rollout["actions"].reshape(-1)
+        agent_ids = jnp.tile(jnp.arange(self.num_agents, dtype=jnp.int32), flat_batch)
         if self.global_reward:
             team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
             reward_targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
@@ -872,10 +873,10 @@ class JAXRPCIAlgorithm:
             ).reshape(-1, self.num_agents)
 
         focal_alive = alive_by_agent.reshape(-1)
-        return local_obs, others_obs, z, hidden_others, actions, reward_targets, focal_alive
+        return local_obs, others_obs, z, hidden_others, actions, reward_targets, agent_ids, focal_alive
 
     def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        local_obs, others_obs, z, hidden_others, actions, targets, focal_alive = self._preprocess_rollout(rollout)
+        local_obs, others_obs, z, hidden_others, actions, targets, agent_ids, focal_alive = self._preprocess_rollout(rollout)
         return {
             "z":       z[focal_alive].astype(jnp.float32),
             "w":       others_obs[focal_alive].astype(jnp.float32),
@@ -883,10 +884,11 @@ class JAXRPCIAlgorithm:
             "x_hid":   hidden_others[focal_alive].astype(jnp.float32),
             "actions": actions[focal_alive].astype(jnp.int32),
             "targets": targets[focal_alive].astype(jnp.float32),
+            "agent_ids": agent_ids[focal_alive].astype(jnp.int32),
         }
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
-        local_obs, others_obs, _, hidden_others, actions, reward_targets, _ = self._preprocess_rollout(rollout)
+        local_obs, others_obs, _, hidden_others, actions, reward_targets, _, _ = self._preprocess_rollout(rollout)
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
@@ -1137,11 +1139,22 @@ class JAXRPCIAlgorithm:
         self,
         batch: Dict[str, jnp.ndarray],
     ) -> tuple[jnp.ndarray, jnp.ndarray, Dict[str, jnp.ndarray]]:
-        """Compute Gram matrix and regularized Gram once per mini-batch (reused across bridge epochs)."""
+        """Compute an agent-blocked Gram matrix and regularized Gram once per mini-batch."""
+        agent_ids = batch["agent_ids"].astype(jnp.int32)
+        agent_onehot = jax.nn.one_hot(agent_ids, self.num_agents, dtype=jnp.float32)
+        agent_counts = jnp.sum(agent_onehot, axis=0)[:, None]
+        same_agent_mask = agent_onehot @ agent_onehot.T
+
         def _standardize(x: jnp.ndarray) -> jnp.ndarray:
-            mean = jnp.mean(x, axis=0, keepdims=True)
-            std = jnp.std(x, axis=0, keepdims=True)
-            return (x - mean) / jnp.clip(std, a_min=1.0e-6)
+            if x.shape[-1] == 0:
+                return x
+            counts = jnp.clip(agent_counts, a_min=1.0)
+            means = (agent_onehot.T @ x) / counts
+            centered = x[:, None, :] - means[None, :, :]
+            var = jnp.sum(agent_onehot[:, :, None] * jnp.square(centered), axis=0) / counts
+            std = jnp.sqrt(jnp.clip(var, a_min=1.0e-6))
+            x_norm = centered / std[None, :, :]
+            return jnp.sum(agent_onehot[:, :, None] * x_norm, axis=1)
 
         def _rbf_gram(x: jnp.ndarray, gamma: float) -> jnp.ndarray:
             x_norm = jnp.sum(jnp.square(x), axis=-1, keepdims=True)
@@ -1150,9 +1163,6 @@ class JAXRPCIAlgorithm:
             return jnp.exp(-gamma * dists_sq)
 
         z_norm = _standardize(batch["z"])
-        # Standardize only the continuous obs features; keep agent_id one-hot (raw 0/1) as-is
-        # so it acts as a categorical selector in the kernel rather than being inflated by
-        # feature-wise normalization (one-hot std ≈ sqrt(1/N*(1-1/N)) is small → large scale-up).
         x_obs_cont = batch["x_obs"][:, :self.obs_dim]
         x_obs_id   = batch["x_obs"][:, self.obs_dim:]   # shape (B, num_agents); empty if add_agent_id=False
         x_obs_norm = jnp.concatenate([_standardize(x_obs_cont), x_obs_id], axis=-1)
@@ -1163,7 +1173,8 @@ class JAXRPCIAlgorithm:
         gamma_xobs = 1.0 / max(1, batch["x_obs"].shape[-1])
 
         gram = (
-            _rbf_gram(z_norm, gamma_z)
+            same_agent_mask
+            * _rbf_gram(z_norm, gamma_z)
             * _rbf_gram(action_onehot, gamma_a)
             * _rbf_gram(x_obs_norm, gamma_xobs)
         )
@@ -1177,13 +1188,13 @@ class JAXRPCIAlgorithm:
         # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci.
         reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
 
-        diag = jnp.diag(gram)
-        total_sum = jnp.sum(gram) - jnp.sum(diag)
-        off_count = gram.shape[0] * max(gram.shape[0] - 1, 1)
-        kz_offdiag_mean = total_sum / off_count
-        centered = gram - kz_offdiag_mean
-        sq_sum = jnp.sum(jnp.square(centered)) - jnp.sum(jnp.square(diag - kz_offdiag_mean))
-        kz_offdiag_std = jnp.sqrt(jnp.clip(sq_sum / off_count, a_min=0.0))
+        offdiag_mask = same_agent_mask * (1.0 - eye)
+        off_count = jnp.sum(offdiag_mask)
+        off_count_safe = jnp.clip(off_count, a_min=1.0)
+        offdiag_vals = gram * offdiag_mask
+        kz_offdiag_mean = jnp.sum(offdiag_vals) / off_count_safe
+        centered = (gram - kz_offdiag_mean) * offdiag_mask
+        kz_offdiag_std = jnp.sqrt(jnp.sum(jnp.square(centered)) / off_count_safe)
 
         gram_metrics = {
             "Kz_offdiag_mean": kz_offdiag_mean,
@@ -1211,12 +1222,21 @@ class JAXRPCIAlgorithm:
             residuals = batch["targets"] - preds
             solved = jnp.linalg.solve(reg_gram, residuals)
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
-            outcome_bridge_loss = jnp.mean(per_sample_loss)
+            agent_onehot = jax.nn.one_hot(batch["agent_ids"].astype(jnp.int32), self.num_agents, dtype=per_sample_loss.dtype)
+            agent_counts = jnp.sum(agent_onehot, axis=0)
+            valid_agents = agent_counts > 0
+            loss_sum_per_agent = agent_onehot.T @ per_sample_loss
+            loss_per_agent = loss_sum_per_agent / jnp.clip(agent_counts, a_min=1.0)
+            valid_count = jnp.maximum(jnp.sum(valid_agents), 1.0)
+            outcome_bridge_loss = jnp.sum(loss_per_agent * valid_agents) / valid_count
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
-            return outcome_bridge_loss + action_bridge_loss, {
+            metrics = {
                 "outcome_bridge_loss": outcome_bridge_loss,
                 "action_bridge_loss": action_bridge_loss,
             }
+            for agent_id in range(self.num_agents):
+                metrics[f"agent_{agent_id}_outcome_bridge_loss"] = loss_per_agent[agent_id]
+            return outcome_bridge_loss + action_bridge_loss, metrics
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(bridge_state.params)
         new_bridge_state = bridge_state.apply_gradients(grads=grads)
@@ -1251,6 +1271,7 @@ class JAXRPCIAlgorithm:
                 "x_hid": causal_batch["x_hid"][indices],
                 "actions": causal_batch["actions"][indices],
                 "targets": causal_batch["targets"][indices],
+                "agent_ids": causal_batch["agent_ids"][indices],
             }
             # Compute Gram once per mini-batch and reuse across bridge epochs (matches Torch).
             gram, reg_gram, gram_metrics = self._compute_gram(batch)
