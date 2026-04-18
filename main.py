@@ -341,7 +341,7 @@ def create_algorithm(env, config):
             seed=getattr(config.training, 'seed', 42),
         )
     
-    elif algorithm_type in ['jax_rpci', 'jax_rippo', 'jax_rmappo', 'jax_rppo']:
+    elif algorithm_type in ['jax_rpci', 'jax_rippo', 'jax_rmappo', 'jax_rppo', 'jax_pci_ippo', 'jax_pci_mappo']:
         algorithm = JAXRPCIAlgorithm(
             env=env,
             num_agents=env.num_agents,
@@ -369,7 +369,11 @@ def create_algorithm(env, config):
             ),
             add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
-            use_centralized_critic=(algorithm_type == 'jax_rmappo') or getattr(algorithm_config, 'use_centralized_critic', False),
+            use_centralized_critic=(
+                algorithm_type in ['jax_rmappo', 'jax_pci_mappo']
+            ) or (
+                algorithm_type not in ['jax_pci_ippo'] and getattr(algorithm_config, 'use_centralized_critic', False)
+            ),
             causal_lambda=(0.0 if algorithm_type in ['jax_rippo', 'jax_rmappo', 'jax_rppo'] else getattr(algorithm_config, 'causal_lambda', 0.1)),
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
             causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
@@ -579,7 +583,7 @@ def create_algorithm(env, config):
             bridge_update_interval=getattr(algorithm_config, 'bridge_update_interval', 1),
         )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_qpci', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_pci_ippo', 'jax_pci_mappo', 'jax_qpci', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
     
     return algorithm
 
@@ -616,6 +620,10 @@ def main():
             display_algorithm_type = 'PCI_rMAPPO'
         else:
             display_algorithm_type = 'PCI_rIPPO'
+    elif algorithm_type == 'JAX_PCI_MAPPO':
+        display_algorithm_type = 'JAX_PCI_MAPPO'
+    elif algorithm_type == 'JAX_PCI_IPPO':
+        display_algorithm_type = 'JAX_PCI_IPPO'
     elif algorithm_type in ['JAX_QPCI', 'JAX_Q_PCI']:
         display_algorithm_type = 'JAX_qPCI'
     

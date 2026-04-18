@@ -31,7 +31,6 @@ algorithm:
   causal_lambda_startingpoint: 640000    # 100 iter (steps/iter = 6400) — bridge만 먼저 학습
   causal_lambda_warmup_steps: 960000     # 150 iter (steps/iter = 6400) 동안 0→1 선형 증가
   causal_lambda: 1.0
-  
   clip_delta: 0.0
 
   # Scalability options (false = original behavior)
@@ -77,8 +76,8 @@ environment:
   
   # [Tar] Target Allocation: directly masking actions in Wrapper.
   use_allowed_targets: true
-  use_partial_damage_restore: true
-  allowed_target_window: 4
+  use_partial_damage_restore: false # if false all damage is nullified if there exist any non-target attack to the enemy.
+  allowed_target_window: 3
 
   # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
   use_cooperative_kill_bonus: false 

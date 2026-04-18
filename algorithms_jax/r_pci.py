@@ -309,13 +309,28 @@ class JAXRPCIAlgorithm:
     def _normalize_actor_advantages(
         self,
         advantages: jnp.ndarray,
+        masks: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
+        """Normalize advantages per agent (axis=0 = T*E direction).
+
+        masks: optional float mask (T*E, N), 1=valid 0=skip.
+               When provided, mean/std are computed only over valid timesteps,
+               which prevents dead-agent near-zero values from biasing statistics.
+        """
         if advantages.shape[0] <= 1:
             return jnp.zeros_like(advantages)
-        centered = advantages - advantages.mean(axis=0, keepdims=True)
-        sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
-        denom = jnp.maximum(advantages.shape[0] - 1, 1)
-        std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
+        if masks is None:
+            centered = advantages - advantages.mean(axis=0, keepdims=True)
+            sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
+            denom = jnp.maximum(advantages.shape[0] - 1, 1)
+            std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
+            return centered / std
+        # Mask-weighted statistics: exclude dead-agent and episode-boundary steps.
+        count = jnp.sum(masks, axis=0, keepdims=True)                              # (1, N)
+        mean = jnp.sum(advantages * masks, axis=0, keepdims=True) / jnp.maximum(count, 1.0)
+        centered = advantages - mean
+        var = jnp.sum(jnp.square(centered) * masks, axis=0, keepdims=True) / jnp.maximum(count - 1.0, 1.0)
+        std = jnp.sqrt(jnp.clip(var, a_min=1.0e-8))
         return centered / std
 
     def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
@@ -341,18 +356,11 @@ class JAXRPCIAlgorithm:
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
-        # normalize_pci_signal=True : per-agent normalize before combining so that
-        #   λ is a scale-invariant coefficient (N-robust, bridge-convergence-robust).
-        # normalize_pci_signal=False: raw pci_flat added directly  [original]
-        pci_for_combine = (
-            self._normalize_columns(pci_flat) if self.normalize_pci_signal else pci_flat
-        )
-        combined = (env_flat + causal_lambda * pci_for_combine).reshape(orig_shape)
+        combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
 
         info = {
             "env_adv_std": float(jnp.std(env_flat)),
-            "pci_adv_res_std": float(jnp.std(pci_for_combine)),
-            "pci_bonus_std": float(jnp.std(causal_lambda * pci_for_combine)),
+            "pci_adv_res_std": float(jnp.std(pci_flat)),
             "combined_adv_std": float(jnp.std(combined)),
         }
         return combined, info
@@ -377,46 +385,51 @@ class JAXRPCIAlgorithm:
         pci_residual: jnp.ndarray,
         causal_lambda: float,
     ) -> Dict[str, float]:
-        if self.attack_action_threshold is None:
-            return {}
+        return {}
 
-        actions = rollout["actions"]  # (T, E, N)
-        team_reward = rollout["rewards"].sum(axis=-1) / self.num_agents  # (T, E)
-        reward_hit = team_reward > 1.0e-8
+    @partial(jax.jit, static_argnums=0)
+    def _categorized_action_delta_compute(
+        self,
+        actions: jnp.ndarray,        # (T, E, N)
+        agent_dones: jnp.ndarray,    # (T, E, N)
+        delta: jnp.ndarray,          # (T, E, N)
+        avail_actions: jnp.ndarray,  # (T, E, N, action_dim)
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        thr = self.attack_action_threshold
+        alive_f = self._alive_from_agent_dones(agent_dones).astype(jnp.float32)
+        is_attack = (actions >= thr).astype(jnp.float32)
 
-        alive = self._alive_from_agent_dones(rollout["agent_dones"])
-        attack_intent = actions >= self.attack_action_threshold
-        event_mask = attack_intent & alive & reward_hit[..., None]
+        if self._allowed_target_matrix is not None:
+            num_targets = self._allowed_target_matrix.shape[-1]
+            attack_targets = jnp.clip(actions - thr, 0, num_targets - 1)
+            chosen_target_one_hot = jax.nn.one_hot(
+                attack_targets.astype(jnp.int32), num_targets, dtype=jnp.float32,
+            )
+            chosen_target_allowed = jnp.sum(
+                chosen_target_one_hot * self._allowed_target_matrix[None, None, :, :],
+                axis=-1,
+            )
+            target_mask    = alive_f * is_attack * (chosen_target_allowed > 0).astype(jnp.float32)
+            nontarget_mask = alive_f * is_attack * (chosen_target_allowed <= 0).astype(jnp.float32)
+        else:
+            action_avail = jnp.take_along_axis(
+                avail_actions, actions[..., None].astype(jnp.int32), axis=-1
+            ).squeeze(-1)
+            target_mask    = alive_f * is_attack * (action_avail > 0).astype(jnp.float32)
+            nontarget_mask = alive_f * is_attack * (action_avail == 0).astype(jnp.float32)
 
-        bonus_abs = jnp.abs(causal_lambda * pci_residual)
-        # Vectorize over agent dim: sum over (T, E) axes.
-        mask_f = event_mask.astype(jnp.float32)                        # (T, E, N)
-        counts   = mask_f.sum(axis=(0, 1))                             # (N,)
-        denoms   = counts + 1.0e-8
-        delta_means   = (delta        * mask_f).sum(axis=(0, 1)) / denoms
-        pci_means     = (pci_advantages * mask_f).sum(axis=(0, 1)) / denoms
-        res_means     = (pci_residual   * mask_f).sum(axis=(0, 1)) / denoms
-        bonus_means   = (bonus_abs      * mask_f).sum(axis=(0, 1)) / denoms
-        # Zero out agents with no events (count == 0 ⟹ numerator == 0 already, but be explicit).
-        has_events = counts > 0
-        delta_means = jnp.where(has_events, delta_means, 0.0)
-        pci_means   = jnp.where(has_events, pci_means,   0.0)
-        res_means   = jnp.where(has_events, res_means,   0.0)
-        bonus_means = jnp.where(has_events, bonus_means, 0.0)
-        # Move to host once, then build the dict.
-        counts_h      = [float(v) for v in counts]
-        delta_means_h = [float(v) for v in delta_means]
-        pci_means_h   = [float(v) for v in pci_means]
-        res_means_h   = [float(v) for v in res_means]
-        bonus_means_h = [float(v) for v in bonus_means]
-        metrics: Dict[str, float] = {}
-        for agent_id in range(self.num_agents):
-            metrics[f"delta_agent_{agent_id}_attack_reward_count"] = counts_h[agent_id]
-            metrics[f"delta_agent_{agent_id}_attack_reward_mean"]  = delta_means_h[agent_id]
-            metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = pci_means_h[agent_id]
-            metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = res_means_h[agent_id]
-            metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = bonus_means_h[agent_id]
-        return metrics
+        other_mask = alive_f * (1.0 - is_attack)
+
+        def _stats(mask):
+            counts    = mask.sum(axis=(0, 1))
+            delta_sum = (delta * mask).sum(axis=(0, 1))
+            means     = jnp.where(counts > 0, delta_sum / jnp.maximum(counts, 1.0e-8), 0.0)
+            return counts, means
+
+        tc, tm = _stats(target_mask)
+        nc, nm = _stats(nontarget_mask)
+        oc, om = _stats(other_mask)
+        return tc, tm, nc, nm, oc, om
 
     def _categorized_action_delta_metrics(
         self,
@@ -438,59 +451,24 @@ class JAXRPCIAlgorithm:
         if self.attack_action_threshold is None:
             return {}
 
-        actions       = rollout["actions"]        # (T, E, N)
-        avail_actions = rollout["avail_actions"]  # (T, E, N, action_dim)
-        thr = self.attack_action_threshold
+        tc, tm, nc, nm, oc, om = self._categorized_action_delta_compute(
+            rollout["actions"],
+            rollout["agent_dones"],
+            delta,
+            rollout["avail_actions"],
+        )
 
-        alive_f = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
-
-        is_attack = (actions >= thr).astype(jnp.float32)               # (T, E, N)
-
-        if self._allowed_target_matrix is not None:
-            num_targets = self._allowed_target_matrix.shape[-1]
-            attack_targets = jnp.clip(actions - thr, 0, num_targets - 1)
-            chosen_target_one_hot = jax.nn.one_hot(
-                attack_targets.astype(jnp.int32),
-                num_targets,
-                dtype=jnp.float32,
-            )
-            chosen_target_allowed = jnp.sum(
-                chosen_target_one_hot * self._allowed_target_matrix[None, None, :, :],
-                axis=-1,
-            )
-            target_mask    = alive_f * is_attack * (chosen_target_allowed > 0).astype(jnp.float32)
-            nontarget_mask = alive_f * is_attack * (chosen_target_allowed <= 0).astype(jnp.float32)
-        else:
-            # Fallback for environments without explicit target-allocation metadata.
-            action_avail = jnp.take_along_axis(
-                avail_actions, actions[..., None].astype(jnp.int32), axis=-1
-            ).squeeze(-1)                                               # (T, E, N)
-            target_mask    = alive_f * is_attack * (action_avail > 0).astype(jnp.float32)
-            nontarget_mask = alive_f * is_attack * (action_avail == 0).astype(jnp.float32)
-
-        other_mask      = alive_f * (1.0 - is_attack)
-
-        categories = [
-            ("target_attack",     target_mask),
-            ("non_target_attack", nontarget_mask),
-            ("other_action",      other_mask),
+        cat_data = [
+            ("target_attack",     tree_to_host(tc), tree_to_host(tm)),
+            ("non_target_attack", tree_to_host(nc), tree_to_host(nm)),
+            ("other_action",      tree_to_host(oc), tree_to_host(om)),
         ]
-
-        # Compute per-agent counts and means vectorised over (T, E), then move to host once.
-        all_counts = {}
-        all_means  = {}
-        for cat_name, cat_mask in categories:
-            counts    = cat_mask.sum(axis=(0, 1))                         # (N,)
-            delta_sum = (delta * cat_mask).sum(axis=(0, 1))               # (N,)
-            means     = jnp.where(counts > 0, delta_sum / jnp.maximum(counts, 1.0e-8), 0.0)
-            all_counts[cat_name] = [float(v) for v in tree_to_host(counts)]
-            all_means[cat_name]  = [float(v) for v in tree_to_host(means)]
 
         metrics: Dict[str, float] = {}
         for agent_id in range(self.num_agents):
-            for cat_name, _ in categories:
-                metrics[f"delta_agent{agent_id}_{cat_name}_count"] = all_counts[cat_name][agent_id]
-                metrics[f"delta_agent{agent_id}_{cat_name}_mean"]  = all_means[cat_name][agent_id]
+            for cat_name, counts_h, means_h in cat_data:
+                metrics[f"delta_agent{agent_id}_{cat_name}_count"] = float(counts_h[agent_id])
+                metrics[f"delta_agent{agent_id}_{cat_name}_mean"]  = float(means_h[agent_id])
         return metrics
 
     @partial(jax.jit, static_argnums=0)
@@ -801,12 +779,18 @@ class JAXRPCIAlgorithm:
         ).reshape(total_steps, self.num_agents)
         loss_masks = masks
 
+        # alive_masks: 1 for steps where the agent was alive (not dead within episode).
+        # Combined with episode mask to get the set of steps that are valid for
+        # normalization statistics (alive AND not an episode-boundary reset step).
+        alive_masks = (1.0 - rollout["agent_dones"]).reshape(total_steps, self.num_agents)
+        norm_masks = masks * alive_masks
+
         if advantages.ndim == 2:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
         else:
             adv = advantages
         adv = adv.reshape(total_steps, self.num_agents)
-        adv = self._normalize_actor_advantages(adv)
+        adv = self._normalize_actor_advantages(adv, norm_masks)
 
         return {
             "obs": obs,
@@ -853,71 +837,56 @@ class JAXRPCIAlgorithm:
             "returns": returns.reshape(-1),
         }
 
-    def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        time_steps, n_envs = rollout["actions"].shape[:2]
-        flat_batch = time_steps * n_envs
-
-        obs_flat = rollout["obs"].reshape(flat_batch, self.num_agents, self.policy_obs_dim)
-        local_obs = obs_flat.reshape(-1, self.policy_obs_dim)
-        others_obs = gather_other_agent_obs(obs_flat).reshape(
-            -1, (self.num_agents - 1) * self.policy_obs_dim
-        )
-        if self.use_recurrent_policy:
-            hidden_all = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
-            z = hidden_all.reshape(-1, self.actor_state_dim)
-            hidden_others = gather_other_agent_obs(hidden_all).reshape(
-                -1, self.bridge_hidden_dim
-            )
-        else:
-            z = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
-            hidden_others = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
-
-        actions = rollout["actions"].reshape(-1)
-        if self.global_reward:
-            team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
-            targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
-        else:
-            targets = jnp.repeat(
-                rollout["rewards"][:, :, None, :],
-                self.num_agents,
-                axis=2,
-            ).reshape(-1, self.num_agents)
-
-        return {
-            "z": z.astype(jnp.float32),
-            "w": others_obs.astype(jnp.float32),
-            "x_obs": local_obs.astype(jnp.float32),
-            "x_hid": hidden_others.astype(jnp.float32),
-            "actions": actions.astype(jnp.int32),
-            "targets": targets.astype(jnp.float32),
-        }
-
-    def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
+    def _preprocess_rollout(self, rollout: Dict[str, jnp.ndarray]):
+        """Shared rollout flattening used by both _causal_batch and _bridge_inputs."""
         obs = rollout["obs"]
         time_steps, n_envs = obs.shape[:2]
         flat_batch = time_steps * n_envs
-        local_obs = obs.reshape(-1, self.policy_obs_dim)
+
+        alive_by_agent = self._alive_from_agent_dones(rollout["agent_dones"]).reshape(
+            flat_batch, self.num_agents
+        )
         obs_4d = obs.reshape(flat_batch, self.num_agents, self.policy_obs_dim)
+        local_obs = obs_4d.reshape(-1, self.policy_obs_dim)
         others_obs = gather_other_agent_obs(obs_4d).reshape(
             -1, (self.num_agents - 1) * self.policy_obs_dim
         )
+
         if self.use_recurrent_policy:
             hidden_4d = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
-            hidden_others = gather_other_agent_obs(hidden_4d).reshape(
-                -1, self.bridge_hidden_dim
-            )
+            hidden_4d = hidden_4d * alive_by_agent[..., None].astype(hidden_4d.dtype)
+            z = hidden_4d.reshape(-1, self.actor_state_dim)
+            hidden_others = gather_other_agent_obs(hidden_4d).reshape(-1, self.bridge_hidden_dim)
         else:
-            hidden_others = jnp.zeros((local_obs.shape[0], 0), dtype=jnp.float32)
+            n_flat = flat_batch * self.num_agents
+            z = jnp.zeros((n_flat, 0), dtype=jnp.float32)
+            hidden_others = jnp.zeros((n_flat, 0), dtype=jnp.float32)
+
         actions = rollout["actions"].reshape(-1)
         if self.global_reward:
             team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
             reward_targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
         else:
             reward_targets = jnp.repeat(
-                rollout["rewards"][:, :, None, :],
-                self.num_agents,
-                axis=2,
+                rollout["rewards"][:, :, None, :], self.num_agents, axis=2
             ).reshape(-1, self.num_agents)
+
+        focal_alive = alive_by_agent.reshape(-1)
+        return local_obs, others_obs, z, hidden_others, actions, reward_targets, focal_alive
+
+    def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
+        local_obs, others_obs, z, hidden_others, actions, targets, focal_alive = self._preprocess_rollout(rollout)
+        return {
+            "z":       z[focal_alive].astype(jnp.float32),
+            "w":       others_obs[focal_alive].astype(jnp.float32),
+            "x_obs":   local_obs[focal_alive].astype(jnp.float32),
+            "x_hid":   hidden_others[focal_alive].astype(jnp.float32),
+            "actions": actions[focal_alive].astype(jnp.int32),
+            "targets": targets[focal_alive].astype(jnp.float32),
+        }
+
+    def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
+        local_obs, others_obs, _, hidden_others, actions, reward_targets, _ = self._preprocess_rollout(rollout)
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
@@ -955,7 +924,8 @@ class JAXRPCIAlgorithm:
 
         all_preds = jax.vmap(predict_one_action)(all_actions).transpose(1, 0, 2)
         factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
-        probs_counterfactual = probs * factual_mask * avail_actions
+        probs_counterfactual = probs * factual_mask * avail_actions # consider avail actions
+   
         renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
         # Match Torch: clip with 1e-10 so that when no valid CF exists,
         # renormalized_probs ≈ 0 → baseline ≈ 0 → delta = r_factual (same as Torch).
@@ -1330,7 +1300,10 @@ class JAXRPCIAlgorithm:
             effective_no_valid_cf = no_valid_cf
         elif baseline_type == "averaged":
             factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
+            
             valid_non_factual = factual_mask * avail_actions  # (B*N, action_dim)
+            # valid_non_factual = factual_mask # consider all actions (including unavailable ones) as counterfactuals.
+            
             denom = jnp.clip(valid_non_factual.sum(axis=-1, keepdims=True), a_min=1.0)
             baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
             effective_no_valid_cf = valid_non_factual.sum(axis=-1) <= 0  # (B*N,)

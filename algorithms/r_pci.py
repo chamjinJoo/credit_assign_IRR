@@ -483,6 +483,9 @@ class rPCIAlgorithm:
             
         obs_super = obs_batch.view(-1, self.obs_dim)
 
+        # Track agent IDs before alive filtering so they survive boolean indexing.
+        agent_ids_super = torch.arange(num_agents, device=device).unsqueeze(0).expand(batch_size, -1).reshape(-1).clone()
+
         # Filter dead-agent timesteps from super-batch (dead = only noop action available)
         avail_for_filter = build_available_actions_batch(batch_data, num_agents, device)
         if avail_for_filter:
@@ -500,6 +503,7 @@ class rPCIAlgorithm:
             Y_super = Y_super[alive_super_bridge]
             obs_super = obs_super[alive_super_bridge]
             policy_probs_super = policy_probs_super[alive_super_bridge]
+            agent_ids_super = agent_ids_super[alive_super_bridge]
 
         # === 2. Mini-batch Training Loop ===
         total_samples = A_super.size(0)
@@ -518,51 +522,111 @@ class rPCIAlgorithm:
             idx = indices[i:i + chunk_size]
             current_batch_size = idx.size(0)
             
-            a_mb = A_super[idx]; w_mb = W_super[idx]; y_mb = Y_super[idx]; z_mb = Z_super[idx]; x_mb = X_super[idx]; o_mb = obs_super[idx] 
+            a_mb = A_super[idx]; w_mb = W_super[idx]; y_mb = Y_super[idx]; z_mb = Z_super[idx]; x_mb = X_super[idx]; o_mb = obs_super[idx]
             pi_mb = policy_probs_super[idx]
-            batch_agent_ids = idx % num_agents
-            
-            # --- Standardize each active kernel block separately before building the Gram matrix ---
+            batch_agent_ids = agent_ids_super[idx]
+
             eps = 1e-6
-            
-            # Legacy fallback: keep handling older z layouts if they appear in checkpoints/experiments.
             joint_obs_dim = self.obs_dim * self.num_agents
-            if z_mb.size(1) == joint_obs_dim + self.num_agents:
-                z_obs_norm = (z_mb[:, :joint_obs_dim] - z_mb[:, :joint_obs_dim].mean(0, keepdim=True)) \
-                            / z_mb[:, :joint_obs_dim].std(0, keepdim=True, unbiased=False).clamp_min(eps)
-                z_rew_norm = (z_mb[:, joint_obs_dim:] - z_mb[:, joint_obs_dim:].mean(0, keepdim=True)) \
-                            / z_mb[:, joint_obs_dim:].std(0, keepdim=True, unbiased=False).clamp_min(eps)
-                z_mb_norm = torch.cat([z_obs_norm, z_rew_norm], dim=1)
-            
-            # Current path: Z^i_t = h^i_{t-1}, so plain feature-wise normalization is enough.
-            else: 
-                z_mean = z_mb.mean(dim=0, keepdim=True)
-                z_std = z_mb.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
-                z_mb_norm = (z_mb - z_mean) / z_std
 
-            # X^i_t currently contains (o^i_t, h^{-i}_{t-1}).
-            x_obs_mb_raw = x_mb[:, :self.obs_dim]
-            x_hid_mb_raw = x_mb[:, self.obs_dim:] if self.use_recurrent_policy else x_mb[:, self.obs_dim:self.obs_dim]
+            # --- Sort mini-batch by agent ID for contiguous per-agent blocks ---
+            # This avoids building a full B×B kernel then masking out cross-agent pairs.
+            # Kernel and solve cost drop from O(B²) / O(B³) to O(B²/N) / O(B³/N²).
+            sort_idx_mb = torch.argsort(batch_agent_ids, stable=True)
+            sorted_agent_ids = batch_agent_ids[sort_idx_mb]
+            agent_sizes = [(sorted_agent_ids == ag).sum().item() for ag in range(num_agents)]
 
-            x_obs_mean = x_obs_mb_raw.mean(dim=0, keepdim=True)
-            x_obs_std = x_obs_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
-            x_obs_mb = (x_obs_mb_raw - x_obs_mean) / x_obs_std
+            a_s  = a_mb[sort_idx_mb]
+            w_s  = w_mb[sort_idx_mb]
+            y_s  = y_mb[sort_idx_mb]
+            z_s  = z_mb[sort_idx_mb]
+            x_s  = x_mb[sort_idx_mb]
 
-            if x_hid_mb_raw.size(1) > 0:
-                x_hid_mean = x_hid_mb_raw.mean(dim=0, keepdim=True)
-                x_hid_std = x_hid_mb_raw.std(dim=0, keepdim=True, unbiased=False).clamp_min(eps)
-                x_hid_mb = (x_hid_mb_raw - x_hid_mean) / x_hid_std
-            else:
-                x_hid_mb = x_hid_mb_raw
+            x_obs_raw_s = x_s[:, :self.obs_dim]
+            x_hid_raw_s = x_s[:, self.obs_dim:] if self.use_recurrent_policy else x_s[:, self.obs_dim:self.obs_dim]
 
-            x_mb_norm = torch.cat([x_obs_mb, x_hid_mb], dim=1)
+            z_splits    = z_s.split(agent_sizes)
+            xobs_splits = x_obs_raw_s.split(agent_sizes)
+            xhid_splits = x_hid_raw_s.split(agent_sizes)
+            a_splits    = a_s.split(agent_sizes)
+            y_splits    = list(y_s.split(agent_sizes))
 
-            # A^i_t block
-            action_onehot_mb = F.one_hot(a_mb.long(), self.action_dim).float()
-            # Optional but often helpful: scale down action block so it doesn't dominate when action_dim is big.
-            # action_scale = (self.action_dim ** -0.5)  # 1/sqrt(|A|)
-            # a_mb_norm = action_onehot_mb * action_scale
-            
+            # Set kernel gamma once — feature dims are the same across agents.
+            # After per-agent standardization var ≈ 1, so gamma = 1/n_features.
+            with torch.no_grad():
+                self.kernel_z_block.log_gamma.data.fill_(
+                    torch.log(torch.tensor(1.0 / max(z_s.shape[1], 1))))
+                self.kernel_a_block.log_gamma.data.fill_(
+                    torch.log(torch.tensor(1.0 / self.action_dim)))
+                if x_obs_raw_s.size(1) > 0:
+                    self.kernel_xobs_block.log_gamma.data.fill_(
+                        torch.log(torch.tensor(1.0 / x_obs_raw_s.shape[1])))
+                if x_hid_raw_s.size(1) > 0:
+                    self.kernel_xhid_block.log_gamma.data.fill_(
+                        torch.log(torch.tensor(1.0 / x_hid_raw_s.shape[1])))
+
+            # --- Per-agent kernel and regularized kernel ---
+            K_blocks     = []
+            reg_K_blocks = []
+            off_vals_list = []
+
+            for ag_i in range(num_agents):
+                Bi = agent_sizes[ag_i]
+                if Bi == 0:
+                    K_blocks.append(None)
+                    reg_K_blocks.append(None)
+                    continue
+
+                z_i = z_splits[ag_i]
+                # Standardize z (per-agent block, so plain mean/std suffices).
+                # Legacy fallback: keep handling older z layouts if they appear in checkpoints/experiments.
+                if z_i.size(1) == joint_obs_dim + num_agents:
+                    z_obs_n = (z_i[:, :joint_obs_dim] - z_i[:, :joint_obs_dim].mean(0, keepdim=True)) \
+                              / z_i[:, :joint_obs_dim].std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                    z_rew_n = (z_i[:, joint_obs_dim:] - z_i[:, joint_obs_dim:].mean(0, keepdim=True)) \
+                              / z_i[:, joint_obs_dim:].std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                    z_norm_i = torch.cat([z_obs_n, z_rew_n], dim=1)
+                else:
+                    z_norm_i = (z_i - z_i.mean(0, keepdim=True)) / z_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+
+                xobs_i = xobs_splits[ag_i]
+                xobs_norm_i = (xobs_i - xobs_i.mean(0, keepdim=True)) / xobs_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+
+                xhid_i = xhid_splits[ag_i]
+                if xhid_i.size(1) > 0:
+                    xhid_norm_i = (xhid_i - xhid_i.mean(0, keepdim=True)) / xhid_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                else:
+                    xhid_norm_i = xhid_i
+
+                a_oh_i = F.one_hot(a_splits[ag_i].long(), self.action_dim).float()
+
+                K_i = self.kernel_z_block(z_norm_i) * self.kernel_a_block(a_oh_i)
+                if xobs_norm_i.size(1) > 0:
+                    K_i = K_i * self.kernel_xobs_block(xobs_norm_i)
+                if xhid_norm_i.size(1) > 0:
+                    K_i = K_i * self.kernel_xhid_block(xhid_norm_i)
+
+                # Monitor off-diagonal within this agent's block.
+                with torch.no_grad():
+                    if Bi >= 2:
+                        off_mask_i = ~torch.eye(Bi, dtype=torch.bool, device=device)
+                        off_vals_list.append(K_i[off_mask_i].detach())
+
+                reg_K_i = self.tikhonov_gamma * torch.eye(Bi, device=device) + self.stabilizer_lambda * K_i
+                try:
+                    torch.linalg.solve(reg_K_i, y_splits[ag_i])  # check regularity
+                except RuntimeError:
+                    reg_K_i = reg_K_i + 1e-3 * torch.eye(Bi, device=device)
+
+                K_blocks.append(K_i)
+                reg_K_blocks.append(reg_K_i)
+
+            # Aggregate off-diagonal stats across all agent blocks.
+            if off_vals_list:
+                all_off = torch.cat(off_vals_list)
+                sum_off_mean += all_off.mean().item()
+                sum_off_std  += all_off.std(unbiased=False).item()
+
             # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # legacy single-kernel path with standardization
             # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # legacy single-kernel path without standardization
 
@@ -585,7 +649,6 @@ class rPCIAlgorithm:
             #         ema = getattr(self, "kernel_gamma_ema", 0.95)
             #         self.critic_kernel_z.log_gamma.data = ema * self.critic_kernel_z.log_gamma.data + (1.0 - ema) * new_log_gamma
 
-
             # Legacy single-kernel Gram matrix.
             # K_z = self.critic_kernel_z(kernel_feat_z)
 
@@ -605,76 +668,42 @@ class rPCIAlgorithm:
             #        * self.kernel_a_block(action_onehot_mb)
             #        * self.kernel_x_block(x_mb_norm))
 
-            # ----------------------------------------------------------------------------- #
-            # Active path: block-wise product kernel over (Z^i_t, A^i_t, X^i_t).           #
-            # In the current proxy setting, X contributes both current self-observation      #
-            # and complementary previous hidden states.                                      #
-            # ----------------------------------------------------------------------------- #
-            # After standardization, var is approximately 1, so we use gamma = 1 / n_features.
-            with torch.no_grad():
-                kernel_blocks = [
-                    (z_mb_norm,        self.kernel_z_block),
-                    (action_onehot_mb, self.kernel_a_block),
-                ]
-                if x_obs_mb.size(1) > 0:
-                    kernel_blocks.append((x_obs_mb, self.kernel_xobs_block))
-                if x_hid_mb.size(1) > 0:
-                    kernel_blocks.append((x_hid_mb, self.kernel_xhid_block))
-
-                # var ≈ 1 after standardization, so gamma = 1/n (not 1/(n*var))
-                for feat, kernel in kernel_blocks:
-                    n = feat.shape[1]
-                    kernel.log_gamma.data.fill_(torch.log(torch.tensor(1.0 / n)))
-
-            # Final Gram matrix for the active (Z, A, X) blocks.
-            K_z = (self.kernel_z_block(z_mb_norm)
-                   * self.kernel_a_block(action_onehot_mb)
-                   )
-            if x_obs_mb.size(1) > 0:
-                K_z = K_z * self.kernel_xobs_block(x_obs_mb)
-            if x_hid_mb.size(1) > 0:
-                K_z = K_z * self.kernel_xhid_block(x_hid_mb)
-
-            # Monitor whether the Gram matrix is collapsing toward identity or all-ones.
-            with torch.no_grad():
-                B = K_z.size(0)
-                off_mask = ~torch.eye(B, dtype=torch.bool, device=K_z.device)
-                off_mean = K_z[off_mask].mean().item()
-                off_std = K_z[off_mask].std(unbiased=False).item()
-            sum_off_mean += off_mean
-            sum_off_std += off_std
-
-            reg_K_z = self.tikhonov_gamma * torch.eye(current_batch_size, device=device) + self.stabilizer_lambda * K_z
-            try:
-                torch.linalg.solve(reg_K_z, y_mb) # check regularity
-            except RuntimeError:
-                # Fallback for singular matrix
-                reg_K_z = reg_K_z + 1e-3 * torch.eye(current_batch_size, device=device)
-            
             # --- Update Outcome Bridge h_φ for bridge_epoch times ---
+            # Forward pass runs on the full sorted batch; per-agent solve on B_i×B_i blocks.
             epoch_outcome_loss = 0.0
             for _ in range(self.bridge_epoch):
-                y_hat_mb = self.outcome_bridge_net(a_mb, w_mb, x=x_mb)
-                residuals_mb = y_mb - y_hat_mb
-                
-                solved_residuals = torch.linalg.solve(reg_K_z, residuals_mb)
-                # Compute per-sample loss
-                per_sample_loss_h = (residuals_mb * (K_z @ solved_residuals)).sum(dim=1) # [B]
-                
-                loss_h = per_sample_loss_h.mean()
-                
+                y_hat_s = self.outcome_bridge_net(a_s, w_s, x=x_s)
+
+                per_agent_losses = []
+                offset = 0
+                for ag_i in range(num_agents):
+                    Bi = agent_sizes[ag_i]
+                    if K_blocks[ag_i] is None or Bi == 0:
+                        offset += Bi
+                        continue
+                    K_i     = K_blocks[ag_i]
+                    reg_K_i = reg_K_blocks[ag_i]
+                    res_i   = y_splits[ag_i] - y_hat_s[offset:offset + Bi]
+                    solved_i = torch.linalg.solve(reg_K_i, res_i)
+                    per_sample_i = (res_i * (K_i @ solved_i)).sum(dim=1)  # [B_i]
+                    per_agent_losses.append(per_sample_i.mean())           # 1/|B_i|
+                    offset += Bi
+
+                # Per-agent averaging: (1/|N|) sum_i (1/|B_i|) r_i^T K_i (γI+λK_i)^{-1} r_i
+                loss_h = torch.stack(per_agent_losses).mean()
+
                 # --- Update Action Bridge q_θ ---
                 loss_q = torch.tensor(0.0, device=device)
 
                 total_loss = loss_h + loss_q
-                
+
                 self.outcome_bridge_optimizer.zero_grad()
                 self.action_bridge_optimizer.zero_grad()
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.outcome_bridge_net.parameters(), self.max_grad_norm)
                 self.outcome_bridge_optimizer.step()
                 # self.action_bridge_optimizer.step()
-                
+
                 epoch_outcome_loss += loss_h.item()
 
             avg_outcome_loss += epoch_outcome_loss / self.bridge_epoch

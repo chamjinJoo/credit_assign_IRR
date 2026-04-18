@@ -10,13 +10,13 @@ model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # training settings
-n_rollout_threads=8
+n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
-seeds=(42 1 2 31 32)
-run_in_background=false
+seeds=(42 2 1)
+run_in_background=true
 
 # test=false
 # checkpoint="./save_checkpoints/20260406_185738_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_1599.pkl"

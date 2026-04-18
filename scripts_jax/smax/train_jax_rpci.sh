@@ -6,21 +6,25 @@
 set -euo pipefail
 
 config="configs_jax/smax_rpci.yaml"
-model="jax-rpci"
-use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # rpci settings
 use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 
+if ${use_centralized_critic}; then
+  model="jax-pci-mappo"
+else
+  model="jax-pci-ippo"
+fi
+
 # training settings
-n_rollout_threads=8
+n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2
 device="cuda"
-seeds=(42)
+seeds=(1)
 run_in_background=false
 
 #checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"
@@ -45,7 +49,6 @@ for seed in "${seeds[@]}"; do
         --env SMAX \
         --config ${config} \
         --model ${model} \
-        --use-recurrent-policy ${use_recurrent_policy} \
         --use-centralized-critic ${use_centralized_critic} \
         --causal-lambda ${causal_lambda} \
         --n-rollout-threads ${n_rollout_threads} \
@@ -64,7 +67,6 @@ for seed in "${seeds[@]}"; do
         --env SMAX \
         --config ${config} \
         --model ${model} \
-        --use-recurrent-policy ${use_recurrent_policy} \
         --use-centralized-critic ${use_centralized_critic} \
         --causal-lambda ${causal_lambda} \
         --n-rollout-threads ${n_rollout_threads} \

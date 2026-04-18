@@ -366,3 +366,19 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.04.15
 * Find that ippo and mappo have used dead-agent masking fallback since the env object did not delivered.
 * Dead agent masking logic이 computational cost를 많이 소비함. (fallback으로 설정시 rpci 2.5s/iter로 감소됨.)
+* **Patch the dead-agent masking as JaxMARL-like way.**
+  
+  * IPPO-Critic-RNN reset: agent-wise done / MAPPO-Critic-RNN reset: episode-done
+  * Actor-RNN: agent-wise done
+  * Bridge: agent-wise done -- mask dead agent hidden state (obs is already masked in env)
+    * reward shaping -- agent-wise done. (if the focal agent is dead, mask it)
+  * GAE/Returns: use episode done
+  * PPO loss: episode done / IPPO/MAPPO-Critic loss: episode done
+  * delta critic & convex comb = prev method (critic directly learns shaped value): r - CL*delta^i_t
+    -> low performance in 3m... why...?
+
+# 26.04.16
+* _normalize_actor_advantages에서 dead agent zero값 포함 이슈 수정
+
+# 26.04.18
+* outcome bridge loss 구현에 문제가 있었음. 기존에 모든 agent의 데이터를 혼합한 단일 K 행렬을 구성하여 loss 계산하던 것을 수정. 수정 후 시뮬레이션해봤는데 다행히 결과상 큰 차이는 없었음.
