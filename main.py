@@ -164,6 +164,7 @@ def create_algorithm(env, config):
             train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
             global_reward=getattr(algorithm_config, 'global_reward', True),
+            use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
         )
     elif algorithm_type in ['q_pci', 'qpci']:
         algorithm = qPCIAlgorithm(
@@ -737,10 +738,8 @@ def main():
             elif env_class_name in ['SMAXWrapper', 'SMAXBatchWrapper']:
                 map_name = getattr(config.environment, 'map_name', None)
                 post_parts = []
-                if getattr(config.environment, 'use_allowed_targets', False):
-                    post_parts.append('tar')
-                if getattr(config.environment, 'allowed_target_window', False):
-                    post_parts.append(f"w={config.environment.allowed_target_window}")
+                if getattr(config.environment, 'use_allowed_targets', False) and getattr(config.environment, 'allowed_target_window', False):
+                    post_parts.append(f"tar_w={config.environment.allowed_target_window}")
                 if getattr(config.environment, 'use_cooperative_kill_bonus', False):
                     post_parts.append('c.b.')
                 post = '_'.join(post_parts)

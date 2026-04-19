@@ -121,6 +121,7 @@ class rPCIAlgorithm:
         use_centralized_critic: bool = False, # MAPPO/IPPO-style centralized critic
         use_recurrent_policy: bool = True,
         global_reward: bool = True,
+        use_delta_critic: bool = False,
     ):
         self.env = env
         self.num_agents = num_agents
@@ -145,6 +146,7 @@ class rPCIAlgorithm:
         self.use_episode_buffer = use_episode_buffer
         self.use_centralized_critic = use_centralized_critic
         self.use_recurrent_policy = use_recurrent_policy
+        self.use_delta_critic = use_delta_critic
 
         # for causal intrinsic reward
         self.clip_delta = clip_delta
@@ -242,6 +244,29 @@ class rPCIAlgorithm:
         else: # individual value network for each agent
             self.value_nets = {agent_id: agent.value_net for agent_id, agent in self.agents.items()}
             self.value_optimizers = {agent_id: agent.value_optimizer for agent_id, agent in self.agents.items()}
+
+        self.delta_value_net = None
+        self.delta_value_optimizer = None
+        self.rnn_state_delta_value = None
+        self.rnn_states_delta_value = None
+        self.rnn_states_delta_value_batch = None
+        if self.use_delta_critic:
+            delta_obs_dim = obs_dim * num_agents if self.use_centralized_critic else obs_dim
+            delta_num_agents = num_agents if self.use_centralized_critic else 1
+            delta_out_dim = num_agents if self.use_centralized_critic else 1
+            self.delta_value_net = RNNValueNetwork(
+                obs_dim=delta_obs_dim,
+                hidden_dim=hidden_dim,
+                recurrent_N=recurrent_N,
+                out_dim=delta_out_dim,
+                action_dim=action_dim,
+                num_agents=delta_num_agents,
+            )
+            self.delta_value_optimizer = optim.Adam(self.delta_value_net.parameters(), lr=lr_critic)
+            if self.use_centralized_critic:
+                print(f'[R-PCI] Using centralized delta critic (input_dim={delta_obs_dim}, out_dim={delta_out_dim})')
+            else:
+                print(f'[R-PCI] Using shared per-agent delta critic (input_dim={delta_obs_dim}, out_dim={delta_out_dim})')
         
         # Current proxy setting:
         #   W^i_t = other agents' current observations
@@ -326,6 +351,8 @@ class rPCIAlgorithm:
             move_modules_to_device(self.device, self.value_net)
         elif self.use_value_parameter_sharing:
             move_modules_to_device(self.device, self.shared_value_net)
+        if self.use_delta_critic:
+            move_modules_to_device(self.device, self.delta_value_net)
         move_modules_to_device(
             self.device,
             self.outcome_bridge_net,
@@ -785,6 +812,14 @@ class rPCIAlgorithm:
             agent.reset_rnn_state(device=self.device)
         if self.use_centralized_critic:
             self.rnn_state_value = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
+        if self.use_delta_critic:
+            if self.use_centralized_critic:
+                self.rnn_state_delta_value = torch.zeros(self.recurrent_N, self.hidden_dim).to(self.device)
+            else:
+                self.rnn_states_delta_value = {
+                    agent_id: torch.zeros(self.recurrent_N, self.hidden_dim, device=self.device)
+                    for agent_id in range(self.num_agents)
+                }
         self.last_dones = {i: False for i in range(self.num_agents)}
     
     def reset_agents_batch(self, n_envs: int):
@@ -795,6 +830,16 @@ class rPCIAlgorithm:
             self.rnn_states_value_batch = torch.zeros(
                 n_envs, self.recurrent_N, self.hidden_dim, device=self.device
             )
+        if self.use_delta_critic:
+            if self.use_centralized_critic:
+                self.rnn_states_delta_value_batch = torch.zeros(
+                    n_envs, self.recurrent_N, self.hidden_dim, device=self.device
+                )
+            else:
+                self.rnn_states_delta_value_batch = {
+                    agent_id: torch.zeros(n_envs, self.recurrent_N, self.hidden_dim, device=self.device)
+                    for agent_id in range(self.num_agents)
+                }
         # Track done status for each agent in each environment
         self.last_dones_batch = {i: [False] * n_envs for i in range(self.num_agents)}
    
@@ -807,6 +852,11 @@ class rPCIAlgorithm:
         # Centralized critic: compute central value once
         if self.use_centralized_critic:
             central_v_state = self._compute_central_value_state(observations)
+        if self.use_delta_critic:
+            if self.use_centralized_critic:
+                central_delta_v_state = self._compute_central_delta_value_state(observations)
+            else:
+                delta_v_states = {}
         
         for agent_id, obs in observations.items():
             mask = 1.0 if not self.last_dones.get(agent_id, False) else 0.0
@@ -832,8 +882,24 @@ class rPCIAlgorithm:
                     prev_action_onehot=agent_prev_action_onehot
                 )
 
+            delta_v_state = None
+            if self.use_delta_critic:
+                if self.use_centralized_critic:
+                    delta_v_state = central_delta_v_state
+                else:
+                    delta_v_state = self._compute_agent_delta_value_state(
+                        agent_id,
+                        obs,
+                        mask_tensor,
+                        agent_prev_action_onehot,
+                    )
+                    delta_v_states[agent_id] = delta_v_state
+
             actions[agent_id] = (action, log_prob)
-            self.temp_hidden_states[agent_id] = (p_state, v_state, p_next_state)
+            hidden_state_entry = (p_state, v_state, p_next_state)
+            if self.use_delta_critic:
+                hidden_state_entry = hidden_state_entry + (delta_v_state,)
+            self.temp_hidden_states[agent_id] = hidden_state_entry
             self.temp_masks[agent_id] = mask
             self.temp_log_probs[agent_id] = log_prob
             
@@ -866,6 +932,11 @@ class rPCIAlgorithm:
         # Centralized critic: compute central values in batch
         if self.use_centralized_critic:
             curr_states_value = self._compute_central_value_states_batch(observations_batch)
+        if self.use_delta_critic:
+            if self.use_centralized_critic:
+                curr_states_delta_value = self._compute_central_delta_value_states_batch(observations_batch)
+            else:
+                curr_states_delta_value_by_agent = {}
         
         # Process each agent
         for agent_id in range(self.num_agents):
@@ -906,6 +977,13 @@ class rPCIAlgorithm:
                     masks_stacked,
                     prev_actions_onehot=agent_prev_actions_onehot
                 )
+                if self.use_delta_critic:
+                    curr_states_delta_value_by_agent[agent_id] = self._compute_agent_delta_value_states_batch(
+                        agent_id,
+                        obs_stacked,
+                        masks_stacked,
+                        agent_prev_actions_onehot,
+                    )
 
             # Distribute results to each environment
             for env_idx in range(n_envs):
@@ -917,11 +995,18 @@ class rPCIAlgorithm:
                     v_state_for_env = curr_states_value[env_idx]
                 else:
                     v_state_for_env = v_states[env_idx].clone()
-                self.temp_hidden_states_batch[env_idx][agent_id] = (
+                hidden_state_entry = (
                     p_states[env_idx].clone(),
                     v_state_for_env,
                     p_next_states[env_idx].clone(),
                 )
+                if self.use_delta_critic:
+                    if self.use_centralized_critic:
+                        delta_v_state_for_env = curr_states_delta_value[env_idx].clone()
+                    else:
+                        delta_v_state_for_env = curr_states_delta_value_by_agent[agent_id][env_idx].clone()
+                    hidden_state_entry = hidden_state_entry + (delta_v_state_for_env,)
+                self.temp_hidden_states_batch[env_idx][agent_id] = hidden_state_entry
                 self.temp_masks_batch[env_idx][agent_id] = masks_stacked[env_idx, 0].item()
         
         return actions_batch
@@ -1029,6 +1114,16 @@ class rPCIAlgorithm:
             self.rnn_states_value_batch[env_idx] = torch.zeros(
                 self.recurrent_N, self.hidden_dim, device=self.device
             )
+            if self.use_delta_critic:
+                self.rnn_states_delta_value_batch[env_idx] = torch.zeros(
+                    self.recurrent_N, self.hidden_dim, device=self.device
+                )
+        elif self.use_delta_critic and not self.use_centralized_critic:
+            for agent_id in range(self.num_agents):
+                if dones[agent_id]:
+                    self.rnn_states_delta_value_batch[agent_id][env_idx] = torch.zeros(
+                        self.recurrent_N, self.hidden_dim, device=self.device
+                    )
 
     def finish_episode(self, env_id: int = 0):
         """Finish current episode if using EpisodeBuffer."""
@@ -1285,6 +1380,7 @@ class rPCIAlgorithm:
         agent_advantages = {}
         agent_env_advantages = {}  # [Direction 2] env-only advantages
         agent_pci_advantages = {}  # [Direction 2] pci-only advantages
+        agent_delta_returns = {}
 
         causal_lambda = self.get_current_causal_lambda()  # [Direction 2]
 
@@ -1303,6 +1399,12 @@ class rPCIAlgorithm:
                 [t['env_advantages'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
             agent_pci_advantages[agent_id] = torch.tensor(
                 [t['pci_advantages'][agent_id] for t in batch_data], dtype=torch.float32, device=self.device)
+            if self.use_delta_critic:
+                agent_delta_returns[agent_id] = torch.tensor(
+                    [t['delta_returns'][agent_id] for t in batch_data],
+                    dtype=torch.float32,
+                    device=self.device,
+                )
 
         # Log delta (causal intrinsic rewards) by scenario for StagHunt
         for i in range(self.num_agents):
@@ -1330,8 +1432,8 @@ class rPCIAlgorithm:
                 agent_obs=agent_obs,
                 my_actions=my_actions,
                 agent_advantage=agent_advantages[agent_id], # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
-                # agent_advantage=agent_env_advantages[agent_id], # [Direction 2] env advantages only; adv_batch = batch-normalize(env_norm)
                 agent_return=agent_returns[agent_id],
+                agent_delta_return=agent_delta_returns.get(agent_id) if self.use_delta_critic else None,
                 masks_batch=masks_batch,
                 init_hidden_states=init_hidden_states,
                 available_actions_all=avail_actions_all,
@@ -1344,11 +1446,13 @@ class rPCIAlgorithm:
             my_actions_batch = prepared['my_actions_batch']
             adv_batch = prepared['adv_batch']
             ret_batch = prepared['ret_batch']
+            delta_ret_batch = prepared.get('delta_ret_batch')
             active_masks_batch = prepared['active_masks_batch']
             prev_actions_batch = prepared['prev_actions_batch']
             prev_actions_batch_merged = prepared['prev_actions_batch_merged']
             avail_actions_batch_merged = prepared['avail_actions_batch_merged']
             old_log_probs = prepared['old_log_probs']
+            delta_v_h0_batch = prepared.get('delta_v_h0_batch')
 
             # [Direction 2] Prepare PCI advantage batch with the same chunking as adv_batch
             pci_adv_normalized = normalize_advantages(agent_pci_advantages[agent_id])
@@ -1419,6 +1523,22 @@ class rPCIAlgorithm:
                             self._temp_epoch_mask_sum = 0.0
                         self._temp_epoch_value_loss += val_loss
                         self._temp_epoch_mask_sum += active_masks_batch.sum()
+
+                if self.use_delta_critic and not self.use_centralized_critic:
+                    delta_vals, _ = self.delta_value_net(
+                        rnn_obs_batch,
+                        delta_v_h0_batch,
+                        rnn_masks_batch,
+                        prev_actions=prev_actions_batch,
+                    )
+                    delta_error = (delta_vals.squeeze(1).squeeze(-1) - delta_ret_batch) ** 2
+                    delta_loss = (delta_error * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+
+                    self.delta_value_optimizer.zero_grad()
+                    (self.value_coef * delta_loss).backward()
+                    torch.nn.utils.clip_grad_norm_(self.delta_value_net.parameters(), self.max_grad_norm)
+                    self.delta_value_optimizer.step()
+                    agent_losses[f'agent_{agent_id}_delta_critic_loss'] += delta_loss.item()
             
             # === Shared Value Update (only if parameter sharing AND not centralized) ===
             if not self.use_centralized_critic and self.use_value_parameter_sharing:
@@ -1461,6 +1581,34 @@ class rPCIAlgorithm:
                 self.value_optimizer.step()
                 
                 agent_losses['value_loss'] += val_loss.item()
+
+        if self.use_delta_critic and self.use_centralized_critic:
+            central_delta_batch = self._prepare_centralized_delta_value_update_batch(batch_data)
+            global_obs_batch = central_delta_batch['global_obs_batch']
+            global_masks_batch = central_delta_batch['global_masks_batch']
+            active_masks_batch = central_delta_batch['active_masks_batch']
+            delta_v_h0_batch = central_delta_batch['delta_v_h0_batch']
+            global_delta_ret_batch = central_delta_batch['global_delta_ret_batch']
+            global_prev_actions_batch = central_delta_batch['global_prev_actions_batch']
+
+            for _ in range(self.ppo_epochs):
+                new_delta_vals, _ = self.delta_value_net(
+                    global_obs_batch,
+                    delta_v_h0_batch,
+                    global_masks_batch,
+                    prev_actions=global_prev_actions_batch,
+                )
+                delta_error = (new_delta_vals.squeeze(1) - global_delta_ret_batch) ** 2
+                delta_loss = (
+                    delta_error * active_masks_batch.unsqueeze(1)
+                ).sum() / (active_masks_batch.sum() * self.num_agents + 1e-8)
+
+                self.delta_value_optimizer.zero_grad()
+                (self.value_coef * delta_loss).backward()
+                torch.nn.utils.clip_grad_norm_(self.delta_value_net.parameters(), self.max_grad_norm)
+                self.delta_value_optimizer.step()
+
+                agent_losses['delta_critic_loss'] += delta_loss.item()
 
         for k in list(agent_losses.keys()):
             if k == 'value_loss':
@@ -1604,6 +1752,20 @@ class rPCIAlgorithm:
                     else:
                         values = all_values[:-1].view(-1, self.num_agents)
                         next_val = all_values[-1].view(self.num_agents) * last_mask
+
+                    if self.use_delta_critic:
+                        if len(traj[0]['hidden_states'][0]) > 3:
+                            delta_v_h0 = traj[0]['hidden_states'][0][3].to(self.device, non_blocking=True).unsqueeze(0)
+                        else:
+                            delta_v_h0 = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device)
+                        all_delta_values, _ = self.delta_value_net(
+                            extended_obs,
+                            delta_v_h0,
+                            extended_masks,
+                            prev_actions=joint_prev_actions,
+                        )
+                        delta_values = all_delta_values[:-1].view(-1, self.num_agents)
+                        next_delta_val = all_delta_values[-1].view(self.num_agents) * last_mask
                 
                 # Compute per-agent GAE using centralized values and per-agent PCI deltas
                 for agent_id in range(self.num_agents):
@@ -1640,14 +1802,24 @@ class rPCIAlgorithm:
                         )
                         done_signal = agent_dones_seq.tolist()
 
-                    pci_advantages, _ = compute_gae( # reward-to-go
-                        pci_delta_seq.tolist(),
-                        torch.zeros(T, device=self.device).tolist(),
-                        0.0,
-                        done_signal,
-                        self.gamma,
-                        self.gae_lambda,
-                    )
+                    if self.use_delta_critic:
+                        pci_advantages, delta_returns = compute_gae(
+                            pci_delta_seq.tolist(),
+                            delta_values[:, agent_id].tolist(),
+                            next_delta_val[agent_id].item(),
+                            done_signal,
+                            self.gamma,
+                            self.gae_lambda,
+                        )
+                    else:
+                        pci_advantages, delta_returns = compute_gae( # reward-to-go
+                            pci_delta_seq.tolist(),
+                            torch.zeros(T, device=self.device).tolist(),
+                            0.0,
+                            done_signal,
+                            self.gamma,
+                            self.gae_lambda,
+                        )
 
                     combined_advantages, env_adv_norm, pci_adv_residual = self._combine_env_and_pci_advantages(
                         env_adv_input,
@@ -1664,6 +1836,7 @@ class rPCIAlgorithm:
                             env_adv_norm[t_idx].item(),
                             pci_advantages[t_idx],
                             pci_adv_residual[t_idx].item(),
+                            delta_returns[t_idx],
                         )
             else:
                 # === IPPO-style per-agent GAE ===
@@ -1705,6 +1878,21 @@ class rPCIAlgorithm:
                         all_values, _ = self.agents[agent_id].value_net(extended_obs, v_h0, extended_masks, prev_actions=extended_agent_prev_actions)
                         values = all_values[:-1].view(-1) # value of agent_id
                         next_val = all_values[-1].item() * last_mask # next value
+
+                        if self.use_delta_critic:
+                            if len(traj[0]['hidden_states'][agent_id]) > 3:
+                                delta_v_h0 = traj[0]['hidden_states'][agent_id][3]
+                                delta_v_h0 = delta_v_h0.to(self.device, non_blocking=True).unsqueeze(0)
+                            else:
+                                delta_v_h0 = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device)
+                            all_delta_values, _ = self.delta_value_net(
+                                extended_obs,
+                                delta_v_h0,
+                                extended_masks,
+                                prev_actions=extended_agent_prev_actions,
+                            )
+                            delta_values = all_delta_values[:-1].view(-1)
+                            next_delta_val = all_delta_values[-1].item() * last_mask
                         
                         reward_signal = (
                             raw_team_rewards
@@ -1729,14 +1917,24 @@ class rPCIAlgorithm:
                             self.gae_lambda,
                         )
 
-                        pci_advantages, _ = compute_gae(
-                            pci_delta_seq.tolist(),
-                            torch.zeros(T, device=self.device).tolist(),
-                            0.0,
-                            done_signal,
-                            self.gamma,
-                            self.gae_lambda,
-                        )
+                        if self.use_delta_critic:
+                            pci_advantages, delta_returns = compute_gae(
+                                pci_delta_seq.tolist(),
+                                delta_values.tolist(),
+                                next_delta_val,
+                                done_signal,
+                                self.gamma,
+                                self.gae_lambda,
+                            )
+                        else:
+                            pci_advantages, delta_returns = compute_gae(
+                                pci_delta_seq.tolist(),
+                                torch.zeros(T, device=self.device).tolist(),
+                                0.0,
+                                done_signal,
+                                self.gamma,
+                                self.gae_lambda,
+                            )
 
                         combined_advantages, env_adv_norm, pci_adv_residual = self._combine_env_and_pci_advantages(
                             torch.tensor(env_advantages, dtype=torch.float32, device=self.device),
@@ -1754,6 +1952,7 @@ class rPCIAlgorithm:
                                 env_adv_norm[t_idx].item(),
                                 pci_advantages[t_idx],
                                 pci_adv_residual[t_idx].item(),
+                                delta_returns[t_idx],
                             )
         
         # 4. Create chunks from trajectories with Padding
@@ -1997,6 +2196,102 @@ class rPCIAlgorithm:
             self.rnn_states_value_batch = next_states_value
             return curr_states_value
 
+    def _compute_central_delta_value_state(self, observations: Dict[int, torch.Tensor]) -> torch.Tensor:
+        episode_done = bool(all(self.last_dones.values())) if len(self.last_dones) > 0 else False
+        mask0 = 1.0 if not episode_done else 0.0
+        mask_tensor0 = torch.tensor([mask0], dtype=torch.float32, device=self.device)
+        global_obs = concatenate_agent_observations(
+            observations,
+            self.num_agents,
+            self.obs_dim,
+            self.device,
+        )
+        with torch.no_grad():
+            curr_rnn_state = self.rnn_state_delta_value.unsqueeze(0)
+            agent_prev_actions = [self.agents[i].prev_action for i in range(self.num_agents)]
+            global_prev_action_onehot = torch.cat(agent_prev_actions, dim=-1).unsqueeze(0)
+            _, next_rnn_state = self.delta_value_net(
+                global_obs.unsqueeze(0),
+                curr_rnn_state,
+                mask_tensor0.unsqueeze(0),
+                prev_actions=global_prev_action_onehot,
+            )
+            self.rnn_state_delta_value = next_rnn_state.squeeze(0)
+            return curr_rnn_state.squeeze(0).clone()
+
+    def _compute_agent_delta_value_state(
+        self,
+        agent_id: int,
+        obs: torch.Tensor,
+        mask_tensor: torch.Tensor,
+        prev_action_onehot: torch.Tensor,
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            curr_rnn_state = self.rnn_states_delta_value[agent_id].unsqueeze(0)
+            _, next_rnn_state = self.delta_value_net(
+                obs.unsqueeze(0),
+                curr_rnn_state,
+                mask_tensor.unsqueeze(0),
+                prev_actions=prev_action_onehot,
+            )
+            self.rnn_states_delta_value[agent_id] = next_rnn_state.squeeze(0)
+            return curr_rnn_state.squeeze(0).clone()
+
+    def _compute_central_delta_value_states_batch(
+        self,
+        observations_batch: List[Dict[int, torch.Tensor]],
+    ) -> torch.Tensor:
+        n_envs = len(observations_batch)
+        global_obs_list = [
+            concatenate_agent_observations(
+                observations_batch[env_idx],
+                self.num_agents,
+                self.obs_dim,
+                self.device,
+            )
+            for env_idx in range(n_envs)
+        ]
+        global_obs_batch_tensor = torch.stack(global_obs_list).to(self.device)
+        global_prev_actions_list = [self.agents[i].prev_actions_batch for i in range(self.num_agents)]
+        global_prev_action_onehot_batch = torch.cat(global_prev_actions_list, dim=-1)
+        central_masks = torch.tensor([
+            [
+                1.0
+                if not all(self.last_dones_batch[agent_id][env_idx] for agent_id in range(self.num_agents))
+                else 0.0
+            ]
+            for env_idx in range(n_envs)
+        ], dtype=torch.float32, device=self.device)
+
+        with torch.no_grad():
+            curr_states_delta_value = self.rnn_states_delta_value_batch.clone()
+            _, next_states_delta_value = self.delta_value_net(
+                global_obs_batch_tensor,
+                self.rnn_states_delta_value_batch,
+                central_masks,
+                prev_actions=global_prev_action_onehot_batch,
+            )
+            self.rnn_states_delta_value_batch = next_states_delta_value
+            return curr_states_delta_value
+
+    def _compute_agent_delta_value_states_batch(
+        self,
+        agent_id: int,
+        obs_batch: torch.Tensor,
+        masks_batch: torch.Tensor,
+        prev_actions_onehot: torch.Tensor,
+    ) -> torch.Tensor:
+        with torch.no_grad():
+            curr_states_delta_value = self.rnn_states_delta_value_batch[agent_id].clone()
+            _, next_states_delta_value = self.delta_value_net(
+                obs_batch,
+                self.rnn_states_delta_value_batch[agent_id],
+                masks_batch,
+                prev_actions=prev_actions_onehot,
+            )
+            self.rnn_states_delta_value_batch[agent_id] = next_states_delta_value
+            return curr_states_delta_value
+
     def _prepare_centralized_value_update_batch(self, batch_data: List[Dict]):
         global_obs_seq = torch.stack([
             concatenate_agent_observations(
@@ -2083,6 +2378,87 @@ class rPCIAlgorithm:
             "global_prev_actions_batch": global_prev_actions_batch,
         }
 
+    def _prepare_centralized_delta_value_update_batch(self, batch_data: List[Dict]):
+        global_obs_seq = torch.stack([
+            concatenate_agent_observations(
+                t['bold_o_t'],
+                self.num_agents,
+                self.obs_dim,
+                self.device,
+            )
+            for t in batch_data
+        ]).to(self.device)
+        global_masks_seq = torch.tensor(
+            [max(t['masks'][i] for i in range(self.num_agents)) for t in batch_data],
+            device=self.device,
+        ).unsqueeze(1)
+        delta_states_all_central = torch.stack([
+            (
+                t['hidden_states'][0][3]
+                if len(t['hidden_states'][0]) > 3
+                else torch.zeros(self.recurrent_N, self.hidden_dim)
+            )
+            for t in batch_data
+        ]).to(self.device)
+        all_delta_returns = torch.tensor(
+            [[t['delta_returns'][i] for i in range(self.num_agents)] for t in batch_data],
+            dtype=torch.float32,
+            device=self.device,
+        )
+
+        T_total = global_obs_seq.size(0)
+        chunk_len = self.rnn_chunk_length
+        num_chunks = T_total // chunk_len
+
+        if num_chunks > 0:
+            global_obs_batch = chunk_sequence(global_obs_seq, chunk_len)
+            global_masks_batch = chunk_sequence(global_masks_seq, chunk_len)
+
+            if 'active_mask' in batch_data[0]:
+                active_masks = torch.tensor(
+                    [t['active_mask'] for t in batch_data],
+                    device=self.device,
+                ).unsqueeze(1)
+                active_masks_batch = chunk_sequence(active_masks, chunk_len).reshape(-1)
+            else:
+                active_masks_batch = torch.ones(num_chunks * chunk_len, device=self.device)
+
+            chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
+            delta_v_h0_batch = delta_states_all_central[chunk_indices]
+            global_delta_ret_batch = chunk_sequence(all_delta_returns, chunk_len).reshape(-1, self.num_agents)
+        else:
+            global_obs_batch = global_obs_seq.unsqueeze(1)
+            global_masks_batch = global_masks_seq
+            active_masks_batch = torch.ones(T_total, device=self.device)
+            delta_v_h0_batch = delta_states_all_central[0].unsqueeze(0)
+            global_delta_ret_batch = all_delta_returns
+
+        joint_prev_actions_batch_raw = torch.cat([
+            F.one_hot(
+                torch.tensor(
+                    [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
+                    dtype=torch.long,
+                    device=self.device,
+                ),
+                self.action_dim,
+            ).float()
+            for agent_id in range(self.num_agents)
+        ], dim=-1)
+
+        if num_chunks > 0:
+            global_prev_actions_batch = chunk_sequence(joint_prev_actions_batch_raw, chunk_len)
+        else:
+            global_prev_actions_batch = joint_prev_actions_batch_raw.unsqueeze(1)
+
+        return {
+            "global_obs_batch": global_obs_batch,
+            "global_masks_batch": global_masks_batch,
+            "active_masks_batch": active_masks_batch,
+            "delta_v_h0_batch": delta_v_h0_batch,
+            "global_delta_ret_batch": global_delta_ret_batch,
+            "global_prev_actions_batch": global_prev_actions_batch,
+        }
+
     def _normalize_advantage_signal(self, signal: torch.Tensor) -> torch.Tensor:
         if signal.numel() <= 1:
             return torch.zeros_like(signal)
@@ -2108,6 +2484,9 @@ class rPCIAlgorithm:
             transition['env_advantages'] = {}
             transition['pci_raw_advantages'] = {}
             transition['pci_advantages'] = {}
+            transition['delta_returns'] = {}
+        else:
+            transition.setdefault('delta_returns', {})
 
     def _store_advantage_entry(
         self,
@@ -2118,6 +2497,7 @@ class rPCIAlgorithm:
         env_adv_norm: float,
         pci_raw_advantage: float,
         pci_adv_residual: float,
+        delta_return: Optional[float] = None,
     ):
         self._ensure_advantage_storage(transition)
         transition['advantages'][agent_id] = combined_advantage
@@ -2125,6 +2505,8 @@ class rPCIAlgorithm:
         transition['env_advantages'][agent_id] = env_adv_norm
         transition['pci_raw_advantages'][agent_id] = pci_raw_advantage
         transition['pci_advantages'][agent_id] = pci_adv_residual
+        if delta_return is not None:
+            transition['delta_returns'][agent_id] = delta_return
 
     def _build_agent_prev_actions_sequence(self, traj: List[Dict], agent_id: int) -> torch.Tensor:
         agent_prev_actions = torch.tensor(
@@ -2455,14 +2837,28 @@ class rPCIAlgorithm:
         my_actions: torch.Tensor,
         agent_advantage: torch.Tensor,
         agent_return: torch.Tensor,
+        agent_delta_return: Optional[torch.Tensor],
         masks_batch: Dict[int, torch.Tensor],
         init_hidden_states: Dict[int, Tuple[torch.Tensor, torch.Tensor]],
         available_actions_all: Optional[torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
         adv = normalize_advantages(agent_advantage)
+        if agent_delta_return is None:
+            agent_delta_return = torch.zeros_like(agent_return)
 
         p_states_all = torch.stack([t['hidden_states'][agent_id][0] for t in batch_data]).to(self.device)
         v_states_all = torch.stack([t['hidden_states'][agent_id][1] for t in batch_data]).to(self.device)
+        if self.use_delta_critic:
+            delta_states_all = torch.stack([
+                (
+                    t['hidden_states'][agent_id][3]
+                    if len(t['hidden_states'][agent_id]) > 3
+                    else torch.zeros(self.recurrent_N, self.hidden_dim)
+                )
+                for t in batch_data
+            ]).to(self.device)
+        else:
+            delta_states_all = torch.zeros_like(v_states_all)
 
         T_total = agent_obs.size(0)
         chunk_len = self.rnn_chunk_length
@@ -2492,8 +2888,10 @@ class rPCIAlgorithm:
             chunk_indices = torch.arange(0, num_chunks * chunk_len, chunk_len)
             p_h0_chunked = p_states_all[chunk_indices]
             v_h0_chunked = v_states_all[chunk_indices]
+            delta_v_h0_chunked = delta_states_all[chunk_indices]
             adv_chunked = chunk_sequence(adv, chunk_len)
             ret_chunked = chunk_sequence(agent_return, chunk_len)
+            delta_ret_chunked = chunk_sequence(agent_delta_return, chunk_len)
 
             avail_actions_batch_merged = None
             if avail_actions_chunked is not None:
@@ -2512,9 +2910,11 @@ class rPCIAlgorithm:
                 "rnn_masks_batch": rnn_masks_chunked,
                 "p_h0_batch": p_h0_chunked,
                 "v_h0_batch": v_h0_chunked,
+                "delta_v_h0_batch": delta_v_h0_chunked,
                 "my_actions_batch": my_actions_chunked.reshape(-1),
                 "adv_batch": adv_chunked.reshape(-1),
                 "ret_batch": ret_chunked.reshape(-1),
+                "delta_ret_batch": delta_ret_chunked.reshape(-1),
                 "active_masks_batch": active_masks_chunked.reshape(-1),
                 "prev_actions_batch": prev_actions_chunked,
                 "prev_actions_batch_merged": prev_actions_chunked.reshape(-1, self.action_dim),
@@ -2526,6 +2926,10 @@ class rPCIAlgorithm:
         p_h0_batch = p_h0_batch.to(self.device).unsqueeze(0)
         v_h0_batch = init_hidden_states[agent_id][1]
         v_h0_batch = v_h0_batch.to(self.device).unsqueeze(0)
+        if self.use_delta_critic and len(init_hidden_states[agent_id]) > 3:
+            delta_v_h0_batch = init_hidden_states[agent_id][3].to(self.device).unsqueeze(0)
+        else:
+            delta_v_h0_batch = torch.zeros(1, self.recurrent_N, self.hidden_dim, device=self.device)
         prev_actions_raw = torch.tensor(
             [t['bold_a_t_minus_1'][agent_id] for t in batch_data],
             dtype=torch.long,
@@ -2544,9 +2948,11 @@ class rPCIAlgorithm:
             "rnn_masks_batch": masks_batch[agent_id],
             "p_h0_batch": p_h0_batch,
             "v_h0_batch": v_h0_batch,
+            "delta_v_h0_batch": delta_v_h0_batch,
             "my_actions_batch": my_actions,
             "adv_batch": adv,
             "ret_batch": agent_return,
+            "delta_ret_batch": agent_delta_return,
             "active_masks_batch": agent_active_masks,
             "prev_actions_batch": prev_actions_onehot_seq.unsqueeze(1),
             "prev_actions_batch_merged": prev_actions_onehot_seq,

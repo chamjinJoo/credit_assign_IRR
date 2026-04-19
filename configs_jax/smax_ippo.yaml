@@ -36,7 +36,7 @@ training:
 
 environment:
   env_name: "SMAX"
-  map_name: "5m_vs_6m" 
+  map_name: "3m" 
   # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
   max_steps: 100
   use_individual_rewards: false
@@ -56,7 +56,7 @@ environment:
   # [Tar] Target Allocation: directly masking actions in Wrapper.
   use_allowed_targets: true
   use_partial_damage_restore: false
-  allowed_target_window: 5
+  allowed_target_window: 2
 
   # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
   use_cooperative_kill_bonus: false 

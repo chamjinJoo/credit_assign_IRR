@@ -24,7 +24,7 @@ max_iterations=1600
 max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2
 device="cuda"
-seeds=(1)
+seeds=(42)
 run_in_background=false
 
 #checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"
@@ -76,7 +76,7 @@ for seed in "${seeds[@]}"; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb \
-        --wandb-project pci-marl-smax-jax
+        --wandb-project pci-marl-smax-jax-v2
     fi
 done
 

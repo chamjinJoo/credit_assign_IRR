@@ -15,7 +15,7 @@ max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
-seeds=(42 2 1)
+seeds=(42 1 2)
 run_in_background=true
 
 # test=false
@@ -69,7 +69,7 @@ for seed in "${seeds[@]}"; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb \
-        --wandb-project pci-marl-smax-jax
+        --wandb-project pci-marl-smax-jax-v2
     fi
 done
 

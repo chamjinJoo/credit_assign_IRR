@@ -384,3 +384,6 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * outcome bridge loss 구현에 문제가 있었음. 기존에 모든 agent의 데이터를 혼합한 단일 K 행렬을 구성하여 loss 계산하던 것을 수정. 수정 후 시뮬레이션해봤는데 다행히 결과상 큰 차이는 없었음.
 * Change hidden state reset mechanism of `use_centarlized_critic=false` cases: ippo and pci+ippo due to the learning fail for specific seed.
   * agent dead -> episode end as `use_centralized_critic=true`
+* Target allocation with `use_partial_damage_restore=False`를 pci+ippo가 잘 못 푸는 것 같음. 3m map에 성능이 안 나옴. pci+mappo는 잘 나오는 듯.
+
+* Fix dead masking on actor loss & critic loss

@@ -69,7 +69,7 @@ for seed in "${seeds[@]}"; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb \
-        --wandb-project pci-marl-smax-jax
+        --wandb-project pci-marl-smax-jax-v2
     fi
 done
 

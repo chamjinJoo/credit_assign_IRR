@@ -10,7 +10,6 @@ import jax.numpy as jnp
 
 from .common import (
     CausalBridgeNetwork,
-    DeltaCritic,
     FeedForwardActor,
     FeedForwardCritic,
     RecurrentActor,
@@ -131,6 +130,7 @@ class JAXRPCIAlgorithm:
         self.policy_obs_dim = obs_dim + num_agents if add_agent_id else obs_dim
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
+        self.delta_critic_state_dim = hidden_dim if use_delta_critic else 0
         self.normalize_pci_signal = normalize_pci_signal
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
         self.use_delta_critic = use_delta_critic
@@ -138,6 +138,7 @@ class JAXRPCIAlgorithm:
         print("use_delta_critic:", use_delta_critic)
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
+        self.delta_critic_output_dim = num_agents if use_centralized_critic else 1
         self.rng = jax.random.PRNGKey(seed)
         self.rng, self.bridge_rng = jax.random.split(self.rng)
 
@@ -210,18 +211,19 @@ class JAXRPCIAlgorithm:
 
         self.delta_critic_state = None
         if use_delta_critic:
-            delta_critic_input_dim = self.policy_obs_dim + self.actor_state_dim
-            self.delta_critic_model = DeltaCritic(
+            self.delta_critic_model = RecurrentCritic(
                 hidden_dim=hidden_dim,
-                input_dim=delta_critic_input_dim,
+                output_dim=self.delta_critic_output_dim,
             )
             self.rng, delta_critic_key = jax.random.split(self.rng)
             self.delta_critic_state = make_train_state(
                 self.delta_critic_model,
                 delta_critic_key,
                 (
-                    jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
-                    jnp.zeros((1, self.actor_state_dim), dtype=jnp.float32),
+                    jnp.zeros((1, critic_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, critic_prev_action_dim), dtype=jnp.float32),
+                    jnp.zeros((1, self.delta_critic_state_dim), dtype=jnp.float32),
+                    jnp.ones((1,), dtype=jnp.float32),
                 ),
                 lr_critic,
                 max_grad_norm,
@@ -233,9 +235,15 @@ class JAXRPCIAlgorithm:
             if self.use_centralized_critic
             else (n_envs, self.num_agents, self.critic_state_dim)
         )
+        delta_critic_shape = (
+            (n_envs, self.delta_critic_state_dim)
+            if self.use_centralized_critic
+            else (n_envs, self.num_agents, self.delta_critic_state_dim)
+        )
         return {
             "actor_hidden": jnp.zeros((n_envs, self.num_agents, self.actor_state_dim), dtype=jnp.float32),
             "critic_hidden": jnp.zeros(critic_shape, dtype=jnp.float32),
+            "delta_critic_hidden": jnp.zeros(delta_critic_shape, dtype=jnp.float32),
             "prev_actions": jnp.zeros((n_envs, self.num_agents, self.action_dim), dtype=jnp.float32),
             "prev_obs": jnp.zeros((n_envs, self.num_agents, self.policy_obs_dim), dtype=jnp.float32),
             "done_prev": jnp.zeros((n_envs,), dtype=jnp.float32),
@@ -309,27 +317,23 @@ class JAXRPCIAlgorithm:
     def _normalize_actor_advantages(
         self,
         advantages: jnp.ndarray,
-        masks: Optional[jnp.ndarray] = None,
+        alive_masks: Optional[jnp.ndarray] = None,
     ) -> jnp.ndarray:
-        """Normalize advantages per agent (axis=0 = T*E direction).
-
-        masks: optional float mask (T*E, N), 1=valid 0=skip.
-               When provided, mean/std are computed only over valid timesteps,
-               which prevents dead-agent near-zero values from biasing statistics.
-        """
+        """Normalize advantages per agent (axis=0 = T*E direction)."""
         if advantages.shape[0] <= 1:
             return jnp.zeros_like(advantages)
-        if masks is None:
+        if alive_masks is not None:
+            w = alive_masks.astype(jnp.float32)
+            counts = jnp.sum(w, axis=0, keepdims=True)
+            mean = jnp.sum(advantages * w, axis=0, keepdims=True) / jnp.maximum(counts, 1.0)
+            centered = advantages - mean
+            sq_sum = jnp.sum(jnp.square(centered) * w, axis=0, keepdims=True)
+            denom = jnp.maximum(counts - 1.0, 1.0)
+        else:
             centered = advantages - advantages.mean(axis=0, keepdims=True)
             sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
             denom = jnp.maximum(advantages.shape[0] - 1, 1)
-            std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
-            return centered / std
-        # Mask-weighted statistics: exclude dead-agent and episode-boundary steps.
-        count = jnp.sum(masks, axis=0, keepdims=True)                              # (1, N)
-        mean = jnp.sum(advantages * masks, axis=0, keepdims=True) / jnp.maximum(count, 1.0)
-        centered = advantages - mean
-        var = jnp.sum(jnp.square(centered) * masks, axis=0, keepdims=True) / jnp.maximum(count - 1.0, 1.0)
+        var = sq_sum / denom
         std = jnp.sqrt(jnp.clip(var, a_min=1.0e-8))
         return centered / std
 
@@ -351,10 +355,15 @@ class JAXRPCIAlgorithm:
         pci_advantages: jnp.ndarray,
         causal_lambda: float,
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
+        
         env_for_actor = self._env_advantages_for_actor(env_advantages)
         orig_shape = env_for_actor.shape  # (T, E, N)
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
+
+        # normalize both adv before combining.
+        # env_flat = self._normalize_actor_advantages(env_flat)
+        # pci_flat = self._normalize_actor_advantages(pci_flat)
 
         combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
 
@@ -562,53 +571,61 @@ class JAXRPCIAlgorithm:
     def _delta_value_step(
         self,
         delta_critic_params: Dict[str, Any],
-        obs: jnp.ndarray,           # (..., policy_obs_dim)
-        actor_hidden: jnp.ndarray,  # (..., actor_state_dim)
-    ) -> jnp.ndarray:               # (...)
-        orig_shape = obs.shape[:-1]
-        flat_obs = obs.reshape(-1, self.policy_obs_dim)
-        if self.actor_state_dim > 0:
-            flat_hidden = actor_hidden.reshape(-1, self.actor_state_dim)
-        else:
-            flat_hidden = jnp.zeros((flat_obs.shape[0], 0), dtype=jnp.float32)
-        values_flat = self.delta_critic_state.apply_fn(
-            {"params": delta_critic_params}, flat_obs, flat_hidden
-        )
-        return values_flat.reshape(orig_shape)
+        obs: jnp.ndarray,
+        delta_critic_hidden: jnp.ndarray,
+        prev_actions: jnp.ndarray,
+        reset_masks: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        if self.use_centralized_critic:
+            masks = 1.0 - reset_masks
+            delta_obs = obs.reshape(obs.shape[0], -1)
+            delta_prev_actions = prev_actions.reshape(prev_actions.shape[0], -1)
+            next_hidden, values = self.delta_critic_state.apply_fn(
+                {"params": delta_critic_params},
+                delta_obs,
+                delta_prev_actions,
+                delta_critic_hidden,
+                masks,
+            )
+            return next_hidden, values
 
-    @partial(jax.jit, static_argnums=0)
-    def _compute_delta_values(
-        self,
-        delta_critic_params: Dict[str, Any],
-        obs: jnp.ndarray,           # (T, E, N, policy_obs_dim)
-        actor_hidden: jnp.ndarray,  # (T, E, N, actor_state_dim)
-    ) -> jnp.ndarray:               # (T, E, N)
-        T, E, N = obs.shape[:3]
-        flat_obs = obs.reshape(T * E * N, self.policy_obs_dim)
-        if self.actor_state_dim > 0:
-            flat_hidden = actor_hidden.reshape(T * E * N, self.actor_state_dim)
+        n_envs = obs.shape[0]
+        if reset_masks.ndim == 1:
+            masks = jnp.broadcast_to((1.0 - reset_masks)[:, None], (n_envs, self.num_agents))
         else:
-            flat_hidden = jnp.zeros((T * E * N, 0), dtype=jnp.float32)
-        values_flat = self.delta_critic_state.apply_fn(
-            {"params": delta_critic_params}, flat_obs, flat_hidden
+            masks = 1.0 - reset_masks
+        flat_obs = obs.reshape(-1, obs.shape[-1])
+        flat_prev_actions = prev_actions.reshape(-1, prev_actions.shape[-1])
+        flat_hidden = delta_critic_hidden.reshape((n_envs * self.num_agents, delta_critic_hidden.shape[-1]))
+        flat_masks = masks.reshape(-1)
+        next_hidden_flat, values_flat = self.delta_critic_state.apply_fn(
+            {"params": delta_critic_params},
+            flat_obs,
+            flat_prev_actions,
+            flat_hidden,
+            flat_masks,
         )
-        return values_flat.reshape(T, E, N)
+        return (
+            next_hidden_flat.reshape(n_envs, self.num_agents, delta_critic_hidden.shape[-1]),
+            values_flat.reshape(n_envs, self.num_agents),
+        )
 
     @partial(jax.jit, static_argnums=0)
     def _delta_critic_update_step(
         self,
         delta_critic_state: Any,
-        obs: jnp.ndarray,           # (T*E*N, policy_obs_dim)
-        actor_hidden: jnp.ndarray,  # (T*E*N, actor_state_dim)
-        delta_returns: jnp.ndarray, # (T*E*N,)
-        loss_masks: jnp.ndarray,    # (T*E*N,)
+        batch: Dict[str, jnp.ndarray],
     ):
         def loss_fn(params):
-            values = delta_critic_state.apply_fn(
-                {"params": params}, obs, actor_hidden
+            _, values = delta_critic_state.apply_fn(
+                {"params": params},
+                batch["obs"],
+                batch["prev_actions"],
+                batch["hidden"],
+                batch["masks"],
             )
-            denom = jnp.sum(loss_masks) + 1.0e-8
-            value_loss = jnp.sum(jnp.square(values - delta_returns) * loss_masks) / denom
+            denom = jnp.sum(batch["loss_masks"]) + 1.0e-8
+            value_loss = jnp.sum(jnp.square(values - batch["returns"]) * batch["loss_masks"]) / denom
             return self.value_coef * value_loss, {"delta_critic_loss": value_loss}
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(delta_critic_state.params)
@@ -628,6 +645,7 @@ class JAXRPCIAlgorithm:
             runner_state: Dict[str, jnp.ndarray],
             actor_params: Dict[str, Any],
             critic_params: Dict[str, Any],
+            delta_critic_params: Dict[str, Any],
         ):
             def body_fn(carry, _):
                 rng, states, current_obs, current_avail, current_runner = carry
@@ -636,11 +654,12 @@ class JAXRPCIAlgorithm:
 
                 actor_hidden_prev = current_runner["actor_hidden"]
                 critic_hidden_prev = current_runner["critic_hidden"]
+                delta_critic_hidden_prev = current_runner["delta_critic_hidden"]
                 raw_prev_actions_prev = current_runner["prev_actions"]
                 prev_obs_prev = current_runner["prev_obs"]
                 done_prev = current_runner["done_prev"]
                 agent_done_prev = current_runner["agent_done_prev"]
-                actor_reset_masks = agent_done_prev
+                actor_reset_masks = done_prev
                 critic_reset_masks = done_prev
 
                 actor_hidden_next, actions, log_probs, probs = self._policy_step(
@@ -660,6 +679,17 @@ class JAXRPCIAlgorithm:
                     raw_prev_actions_prev,
                     critic_reset_masks,
                 )
+                if self.use_delta_critic and self.delta_critic_state is not None:
+                    delta_critic_hidden_next, delta_values = self._delta_value_step(
+                        delta_critic_params,
+                        obs_aug,
+                        delta_critic_hidden_prev,
+                        raw_prev_actions_prev,
+                        critic_reset_masks,
+                    )
+                else:
+                    delta_critic_hidden_next = delta_critic_hidden_prev
+                    delta_values = jnp.zeros((obs_aug.shape[0], self.num_agents), dtype=jnp.float32)
 
                 (
                     rng,
@@ -677,11 +707,12 @@ class JAXRPCIAlgorithm:
                     dones_all.astype(jnp.float32)[:, None],
                 )
                 next_prev_actions = action_one_hot(actions, self.action_dim)
-                next_prev_actions = next_prev_actions * (1.0 - agent_done_next)[..., None]
+                next_prev_actions = next_prev_actions * (1.0 - dones_all)[:, None, None]
 
                 next_runner = {
                     "actor_hidden": actor_hidden_next,
                     "critic_hidden": critic_hidden_next,
+                    "delta_critic_hidden": delta_critic_hidden_next,
                     "prev_actions": next_prev_actions,
                     "prev_obs": obs_aug,
                     "done_prev": dones_all.astype(jnp.float32),
@@ -700,8 +731,10 @@ class JAXRPCIAlgorithm:
                     "dones": dones_all.astype(jnp.float32),
                     "masks": (1.0 - done_prev).astype(jnp.float32),
                     "values": values.astype(jnp.float32),
+                    "delta_values": delta_values.astype(jnp.float32),
                     "actor_hidden": actor_hidden_prev.astype(jnp.float32),
                     "critic_hidden": critic_hidden_prev.astype(jnp.float32),
+                    "delta_critic_hidden": delta_critic_hidden_prev.astype(jnp.float32),
                     "prev_actions": raw_prev_actions_prev.astype(jnp.float32),
                     "battle_won": battle_won.astype(jnp.float32),
                 }
@@ -730,8 +763,15 @@ class JAXRPCIAlgorithm:
                 last_value_reset_masks,
             )
             rollout_out = dict(rollout)
-            rollout_out["last_next_obs_aug"] = next_obs_aug                      # (E, N, obs_dim)
-            rollout_out["last_next_actor_hidden"] = next_runner["actor_hidden"]  # (E, N, hidden_dim)
+            if self.use_delta_critic and self.delta_critic_state is not None:
+                _, last_delta_value = self._delta_value_step(
+                    delta_critic_params,
+                    next_obs_aug,
+                    next_runner["delta_critic_hidden"],
+                    next_runner["prev_actions"],
+                    last_value_reset_masks,
+                )
+                rollout_out["last_delta_value"] = last_delta_value.astype(jnp.float32)
             return rng, states, next_obs, next_avail, next_runner, rollout_out, last_value
 
         self._rollout_fns[horizon] = jax.jit(rollout_fn)
@@ -756,6 +796,7 @@ class JAXRPCIAlgorithm:
             runner_state,
             self.actor_state.params,
             self.critic_state.params,
+            self.delta_critic_state.params if self.use_delta_critic and self.delta_critic_state is not None else self.critic_state.params,
         )
 
     def _flatten_actor_batch(
@@ -777,20 +818,16 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(total_steps, self.num_agents)
-        loss_masks = masks
-
-        # alive_masks: 1 for steps where the agent was alive (not dead within episode).
-        # Combined with episode mask to get the set of steps that are valid for
-        # normalization statistics (alive AND not an episode-boundary reset step).
-        alive_masks = (1.0 - rollout["agent_dones"]).reshape(total_steps, self.num_agents)
-        norm_masks = masks * alive_masks
+        alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
+        alive_masks = alive_masks.reshape(total_steps, self.num_agents)
+        loss_masks = masks * alive_masks
 
         if advantages.ndim == 2:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
         else:
             adv = advantages
         adv = adv.reshape(total_steps, self.num_agents)
-        adv = self._normalize_actor_advantages(adv, norm_masks)
+        adv = self._normalize_actor_advantages(adv, alive_masks)
 
         return {
             "obs": obs,
@@ -813,7 +850,8 @@ class JAXRPCIAlgorithm:
                 loss_masks = base_masks
             else:
                 returns_flat = returns.reshape(-1, self.num_agents)
-                loss_masks = jnp.broadcast_to(base_masks[:, None], returns_flat.shape)
+                alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
+                loss_masks = base_masks[:, None] * alive_masks.reshape(-1, self.num_agents)
             return {
                 "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
                 "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
@@ -828,13 +866,47 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(-1)
+        alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32).reshape(-1)
         return {
             "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
             "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
             "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
             "masks": per_agent_masks,
-            "loss_masks": per_agent_masks,
+            "loss_masks": per_agent_masks * alive_masks,
             "returns": returns.reshape(-1),
+        }
+
+    def _flatten_delta_critic_batch(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        delta_returns: jnp.ndarray,
+    ):
+        if self.use_centralized_critic:
+            total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
+            base_masks = rollout["masks"].reshape(-1)
+            alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
+            return {
+                "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
+                "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
+                "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
+                "masks": base_masks,
+                "loss_masks": base_masks[:, None] * alive_masks.reshape(total_steps, self.num_agents),
+                "returns": delta_returns.reshape(-1, self.num_agents),
+            }
+
+        total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
+        per_agent_masks = jnp.broadcast_to(
+            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
+            rollout["actions"].shape,
+        ).reshape(-1)
+        alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32).reshape(-1)
+        return {
+            "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
+            "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
+            "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
+            "masks": per_agent_masks,
+            "loss_masks": per_agent_masks * alive_masks,
+            "returns": delta_returns.reshape(-1),
         }
 
     def _preprocess_rollout(self, rollout: Dict[str, jnp.ndarray]):
@@ -854,7 +926,6 @@ class JAXRPCIAlgorithm:
 
         if self.use_recurrent_policy:
             hidden_4d = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
-            hidden_4d = hidden_4d * alive_by_agent[..., None].astype(hidden_4d.dtype)
             z = hidden_4d.reshape(-1, self.actor_state_dim)
             hidden_others = gather_other_agent_obs(hidden_4d).reshape(-1, self.bridge_hidden_dim)
         else:
@@ -1454,18 +1525,8 @@ class JAXRPCIAlgorithm:
         )
 
         if self.use_delta_critic and self.delta_critic_state is not None:
-            delta_values = self._compute_delta_values(
-                self.delta_critic_state.params,
-                rollout["obs"],           # (T, E, N, obs_dim)
-                rollout["actor_hidden"],  # (T, E, N, hidden_dim)
-            )
-            last_delta_value = self._delta_value_step(
-                self.delta_critic_state.params,
-                rollout["last_next_obs_aug"],       # (E, N, obs_dim)
-                rollout["last_next_actor_hidden"],  # (E, N, hidden_dim)
-            )
-            # JaxMARL-style path: rely on env-provided dead obs/action handling
-            # and episode dones rather than masking out dead-agent auxiliary values.
+            delta_values = rollout["delta_values"]
+            last_delta_value = rollout["last_delta_value"]
             pci_advantages, delta_returns = compute_gae(
                 delta,
                 delta_values,
@@ -1474,28 +1535,12 @@ class JAXRPCIAlgorithm:
                 self.gamma,
                 self.gae_lambda,
             )
-            # Train delta critic for ppo_epochs on the full batch
-            T, E, N = delta.shape
-            total = T * E * N
-            flat_obs = rollout["obs"].reshape(total, self.policy_obs_dim)
-            if self.actor_state_dim > 0:
-                flat_hidden = rollout["actor_hidden"].reshape(total, self.actor_state_dim)
-            else:
-                flat_hidden = jnp.zeros((total, 0), dtype=jnp.float32)
-            flat_delta_returns = delta_returns.reshape(total)
-            flat_masks = jnp.broadcast_to(
-                rollout["masks"].reshape(rollout["masks"].shape + (1,)),
-                rollout["actions"].shape,
-            ).reshape(total)
-            flat_loss_masks = flat_masks
+            delta_critic_batch = self._flatten_delta_critic_batch(rollout, delta_returns)
             raw_dc: list = []
             for _ in range(self.ppo_epochs):
                 self.delta_critic_state, dc_metrics = self._delta_critic_update_step(
                     self.delta_critic_state,
-                    flat_obs,
-                    flat_hidden,
-                    flat_delta_returns,
-                    flat_loss_masks,
+                    delta_critic_batch,
                 )
                 raw_dc.append(dc_metrics)
             for bm in raw_dc:
@@ -1547,7 +1592,7 @@ class JAXRPCIAlgorithm:
             avail_actions,
             runner_state["actor_hidden"],
             runner_state["prev_actions"],
-            runner_state["agent_done_prev"],
+            runner_state["done_prev"],
             action_rng,
             True,
         )
