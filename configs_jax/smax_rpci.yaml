@@ -63,7 +63,7 @@ environment:
   # [Tar] Target Allocation: directly masking actions in Wrapper.
   use_allowed_targets: true
   use_partial_damage_restore: false # if false all damage is nullified if there exist any non-target attack to the enemy.
-  allowed_target_window: 4
+  allowed_target_window: 3
  
   max_steps: 100
   use_individual_rewards: false

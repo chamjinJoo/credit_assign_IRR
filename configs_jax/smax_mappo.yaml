@@ -40,7 +40,7 @@ environment:
   max_steps: 100
 
   # [Tar] Target Allocation: directly masking actions in Wrapper.
-  use_allowed_targets: true
+  use_allowed_targets: false
   use_partial_damage_restore: false
   allowed_target_window: 4
   

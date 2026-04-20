@@ -7,7 +7,6 @@ set -euo pipefail
 
 config="configs_jax/smax_ippo.yaml"
 model="jax-ippo"
-use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # training settings
 n_rollout_threads=4
@@ -36,7 +35,6 @@ for seed in "${seeds[@]}"; do
         --env SMAX \
         --config ${config} \
         --model ${model} \
-        --use-recurrent-policy ${use_recurrent_policy} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-iterations ${max_iterations} \
         --max-steps ${max_steps_per_iteration} \
@@ -53,7 +51,6 @@ for seed in "${seeds[@]}"; do
         --env SMAX \
         --config ${config} \
         --model ${model} \
-        --use-recurrent-policy ${use_recurrent_policy} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-iterations ${max_iterations} \
         --max-steps ${max_steps_per_iteration} \

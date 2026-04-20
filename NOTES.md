@@ -395,3 +395,4 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * SH noise 0.1에서 V_delta + advnorm before combine시 성능 개선이 탁월함.
   * $\mathcal{L}(\pi^i)=-\mathbb{E}_t[\tilde{A}^i_t\log(\pi^i(\cdot|\tau^i_t))]$, where $\tilde{A}^i_t = \hat{A}_t + \lambda \hat{A}^{i,\delta}_t$. The terms $\hat{A}$ represent GAE + normalization.
   * $\hat{A}^{i,\delta}_t$ is computed with shaped rewards $r_t -\text{cf\_baseline}$ and $\delta$-critic network $V^{i,\delta}_t$.
+* Found that JAXMARL repo does not use dead-agent masking on all Losses -> follow it.

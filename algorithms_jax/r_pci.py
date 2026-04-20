@@ -814,16 +814,14 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(total_steps, self.num_agents)
-        alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
-        alive_masks = alive_masks.reshape(total_steps, self.num_agents)
-        loss_masks = masks * alive_masks
+        loss_masks = masks
 
         if advantages.ndim == 2:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
         else:
             adv = advantages
         adv = adv.reshape(total_steps, self.num_agents)
-        adv = self._normalize_actor_advantages(adv, alive_masks)
+        adv = self._normalize_actor_advantages(adv)
 
         return {
             "obs": obs,
@@ -846,8 +844,7 @@ class JAXRPCIAlgorithm:
                 loss_masks = base_masks
             else:
                 returns_flat = returns.reshape(-1, self.num_agents)
-                alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
-                loss_masks = base_masks[:, None] * alive_masks.reshape(-1, self.num_agents)
+                loss_masks = jnp.broadcast_to(base_masks[:, None], (total_steps, self.num_agents))
             return {
                 "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
                 "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
@@ -862,13 +859,12 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(-1)
-        alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32).reshape(-1)
         return {
             "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
             "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
             "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
             "masks": per_agent_masks,
-            "loss_masks": per_agent_masks * alive_masks,
+            "loss_masks": per_agent_masks,
             "returns": returns.reshape(-1),
         }
 
@@ -880,13 +876,12 @@ class JAXRPCIAlgorithm:
         if self.use_centralized_critic:
             total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
             base_masks = rollout["masks"].reshape(-1)
-            alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
             return {
                 "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
                 "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
                 "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
                 "masks": base_masks,
-                "loss_masks": base_masks[:, None] * alive_masks.reshape(total_steps, self.num_agents),
+                "loss_masks": jnp.broadcast_to(base_masks[:, None], (total_steps, self.num_agents)),
                 "returns": delta_returns.reshape(-1, self.num_agents),
             }
 
@@ -895,13 +890,12 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(-1)
-        alive_masks = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32).reshape(-1)
         return {
             "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
             "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
             "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
             "masks": per_agent_masks,
-            "loss_masks": per_agent_masks * alive_masks,
+            "loss_masks": per_agent_masks,
             "returns": delta_returns.reshape(-1),
         }
 
@@ -911,9 +905,6 @@ class JAXRPCIAlgorithm:
         time_steps, n_envs = obs.shape[:2]
         flat_batch = time_steps * n_envs
 
-        alive_by_agent = self._alive_from_agent_dones(rollout["agent_dones"]).reshape(
-            flat_batch, self.num_agents
-        )
         obs_4d = obs.reshape(flat_batch, self.num_agents, self.policy_obs_dim)
         local_obs = obs_4d.reshape(-1, self.policy_obs_dim)
         others_obs = gather_other_agent_obs(obs_4d).reshape(
@@ -939,23 +930,22 @@ class JAXRPCIAlgorithm:
                 rollout["rewards"][:, :, None, :], self.num_agents, axis=2
             ).reshape(-1, self.num_agents)
 
-        focal_alive = alive_by_agent.reshape(-1)
-        return local_obs, others_obs, z, hidden_others, actions, reward_targets, agent_ids, focal_alive
+        return local_obs, others_obs, z, hidden_others, actions, reward_targets, agent_ids
 
     def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        local_obs, others_obs, z, hidden_others, actions, targets, agent_ids, focal_alive = self._preprocess_rollout(rollout)
+        local_obs, others_obs, z, hidden_others, actions, targets, agent_ids = self._preprocess_rollout(rollout)
         return {
-            "z":       z[focal_alive].astype(jnp.float32),
-            "w":       others_obs[focal_alive].astype(jnp.float32),
-            "x_obs":   local_obs[focal_alive].astype(jnp.float32),
-            "x_hid":   hidden_others[focal_alive].astype(jnp.float32),
-            "actions": actions[focal_alive].astype(jnp.int32),
-            "targets": targets[focal_alive].astype(jnp.float32),
-            "agent_ids": agent_ids[focal_alive].astype(jnp.int32),
+            "z":       z.astype(jnp.float32),
+            "w":       others_obs.astype(jnp.float32),
+            "x_obs":   local_obs.astype(jnp.float32),
+            "x_hid":   hidden_others.astype(jnp.float32),
+            "actions": actions.astype(jnp.int32),
+            "targets": targets.astype(jnp.float32),
+            "agent_ids": agent_ids.astype(jnp.int32),
         }
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
-        local_obs, others_obs, _, hidden_others, actions, reward_targets, _, _ = self._preprocess_rollout(rollout)
+        local_obs, others_obs, _, hidden_others, actions, reward_targets, _ = self._preprocess_rollout(rollout)
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
