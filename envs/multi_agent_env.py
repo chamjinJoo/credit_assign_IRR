@@ -2344,10 +2344,15 @@ class SMAXWrapper(MultiAgentEnv):
         self._state = None
 
         # allowed_targets 설정 (StagHuntEnv의 required_agents 패턴과 동일)
-        self.use_allowed_targets = use_allowed_targets
         self.allowed_target_window = None if allowed_target_window is None else max(1, int(allowed_target_window))
+        target_window_covers_all = (
+            allowed_targets is None
+            and self.allowed_target_window is not None
+            and self.allowed_target_window >= _num_enemies
+        )
+        self.use_allowed_targets = bool(use_allowed_targets) and not target_window_covers_all
         self._num_movement_actions = self._env.num_movement_actions  # 통상 5
-        if use_allowed_targets:
+        if self.use_allowed_targets:
             if allowed_targets is not None:
                 self.allowed_targets = allowed_targets
             else:
@@ -2744,12 +2749,6 @@ class SMAXBatchWrapper(MultiAgentEnv):
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
     ):
-        print(
-            "use_allowed_targets: "
-            f"{use_allowed_targets}, "
-            f"use_partial_damage_restore: {use_partial_damage_restore}, "
-            f"use_cooperative_kill_bonus: {use_cooperative_kill_bonus}"
-        )
         try:
             import jax
             import jax.numpy as jnp
@@ -2825,8 +2824,13 @@ class SMAXBatchWrapper(MultiAgentEnv):
         self._won_battle_bonus = float(self._env.won_battle_bonus)
 
         # allowed_targets 설정 (SMAXWrapper와 동일한 로직)
-        self.use_allowed_targets = use_allowed_targets
-        if use_allowed_targets:
+        target_window_covers_all = (
+            allowed_targets is None
+            and self.allowed_target_window is not None
+            and self.allowed_target_window >= _num_enemies
+        )
+        self.use_allowed_targets = bool(use_allowed_targets) and not target_window_covers_all
+        if self.use_allowed_targets:
             if allowed_targets is not None:
                 self.allowed_targets = allowed_targets
             else:

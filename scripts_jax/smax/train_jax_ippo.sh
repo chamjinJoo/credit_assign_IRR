@@ -15,7 +15,7 @@ max_steps_per_iteration=6400
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 seeds=(42 1 2)
-run_in_background=false
+run_in_background=true
 
 if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"

@@ -59,6 +59,20 @@ def import_runtime_modules():
     )
     from runner import Trainer, JAXTrainer
 
+
+def sync_effective_environment_config(config, env):
+    """Reflect environment-side normalizations in saved configs and wandb metadata."""
+    env_config = getattr(config, 'environment', None)
+    if env_config is None:
+        return
+
+    if env.__class__.__name__ not in ['SMAXWrapper', 'SMAXBatchWrapper']:
+        return
+
+    if hasattr(env, 'use_allowed_targets'):
+        env_config.use_allowed_targets = bool(env.use_allowed_targets)
+
+
 def create_algorithm(env, config):
     """Create algorithm based on config.algorithm.type."""
     network_config = config.network
@@ -701,6 +715,8 @@ def main():
             )
         else:
             env = create_environment(env_config)
+
+        sync_effective_environment_config(config, env)
 
         logger.info(f"Environment created: {env.__class__.__name__}")
         logger.info(f"Number of agents: {env.num_agents}")
