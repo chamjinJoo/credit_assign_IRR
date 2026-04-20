@@ -362,8 +362,8 @@ class JAXRPCIAlgorithm:
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
         # normalize both adv before combining.
-        # env_flat = self._normalize_actor_advantages(env_flat)
-        # pci_flat = self._normalize_actor_advantages(pci_flat)
+        env_flat = self._normalize_actor_advantages(env_flat)
+        pci_flat = self._normalize_actor_advantages(pci_flat)
 
         combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
 
@@ -750,11 +750,7 @@ class JAXRPCIAlgorithm:
             final_carry, rollout = jax.lax.scan(body_fn, (env_rng, batch_states, obs, avail_actions, runner_state), None, length=horizon)
             rng, states, next_obs, next_avail, next_runner = final_carry
             next_obs_aug = self._augment_obs(next_obs)
-            last_value_reset_masks = (
-                next_runner["done_prev"]
-                if self.use_centralized_critic
-                else next_runner["agent_done_prev"]
-            )
+            last_value_reset_masks = next_runner["done_prev"]
             _, last_value = self._value_step(
                 critic_params,
                 next_obs_aug,

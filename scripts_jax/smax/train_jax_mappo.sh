@@ -16,7 +16,7 @@ max_steps_per_iteration=6400
 log_interval=2
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 seeds=(42 1 2)
-run_in_background=true
+run_in_background=false
 
 # test=false
 # checkpoint="./save_checkpoints/20260406_185738_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_1599.pkl"

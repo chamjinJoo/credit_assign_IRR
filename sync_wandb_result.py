@@ -42,7 +42,7 @@ import wandb
 # ★ 설정부 — 필요에 따라 수정하세요
 # ============================================================
 WANDB_ENTITY  = "chamjin-korea-advanced-institute-of-science-and-technology"
-WANDB_PROJECT = "pci-marl-smax-jax"
+WANDB_PROJECT = "pci-marl-smax-jax-v2"
 METRIC_KEY    = "eval/success_rate"
 
 XLSX_PATH     = Path("SMAX_results.xlsx")   # 스크립트와 같은 폴더에 위치
@@ -74,7 +74,7 @@ CONDITION_MAP = {
     "tar_w=5": "Tar, w=5",
     "tar_w=4": "Tar, w=4",
     "tar_w=3": "Tar, w=3",
-    "tar":     "Tar",
+    "tar_w=2": "Tar, w=2",
     "cb":      "C.B.",
     "":        "vanila",
 }
