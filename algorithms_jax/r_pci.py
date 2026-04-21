@@ -139,8 +139,10 @@ class JAXRPCIAlgorithm:
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
         self.delta_critic_output_dim = num_agents if use_centralized_critic else 1
-        self.rng = jax.random.PRNGKey(seed)
-        self.rng, self.bridge_rng = jax.random.split(self.rng)
+        base_rng = jax.random.PRNGKey(int(seed))
+        init_rng = jax.random.fold_in(base_rng, 0)
+        self.rng = jax.random.fold_in(base_rng, 1)
+        self.bridge_rng = jax.random.fold_in(base_rng, 2)
 
         self.actor_model = (
             RecurrentActor(hidden_dim=hidden_dim, action_dim=action_dim)
@@ -162,7 +164,7 @@ class JAXRPCIAlgorithm:
             else None
         )
 
-        self.rng, actor_key, critic_key, bridge_key = jax.random.split(self.rng, 4)
+        init_rng, actor_key, critic_key, bridge_key = jax.random.split(init_rng, 4)
 
         self.actor_state = make_train_state(
             self.actor_model,
@@ -215,7 +217,7 @@ class JAXRPCIAlgorithm:
                 hidden_dim=hidden_dim,
                 output_dim=self.delta_critic_output_dim,
             )
-            self.rng, delta_critic_key = jax.random.split(self.rng)
+            init_rng, delta_critic_key = jax.random.split(init_rng)
             self.delta_critic_state = make_train_state(
                 self.delta_critic_model,
                 delta_critic_key,
@@ -362,8 +364,8 @@ class JAXRPCIAlgorithm:
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
         # normalize both adv before combining.
-        env_flat = self._normalize_actor_advantages(env_flat)
-        pci_flat = self._normalize_actor_advantages(pci_flat)
+        # env_flat = self._normalize_actor_advantages(env_flat)
+        # pci_flat = self._normalize_actor_advantages(pci_flat)
 
         combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
 
@@ -639,6 +641,7 @@ class JAXRPCIAlgorithm:
 
         def rollout_fn(
             env_rng: jax.Array,
+            action_rng: jax.Array,
             batch_states: Any,
             obs: jnp.ndarray,
             avail_actions: jnp.ndarray,
@@ -648,8 +651,8 @@ class JAXRPCIAlgorithm:
             delta_critic_params: Dict[str, Any],
         ):
             def body_fn(carry, _):
-                rng, states, current_obs, current_avail, current_runner = carry
-                rng, action_rng = jax.random.split(rng)
+                rng, policy_rng, states, current_obs, current_avail, current_runner = carry
+                policy_rng, step_action_rng = jax.random.split(policy_rng)
                 obs_aug = self._augment_obs(current_obs)
 
                 actor_hidden_prev = current_runner["actor_hidden"]
@@ -669,7 +672,7 @@ class JAXRPCIAlgorithm:
                     actor_hidden_prev,
                     raw_prev_actions_prev,
                     actor_reset_masks,
-                    action_rng,
+                    step_action_rng,
                     False,
                 )
                 critic_hidden_next, values = self._value_step(
@@ -740,6 +743,7 @@ class JAXRPCIAlgorithm:
                 }
                 next_carry = (
                     rng,
+                    policy_rng,
                     next_states,
                     next_obs.astype(jnp.float32),
                     next_avail.astype(jnp.float32),
@@ -747,8 +751,13 @@ class JAXRPCIAlgorithm:
                 )
                 return next_carry, transition
 
-            final_carry, rollout = jax.lax.scan(body_fn, (env_rng, batch_states, obs, avail_actions, runner_state), None, length=horizon)
-            rng, states, next_obs, next_avail, next_runner = final_carry
+            final_carry, rollout = jax.lax.scan(
+                body_fn,
+                (env_rng, action_rng, batch_states, obs, avail_actions, runner_state),
+                None,
+                length=horizon,
+            )
+            rng, action_rng, states, next_obs, next_avail, next_runner = final_carry
             next_obs_aug = self._augment_obs(next_obs)
             last_value_reset_masks = next_runner["done_prev"]
             _, last_value = self._value_step(
@@ -768,7 +777,7 @@ class JAXRPCIAlgorithm:
                     last_value_reset_masks,
                 )
                 rollout_out["last_delta_value"] = last_delta_value.astype(jnp.float32)
-            return rng, states, next_obs, next_avail, next_runner, rollout_out, last_value
+            return rng, action_rng, states, next_obs, next_avail, next_runner, rollout_out, last_value
 
         self._rollout_fns[horizon] = jax.jit(rollout_fn)
         return self._rollout_fns[horizon]
@@ -777,6 +786,7 @@ class JAXRPCIAlgorithm:
         self,
         env: Any,
         env_rng: jax.Array,
+        action_rng: Optional[jax.Array],
         batch_states: Any,
         obs: jnp.ndarray,
         avail_actions: jnp.ndarray,
@@ -784,8 +794,22 @@ class JAXRPCIAlgorithm:
         horizon: int,
     ):
         rollout_fn = self._get_rollout_fn(env, horizon)
+        if action_rng is None:
+            env_rng, _, states, next_obs, next_avail, next_runner, rollout, last_value = rollout_fn(
+                env_rng,
+                env_rng,
+                batch_states,
+                obs.astype(jnp.float32),
+                avail_actions.astype(jnp.float32),
+                runner_state,
+                self.actor_state.params,
+                self.critic_state.params,
+                self.delta_critic_state.params if self.use_delta_critic and self.delta_critic_state is not None else self.critic_state.params,
+            )
+            return env_rng, states, next_obs, next_avail, next_runner, rollout, last_value
         return rollout_fn(
             env_rng,
+            action_rng,
             batch_states,
             obs.astype(jnp.float32),
             avail_actions.astype(jnp.float32),
@@ -1571,7 +1595,6 @@ class JAXRPCIAlgorithm:
         runner_state: Dict[str, jnp.ndarray],
     ) -> tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
         obs_aug = self._augment_obs(obs)
-        self.rng, action_rng = jax.random.split(self.rng)
         actor_hidden_next, actions, _, _ = self._policy_step(
             self.actor_state.params,
             obs_aug,
@@ -1579,7 +1602,7 @@ class JAXRPCIAlgorithm:
             runner_state["actor_hidden"],
             runner_state["prev_actions"],
             runner_state["done_prev"],
-            action_rng,
+            jax.random.PRNGKey(0),
             True,
         )
         next_runner = dict(runner_state)

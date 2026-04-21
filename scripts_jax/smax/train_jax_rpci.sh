@@ -8,7 +8,7 @@ set -euo pipefail
 config="configs_jax/smax_rpci.yaml"
 
 # rpci settings
-use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
+use_centralized_critic=true # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 
@@ -18,13 +18,17 @@ else
   model="jax-pci-ippo"
 fi
 
+# env settings
+map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(4)
+
 # training settings
+seeds=(42 1)
+device="cuda"
 n_rollout_threads=16
 max_iterations=1600
 max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2
-device="cuda"
-seeds=(42 1 2)
 run_in_background=false
 
 #checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"
@@ -41,16 +45,20 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 pids=()
 
-# main training loop over seeds
-for seed in "${seeds[@]}"; do
-    echo "[seed=${seed}] start"
-    if ${run_in_background}; then
-      python main.py \
+# main training loop over config variants and seeds
+for allowed_target_window in "${allowed_target_windows[@]}"; do
+  echo "[allowed_target_window=${allowed_target_window}] start"
+  for seed in "${seeds[@]}"; do
+      echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
+      if ${run_in_background}; then
+        python main.py \
         --env SMAX \
         --config ${config} \
         --model ${model} \
+        --map-name "${map_name}" \
         --use-centralized-critic ${use_centralized_critic} \
         --causal-lambda ${causal_lambda} \
+        --allowed-target-window ${allowed_target_window} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-iterations ${max_iterations} \
         --max-steps ${max_steps_per_iteration} \
@@ -59,16 +67,18 @@ for seed in "${seeds[@]}"; do
         --seed ${seed} \
         --use-wandb \
         --wandb-project pci-marl-smax-jax &
-      pid=$!
-      pids+=("${pid}")
-      echo "[seed=${seed}] PID: ${pid}"
-    else
-      python main.py \
+        pid=$!
+        pids+=("${pid}")
+        echo "[allowed_target_window=${allowed_target_window} seed=${seed}] PID: ${pid}"
+      else
+        python main.py \
         --env SMAX \
         --config ${config} \
         --model ${model} \
+        --map-name "${map_name}" \
         --use-centralized-critic ${use_centralized_critic} \
         --causal-lambda ${causal_lambda} \
+        --allowed-target-window ${allowed_target_window} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-iterations ${max_iterations} \
         --max-steps ${max_steps_per_iteration} \
@@ -78,6 +88,7 @@ for seed in "${seeds[@]}"; do
         --use-wandb \
         --wandb-project pci-marl-smax-jax-v2
     fi
+  done
 done
 
 if ${run_in_background}; then
@@ -85,7 +96,7 @@ if ${run_in_background}; then
   for pid in "${pids[@]}"; do
     wait "${pid}"
   done
-  echo "all seed training completed!"
+  echo "all config/seed training completed!"
 else
-  echo "all seed training completed sequentially!"
+  echo "all config/seed training completed sequentially!"
 fi

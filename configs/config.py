@@ -93,6 +93,7 @@ class TrainingConfig:
     eval_interval: int = 50
     eval_episodes: int = 10
     save_dir: str = "./save_checkpoints"
+    checkpoint_keep_last: int = 1  # Keep only the most recent iteration checkpoint on disk
     device: str = "cpu"
     n_rollout_threads: int = 1  # [ADDED] Number of parallel environments for rollout collection
     episodes_per_iteration: Optional[int] = None  # [ADDED] Number of episodes to collect per iteration
@@ -449,6 +450,8 @@ def parse_args() -> argparse.Namespace:
                         help='Number of forage items (StagHunt)')
     parser.add_argument('--map-name', type=str, default=None,
                         help='Map name for SMAC environment')
+    parser.add_argument('--allowed-target-window', type=int, default=None,
+                        help='Allowed target window for SMAX target allocation')
     
     # Training
     parser.add_argument('--max-iterations', type=int, default=None,
@@ -581,6 +584,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     if hasattr(args, 'map_name') and args.map_name:
         config.environment.map_name = args.map_name
         print(config.environment.map_name)
+    if hasattr(args, 'allowed_target_window') and args.allowed_target_window is not None:
+        config.environment.allowed_target_window = args.allowed_target_window
         
     if hasattr(args, 'max_grad_norm') and args.max_grad_norm is not None:
         config.algorithm.max_grad_norm = args.max_grad_norm
@@ -671,7 +676,7 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
     if hasattr(args, 'wandb_run_name') and args.wandb_run_name:
         config.wandb.run_name = args.wandb_run_name
     # Reproducibility settings
-    if hasattr(args, 'seed') and args.seed:
+    if hasattr(args, 'seed') and args.seed is not None:
         config.training.seed = args.seed
     if hasattr(args, 'deterministic'):
         config.training.deterministic = args.deterministic

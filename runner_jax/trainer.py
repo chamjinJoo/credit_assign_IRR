@@ -28,7 +28,10 @@ class JAXTrainer(Trainer):
         self.rollout_envs = getattr(self.env, "n_envs", self.n_rollout_threads)
         self.rollout_horizon = max(1, math.ceil(self.max_steps_per_iteration / max(1, self.rollout_envs)))
 
-        self._env_rng = jax.random.PRNGKey(self.seed or 0)
+        base_rng = jax.random.PRNGKey(int(self.seed or 0))
+        self._env_rng = jax.random.fold_in(base_rng, 0)
+        self._action_rng = jax.random.fold_in(base_rng, 1)
+        self._eval_rng = jax.random.fold_in(base_rng, 2)
         (
             self._env_rng,
             self._batch_env_state,
@@ -43,7 +46,7 @@ class JAXTrainer(Trainer):
 
     def _run_jax_policy_evaluation(self, num_episodes: int) -> Dict[str, Any]:
         """Run SMAX/JAX evaluation using the native pure JAX environment API."""
-        eval_rng = jax.random.PRNGKey((self.seed or 0) + 10_000 + self.iteration)
+        eval_rng = jax.random.fold_in(self._eval_rng, self.iteration)
         eval_envs = getattr(self.eval_env, "n_envs", self.rollout_envs)
         episode_limit = self._get_eval_episode_limit()
         max_eval_steps = max(
@@ -122,6 +125,7 @@ class JAXTrainer(Trainer):
     def collect_rollouts(self) -> Dict[str, Any]:
         (
             self._env_rng,
+            self._action_rng,
             self._batch_env_state,
             self._current_obs,
             self._current_avail,
@@ -131,6 +135,7 @@ class JAXTrainer(Trainer):
         ) = self.algorithm.collect_rollout(
             self.env,
             self._env_rng,
+            self._action_rng,
             self._batch_env_state,
             self._current_obs,
             self._current_avail,

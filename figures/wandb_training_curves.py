@@ -334,7 +334,17 @@ def build_plot_config(preset: str, csv_dir: str | Path) -> list[dict]:
     return config
 
 
-def plot(plot_config, window_size=50, figsize=(8, 6), ylim=(0, 1), xlim=(0, 3e6), save_path=None, show=True):
+def plot(
+    plot_config,
+    window_size=50,
+    figsize=(8, 7),
+    ylim=None,
+    xlim=None,
+    save_path=None,
+    show=True,
+    uncertainty_metric="std",   # "std" or "iqr"
+    mean_only=False,            # True면 하단 패널 없이 mean만
+):
     plt.close("all")
     plt.rc("font", size=14)
     plt.rc("axes", labelsize=14)
@@ -342,7 +352,16 @@ def plot(plot_config, window_size=50, figsize=(8, 6), ylim=(0, 1), xlim=(0, 3e6)
     plt.rc("ytick", labelsize=14)
     plt.rc("legend", fontsize=14)
 
-    fig, ax = plt.subplots(figsize=figsize)
+    if mean_only:
+        fig, ax = plt.subplots(figsize=figsize)
+        ax_var = None
+    else:
+        fig, (ax, ax_var) = plt.subplots(
+            2, 1,
+            figsize=figsize,
+            sharex=True,
+            gridspec_kw={"height_ratios": [4, 1.2], "hspace": 0.05},
+        )
 
     for entry in plot_config:
         file_path = entry["path"]
@@ -351,7 +370,6 @@ def plot(plot_config, window_size=50, figsize=(8, 6), ylim=(0, 1), xlim=(0, 3e6)
         color = entry["color"]
         lsty = entry.get("linestyle", "-")
         lw = entry.get("linewidth", 3)
-        alpha = entry.get("alpha", 0.08)
         exclude = entry.get("exclude", None)
 
         try:
@@ -380,19 +398,59 @@ def plot(plot_config, window_size=50, figsize=(8, 6), ylim=(0, 1), xlim=(0, 3e6)
             continue
 
         x = df[DEFAULT_STEP]
-        y_mean = df[cols].mean(axis=1).rolling(window=window_size, min_periods=1).mean()
-        y_std = df[cols].std(axis=1).rolling(window=window_size, min_periods=1).mean()
 
-        ax.plot(x, y_mean, label=label, color=color, linestyle=lsty, linewidth=lw)
-        ax.fill_between(x, y_mean - y_std, y_mean + y_std, color=color, alpha=alpha)
+        # seed-wise matrix
+        Y = df[cols]
 
-    ax.set_xlabel("Total Steps")
+        # mean curve
+        y_mean = Y.mean(axis=1).rolling(window=window_size, min_periods=1).mean()
+
+        # uncertainty curve
+        if uncertainty_metric == "std":
+            y_unc = Y.std(axis=1)
+        elif uncertainty_metric == "iqr":
+            y_unc = Y.quantile(0.75, axis=1) - Y.quantile(0.25, axis=1)
+        else:
+            raise ValueError("uncertainty_metric must be 'std' or 'iqr'")
+
+        # uncertainty는 smoothing을 약하게 하거나 아예 안 하는 게 더 정직함
+        y_unc = y_unc.rolling(window=max(5, window_size // 4), min_periods=1).mean()
+
+        # main panel: mean only
+        ax.plot(
+            x, y_mean,
+            label=label,
+            color=color,
+            linestyle=lsty,
+            linewidth=lw,
+        )
+
+        # lower panel: uncertainty only
+        if ax_var is not None:
+            ax_var.plot(
+                x, y_unc,
+                color=color,
+                linestyle=lsty,
+                linewidth=2,
+                label=label,
+            )
+
     ax.set_ylabel("Success Rate")
-    ax.set_ylim(ylim)
+    if ylim is not None:
+        ax.set_ylim(ylim)
     if xlim is not None:
         ax.set_xlim(xlim)
-    ax.legend(loc="upper left", framealpha=0.9)
     ax.grid(True, linestyle="--", alpha=0.5)
+    if entry.get("show_legend", False):
+        ax.legend(loc="upper left", framealpha=0.9)
+
+    if ax_var is not None:
+        ax_var.set_xlabel("Total Steps")
+        ax_var.set_ylabel("Std" if uncertainty_metric == "std" else "IQR")
+        ax_var.grid(True, linestyle="--", alpha=0.5)
+    else:
+        ax.set_xlabel("Total Steps")
+
     plt.tight_layout()
 
     if save_path:
@@ -401,8 +459,56 @@ def plot(plot_config, window_size=50, figsize=(8, 6), ylim=(0, 1), xlim=(0, 3e6)
     if show:
         plt.show()
     plt.close(fig)
-    return fig, ax
+    return fig, (ax, ax_var)
 
+from matplotlib.lines import Line2D
+
+def plot_horizontal_legend(
+    plot_config,
+    figsize=(8, 0.8),
+    ncol=None,
+    save_path=None,
+    show=True,
+):
+    plt.close("all")
+
+    fig, ax = plt.subplots(figsize=figsize)
+    ax.axis("off")
+
+    handles = []
+    for entry in plot_config:
+        handle = Line2D(
+            [0], [0],
+            color=entry["color"],
+            linestyle=entry.get("linestyle", "-"),
+            linewidth=entry.get("linewidth", 3),
+            label=entry["label"],
+        )
+        handles.append(handle)
+
+    if ncol is None:
+        ncol = len(handles)
+
+    fig.legend(
+        handles=handles,
+        labels=[h.get_label() for h in handles],
+        loc="center",
+        ncol=ncol,
+        frameon=False,
+        handlelength=2.5,
+        columnspacing=1.5,
+        fontsize=13,
+    )
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight", transparent=True)
+        print(f"[save] {save_path}")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return fig
 
 def extract_final_performance(plot_config, window_size=50, last_n=100):
     results = []
@@ -458,6 +564,137 @@ def extract_final_performance(plot_config, window_size=50, last_n=100):
 
     return results
 
+def extract_final_seed_values(plot_config, window_size=50, last_n=100):
+    results = []
+
+    for entry in plot_config:
+        file_path = entry["path"]
+        label = entry["label"]
+        keyword = entry.get("keyword", "success_rate")
+        exclude = entry.get("exclude", None)
+
+        try:
+            df = pd.read_csv(file_path)
+        except FileNotFoundError:
+            print(f"[WARN] File not found: {file_path}")
+            continue
+
+        clean_kw = keyword.lower().replace("_", "").replace("-", "")
+        cols = []
+        for col in df.columns:
+            col_lower = col.lower()
+            if "success_rate" not in col_lower:
+                continue
+            clean_col = col_lower.replace("_", "").replace("-", "")
+            if clean_kw not in clean_col:
+                continue
+            if "MIN" in col or "MAX" in col or "_step" in col:
+                continue
+            if exclude and exclude.lower() in col_lower:
+                continue
+            cols.append(col)
+
+        if not cols:
+            print(f'[WARN] No matching columns for keyword "{keyword}" in {file_path}')
+            continue
+
+        final_vals = []
+        for col in cols:
+            series = df[col].dropna()
+            smoothed = series.rolling(window=window_size, min_periods=1).mean()
+            val = smoothed.tail(last_n).mean() if last_n and last_n > 0 else smoothed.iloc[-1]
+            final_vals.append(float(val))
+
+        results.append({
+            "algorithm": label,
+            "values": final_vals,
+            "color": entry.get("color", "tab:blue"),
+        })
+
+    return results
+
+def plot_final_distribution(
+    plot_config,
+    window_size=50,
+    last_n=100,
+    figsize=(7, 5),
+    ylim=(0, 1),
+    save_path=None,
+    show=True,
+):
+    plt.close("all")
+    plt.rc("font", size=14)
+    plt.rc("axes", labelsize=14)
+    plt.rc("xtick", labelsize=12)
+    plt.rc("ytick", labelsize=12)
+
+    results = extract_final_seed_values(plot_config, window_size=window_size, last_n=last_n)
+    if not results:
+        print("[ERROR] No final performance data extracted.")
+        return None, None
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    labels = [r["algorithm"] for r in results]
+    values = [r["values"] for r in results]
+    colors = [r.get("color", "tab:blue") for r in results]
+    positions = np.arange(1, len(labels) + 1)
+
+    bp = ax.boxplot(
+        values,
+        positions=positions,
+        widths=0.5,
+        patch_artist=True,
+        showfliers=False,
+    )
+
+    for patch, color in zip(bp["boxes"], colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.18)
+        patch.set_edgecolor(color)
+        patch.set_linewidth(2)
+
+    for whisker, color in zip(bp["whiskers"], np.repeat(colors, 2)):
+        whisker.set_color(color)
+        whisker.set_linewidth(1.8)
+
+    for cap, color in zip(bp["caps"], np.repeat(colors, 2)):
+        cap.set_color(color)
+        cap.set_linewidth(1.8)
+
+    for median, color in zip(bp["medians"], colors):
+        median.set_color(color)
+        median.set_linewidth(2.2)
+
+    # seed scatter overlay
+    rng = np.random.default_rng(0)
+    for i, (vals, color) in enumerate(zip(values, colors), start=1):
+        jitter = rng.uniform(-0.08, 0.08, size=len(vals))
+        ax.scatter(
+            np.full(len(vals), i) + jitter,
+            vals,
+            s=35,
+            color=color,
+            alpha=0.8,
+            edgecolor="white",
+            linewidth=0.6,
+        )
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=0)
+    ax.set_ylabel(f"Final Success Rate\n(last {last_n} points avg)")
+    ax.set_ylim(ylim)
+    ax.grid(True, axis="y", linestyle="--", alpha=0.5)
+
+    plt.tight_layout()
+
+    if save_path:
+        fig.savefig(save_path, dpi=300, bbox_inches="tight")
+        print(f"[save] {save_path}")
+    if show:
+        plt.show()
+    plt.close(fig)
+    return fig, ax
 
 def print_performance_table(plot_config, window_size=50, last_n=200):
     results = extract_final_performance(plot_config, window_size=window_size, last_n=last_n)

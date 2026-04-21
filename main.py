@@ -617,6 +617,7 @@ def main():
     # Set up reproducibility
     ensure_reproducible_environment()
     actual_seed = set_global_seed(config.training.seed, config.training.deterministic)
+    config.training.seed = actual_seed
     
     # Set device
     device = config.training.device
