@@ -8,7 +8,7 @@ set -euo pipefail
 config="configs_jax/smax_rpci.yaml"
 
 # rpci settings
-use_centralized_critic=true # false: IPPO-critic / true: MAPPO-critic
+use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
 
@@ -19,13 +19,13 @@ else
 fi
 
 # env settings
-map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(4)
+map_name="3m"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(2)
 
 # training settings
-seeds=(42 1)
+seeds=(42 1 2)
 device="cuda"
-n_rollout_threads=16
+n_rollout_threads=8
 max_iterations=1600
 max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2

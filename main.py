@@ -404,6 +404,7 @@ def create_algorithm(env, config):
             print_bridge_predictions=getattr(algorithm_config, 'print_bridge_predictions', False),
             bridge_prediction_print_samples=getattr(algorithm_config, 'bridge_prediction_print_samples', 1),
             bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
+            bridge_prediction_batch_size=getattr(algorithm_config, 'bridge_prediction_batch_size', 2048),
             normalize_pci_signal=getattr(algorithm_config, 'normalize_pci_signal', False),
             use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
             seed=getattr(config.training, 'seed', 42),

@@ -69,6 +69,7 @@ class JAXRPCIAlgorithm:
         print_bridge_predictions: bool = False,
         bridge_prediction_print_samples: int = 1,
         bridge_prediction_print_interval: int = 50,
+        bridge_prediction_batch_size: int = 2048,
         normalize_pci_signal: bool = False,
         use_delta_critic: bool = False,
         seed: int = 42,
@@ -102,6 +103,7 @@ class JAXRPCIAlgorithm:
         self.print_bridge_predictions = bool(print_bridge_predictions)
         self.bridge_prediction_print_samples = max(1, int(bridge_prediction_print_samples))
         self.bridge_prediction_print_interval = max(1, int(bridge_prediction_print_interval))
+        self.bridge_prediction_batch_size = max(1, int(bridge_prediction_batch_size))
         self.attack_action_threshold = self._infer_attack_action_threshold(action_dim)
         env_name = self.env.__class__.__name__
         print(f"Environment name: {env_name}")
@@ -975,7 +977,7 @@ class JAXRPCIAlgorithm:
         return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
 
     @partial(jax.jit, static_argnums=0)
-    def _bridge_predictions(
+    def _bridge_predictions_chunk(
         self,
         bridge_params: Dict[str, Any],
         local_obs: jnp.ndarray,
@@ -984,7 +986,7 @@ class JAXRPCIAlgorithm:
         probs: jnp.ndarray,
         actions: jnp.ndarray,
         avail_actions: jnp.ndarray,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         actual_pred = self.bridge_state.apply_fn(
             {"params": bridge_params},
             local_obs,
@@ -1017,6 +1019,44 @@ class JAXRPCIAlgorithm:
 
         no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
         baseline = jnp.where(no_valid_cf[:, None], jnp.zeros_like(baseline), baseline)
+        return actual_pred, baseline, all_preds, no_valid_cf
+
+    def _bridge_predictions(
+        self,
+        bridge_params: Dict[str, Any],
+        local_obs: jnp.ndarray,
+        others_obs: jnp.ndarray,
+        hidden_others: jnp.ndarray,
+        probs: jnp.ndarray,
+        actions: jnp.ndarray,
+        avail_actions: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        chunk_size = self.bridge_prediction_batch_size
+        actual_chunks = []
+        baseline_chunks = []
+        all_pred_chunks = []
+        no_valid_chunks = []
+
+        for start in range(0, local_obs.shape[0], chunk_size):
+            end = min(start + chunk_size, local_obs.shape[0])
+            actual_pred, baseline, all_preds, no_valid_cf = self._bridge_predictions_chunk(
+                bridge_params,
+                local_obs[start:end],
+                others_obs[start:end],
+                hidden_others[start:end],
+                probs[start:end],
+                actions[start:end],
+                avail_actions[start:end],
+            )
+            actual_chunks.append(actual_pred)
+            baseline_chunks.append(baseline)
+            all_pred_chunks.append(all_preds)
+            no_valid_chunks.append(no_valid_cf)
+
+        actual_pred = jnp.concatenate(actual_chunks, axis=0)
+        baseline = jnp.concatenate(baseline_chunks, axis=0)
+        all_preds = jnp.concatenate(all_pred_chunks, axis=0)
+        no_valid_cf = jnp.concatenate(no_valid_chunks, axis=0)
         no_valid_cf_rate = jnp.mean(no_valid_cf.astype(jnp.float32))
         return actual_pred, baseline, all_preds, no_valid_cf_rate, no_valid_cf
 

@@ -10,8 +10,8 @@ model="jax-ippo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(5)
+map_name="3s5z"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(6 8)
 
 # training settings
 seeds=(42 1 2)
@@ -20,7 +20,7 @@ n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
-run_in_background=true
+run_in_background=false
 
 if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"

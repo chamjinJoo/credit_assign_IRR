@@ -10,13 +10,13 @@ model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="5m_vs_6m"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(5 6)
+map_name="3s5z"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(6 8)
 
 # training settings
 seeds=(42 1 2)
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
-n_rollout_threads=8
+n_rollout_threads=4
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2

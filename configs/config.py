@@ -55,6 +55,7 @@ class AlgorithmConfig:
     print_bridge_predictions: bool = False  # Print console-only bridge predictions during training
     bridge_prediction_print_samples: int = 10  # Number of rollout states to average per log event
     bridge_prediction_print_interval: int = 50  # Print bridge predictions every N iterations
+    bridge_prediction_batch_size: int = 2048
 
     use_episode_buffer: bool = False
     # Buffer size limits for FIFO queue behavior

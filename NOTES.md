@@ -395,3 +395,7 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 * SH noise 0.1에서 V_delta + advnorm before combine시 성능 개선이 탁월함.
   * $\mathcal{L}(\pi^i)=-\mathbb{E}_t[\tilde{A}^i_t\log(\pi^i(\cdot|\tau^i_t))]$, where $\tilde{A}^i_t = \hat{A}_t + \lambda \hat{A}^{i,\delta}_t$. The terms $\hat{A}$ represent GAE + normalization.
   * $\hat{A}^{i,\delta}_t$ is computed with shaped rewards $r_t -\text{cf\_baseline}$ and $\delta$-critic network $V^{i,\delta}_t$.
+  
+# 26.04.22
+* Address memory issue in `copmute_causal_rewards()-_bridge_predictions()` in JAX `rpci`.
+  * outcome bridge의 counterfactual action에 대한 prediction시 모든 batch를 한번에 넣지 않고 mini-batch로 나누어 feeding.

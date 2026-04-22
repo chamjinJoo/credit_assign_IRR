@@ -42,6 +42,7 @@ algorithm:
   print_bridge_predictions: true # debugging flag to print bridge predictions.
   bridge_prediction_print_samples: 10
   bridge_prediction_print_interval: 50
+  bridge_prediction_batch_size: 2048
   
 training:
   max_iterations: 1600

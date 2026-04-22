@@ -400,11 +400,19 @@ class JAXTrainer(Trainer):
             "total_steps": self.total_steps,
             "best_eval_reward": self.best_eval_reward,
             "algorithm_state": self.algorithm.state_dict(),
+
+            # --- RNG states ---
             "env_rng": jax.device_get(self._env_rng),
+            "action_rng": jax.device_get(self._action_rng),
+            "eval_rng": jax.device_get(self._eval_rng),
+
+            # --- env / rollout state ---
             "batch_env_state": jax.device_get(self._batch_env_state),
             "current_obs": jax.device_get(self._current_obs),
             "current_avail": jax.device_get(self._current_avail),
             "runner_state": jax.device_get(self._runner_state),
+
+            # --- stats ---
             "running_episode_rewards": self._running_episode_rewards,
             "running_episode_lengths": self._running_episode_lengths,
         }
@@ -424,11 +432,30 @@ class JAXTrainer(Trainer):
         self.iteration = int(checkpoint.get("iteration", 0))
         self.total_steps = int(checkpoint.get("total_steps", 0))
         self.best_eval_reward = float(checkpoint.get("best_eval_reward", float("-inf")))
+
         self.algorithm.load_state_dict(checkpoint["algorithm_state"])
+
+        # --- RNG restore (with fallback for old checkpoints) ---
         self._env_rng = jnp.asarray(checkpoint["env_rng"])
+
+        if "action_rng" in checkpoint:
+            self._action_rng = jnp.asarray(checkpoint["action_rng"])
+        else:
+            # fallback: split from env_rng (best-effort)
+            self._env_rng, self._action_rng = jax.random.split(self._env_rng)
+
+        if "eval_rng" in checkpoint:
+            self._eval_rng = jnp.asarray(checkpoint["eval_rng"])
+        else:
+            # fallback: fold_in to keep deterministic but distinct stream
+            self._eval_rng = jax.random.fold_in(self._env_rng, 999)
+
+        # --- env / rollout state ---
         self._batch_env_state = checkpoint["batch_env_state"]
         self._current_obs = jnp.asarray(checkpoint["current_obs"])
         self._current_avail = jnp.asarray(checkpoint["current_avail"])
         self._runner_state = jax.tree_util.tree_map(jnp.asarray, checkpoint["runner_state"])
+
+        # --- stats ---
         self._running_episode_rewards = np.asarray(checkpoint["running_episode_rewards"])
         self._running_episode_lengths = np.asarray(checkpoint["running_episode_lengths"])
