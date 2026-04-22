@@ -23,7 +23,7 @@ map_name="3m"  # empty string keeps the YAML value; set to override the SMAX map
 allowed_target_windows=(2)
 
 # training settings
-seeds=(42 1 2)
+seeds=(42 2 1)
 device="cuda"
 n_rollout_threads=8
 max_iterations=1600

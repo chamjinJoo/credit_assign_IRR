@@ -136,7 +136,6 @@ class JAXRPCIAlgorithm:
         self.normalize_pci_signal = normalize_pci_signal
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
         self.use_delta_critic = use_delta_critic
-        print("normalize_pci_signal:", normalize_pci_signal)
         print("use_delta_critic:", use_delta_critic)
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
@@ -365,7 +364,8 @@ class JAXRPCIAlgorithm:
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
-        # normalize both adv before combining.
+        # normalize both adv before combining. 
+        # # NOTE: if using adv norm here, at initial, pci_flat affects too much even though it is nearly zero.
         # env_flat = self._normalize_actor_advantages(env_flat)
         # pci_flat = self._normalize_actor_advantages(pci_flat)
 
@@ -389,16 +389,6 @@ class JAXRPCIAlgorithm:
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
         pci_res  = self._normalize_columns(pci_flat)
         return pci_res.reshape(orig_shape)
-
-    def _smac_attack_reward_event_metrics(
-        self,
-        rollout: Dict[str, jnp.ndarray],
-        delta: jnp.ndarray,
-        pci_advantages: jnp.ndarray,
-        pci_residual: jnp.ndarray,
-        causal_lambda: float,
-    ) -> Dict[str, float]:
-        return {}
 
     @partial(jax.jit, static_argnums=0)
     def _categorized_action_delta_compute(
@@ -664,8 +654,8 @@ class JAXRPCIAlgorithm:
                 prev_obs_prev = current_runner["prev_obs"]
                 done_prev = current_runner["done_prev"]
                 agent_done_prev = current_runner["agent_done_prev"]
-                actor_reset_masks = done_prev
-                critic_reset_masks = done_prev
+                actor_reset_masks = agent_done_prev
+                critic_reset_masks = done_prev if self.use_centralized_critic else agent_done_prev
 
                 actor_hidden_next, actions, log_probs, probs = self._policy_step(
                     actor_params,
@@ -960,14 +950,18 @@ class JAXRPCIAlgorithm:
 
     def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
         local_obs, others_obs, z, hidden_others, actions, targets, agent_ids = self._preprocess_rollout(rollout)
+        alive_indices = jnp.where(
+            self._alive_from_agent_dones(rollout["agent_dones"]).reshape(-1)
+        )[0]
         return {
-            "z":       z.astype(jnp.float32),
-            "w":       others_obs.astype(jnp.float32),
-            "x_obs":   local_obs.astype(jnp.float32),
-            "x_hid":   hidden_others.astype(jnp.float32),
-            "actions": actions.astype(jnp.int32),
-            "targets": targets.astype(jnp.float32),
-            "agent_ids": agent_ids.astype(jnp.int32),
+            "z":            z.astype(jnp.float32),
+            "w":            others_obs.astype(jnp.float32),
+            "x_obs":        local_obs.astype(jnp.float32),
+            "x_hid":        hidden_others.astype(jnp.float32),
+            "actions":      actions.astype(jnp.int32),
+            "targets":      targets.astype(jnp.float32),
+            "agent_ids":    agent_ids.astype(jnp.int32),
+            "alive_indices": alive_indices,
         }
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
@@ -1302,7 +1296,14 @@ class JAXRPCIAlgorithm:
 
         if batch["x_hid"].shape[-1] > 0:
             x_hid_norm = _standardize(batch["x_hid"])
-            gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
+            # Dead agent slots → 0 after standardization; only alive others contribute.
+            # Effective dim = mean # of non-zero dims per sample.
+            # gamma is rescaled to this effective dim so K_x_hid stays discriminative
+            # even when agents die (otherwise gamma is too small → kernel → 1).
+            effective_dim = jnp.mean(
+                jnp.sum(jnp.abs(x_hid_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
+            )
+            gamma_xhid = 1.0 / jnp.maximum(effective_dim, 1.0)
             gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
 
         eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
@@ -1378,22 +1379,21 @@ class JAXRPCIAlgorithm:
             return {"outcome_bridge_loss": 0.0, "action_bridge_loss": 0.0}
 
         causal_batch = self._causal_batch(rollout)
+        # Gather alive-only indices (computed outside JIT to avoid variable shape).
+        alive_idx = causal_batch["alive_indices"]
+        total_alive = int(alive_idx.shape[0])
+        _KEYS = ("z", "w", "x_obs", "x_hid", "actions", "targets", "agent_ids")
+
         metrics = []
-        total = causal_batch["actions"].shape[0]
-        for start in range(0, total, self.causal_mini_batch_size):
-            indices = jnp.arange(
-                start,
-                min(start + self.causal_mini_batch_size, total),
-            )
-            batch = {
-                "z": causal_batch["z"][indices],
-                "w": causal_batch["w"][indices],
-                "x_obs": causal_batch["x_obs"][indices],
-                "x_hid": causal_batch["x_hid"][indices],
-                "actions": causal_batch["actions"][indices],
-                "targets": causal_batch["targets"][indices],
-                "agent_ids": causal_batch["agent_ids"][indices],
-            }
+        for start in range(0, total_alive, self.causal_mini_batch_size):
+            end = start + self.causal_mini_batch_size
+            if end <= total_alive:
+                idx = alive_idx[start:end]
+            else:
+                # Pad last batch with wrap-around from alive samples → fixed shape.
+                pad = self.causal_mini_batch_size - (total_alive - start)
+                idx = jnp.concatenate([alive_idx[start:], alive_idx[:pad]])
+            batch = {k: causal_batch[k][idx] for k in _KEYS}
             # Compute Gram once per mini-batch and reuse across bridge epochs (matches Torch).
             gram, reg_gram, gram_metrics = self._compute_gram(batch)
             gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
@@ -1611,16 +1611,6 @@ class JAXRPCIAlgorithm:
             causal_lambda,
         )
         metrics.update(combine_metrics)
-        pci_residual = self._pci_residual_tensor(env_advantages, pci_advantages, causal_lambda)
-        metrics.update(
-            self._smac_attack_reward_event_metrics(
-                rollout,
-                delta,
-                pci_advantages,
-                pci_residual,
-                causal_lambda,
-            )
-        )
         metrics.update(self._categorized_action_delta_metrics(rollout, delta))
 
         metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))

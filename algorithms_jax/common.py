@@ -185,7 +185,12 @@ class CausalBridgeNetwork(nn.Module):
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        return nn.Dense(self.num_agents, kernel_init=_ORTH_UNIT)(x)
+        return nn.Dense(
+            self.num_agents,
+            kernel_init=nn.initializers.orthogonal(1e-2),  # 또는 normal(stddev=1e-3)
+            bias_init=nn.initializers.zeros,               # 명시적으로 0 (default 이지만 명시)
+        )(x)
+        # return nn.Dense(self.num_agents, kernel_init=_ORTH_UNIT)(x)
 
 
 def make_train_state(

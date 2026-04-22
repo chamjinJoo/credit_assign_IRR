@@ -10,8 +10,8 @@ model="jax-ippo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="3s5z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(6 8)
+map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(3)
 
 # training settings
 seeds=(42 1 2)

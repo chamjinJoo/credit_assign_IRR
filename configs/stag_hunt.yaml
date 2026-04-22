@@ -14,7 +14,7 @@ network:
 # Algorithm Configuration
 algorithm:
   gamma: 0.99
-  rnn_chunk_length: 10 # originally, 50
+  rnn_chunk_length: 16
   gae_lambda: 0.95
   global_reward: true  # false: use individual reward targets when available
   clip_epsilon: 0.2
@@ -25,7 +25,7 @@ algorithm:
   bridge_epoch: 4
   num_batches: 1
   use_value_parameter_sharing: false
-  use_delta_critic: false
+  use_delta_critic: true
   add_agent_id: false
 
   clip_delta: 0.01
