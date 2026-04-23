@@ -2,9 +2,9 @@
 
 network:
   hidden_dim: 128
-  lr_actor: 5.0e-4
-  lr_critic: 5.0e-4
-  lr_bridge: 1.0e-3 # 5.0e-4 ?
+  lr_actor: 5.0e-4  # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
+  lr_critic: 5.0e-4 # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
+  lr_bridge: 2.0e-3 # 1.0e-3 origin
   recurrent_N: 1
   use_recurrent_policy: true
 

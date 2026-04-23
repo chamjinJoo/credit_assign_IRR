@@ -2,8 +2,8 @@
 
 network:
   hidden_dim: 128
-  lr_actor: 5.0e-4
-  lr_critic: 5.0e-4
+  lr_actor: 2.0e-3
+  lr_critic: 2.0e-3
   recurrent_N: 1
   use_recurrent_policy: true
 
@@ -14,7 +14,7 @@ algorithm:
   clip_epsilon: 0.2
   entropy_coef: 0.0
   value_coef: 0.5
-  max_grad_norm: 0.5
+  max_grad_norm: 0.25
   ppo_epochs: 4
   batch_size: 0 # unused
   num_batches: 4

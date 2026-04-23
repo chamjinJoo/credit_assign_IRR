@@ -5,25 +5,19 @@
 
 set -euo pipefail
 
-config="configs_jax/smax_rpci.yaml"
+config="configs_jax/smax_pci_ippo.yaml"
 
 # rpci settings
-use_centralized_critic=false # false: IPPO-critic / true: MAPPO-critic
 causal_lambda=1.0
 clip_delta=0.0
-
-if ${use_centralized_critic}; then
-  model="jax-pci-mappo"
-else
-  model="jax-pci-ippo"
-fi
+model="jax-pci-ippo"
 
 # env settings
-map_name="3m"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(2)
+map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(3 4 5)
 
 # training settings
-seeds=(42 2 1)
+seeds=(2 42 1)
 device="cuda"
 n_rollout_threads=8
 max_iterations=1600
@@ -56,7 +50,6 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --config ${config} \
         --model ${model} \
         --map-name "${map_name}" \
-        --use-centralized-critic ${use_centralized_critic} \
         --causal-lambda ${causal_lambda} \
         --allowed-target-window ${allowed_target_window} \
         --n-rollout-threads ${n_rollout_threads} \
@@ -66,7 +59,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb \
-        --wandb-project pci-marl-smax-jax &
+        --wandb-project pci-marl-smax-jax-v3 &
         pid=$!
         pids+=("${pid}")
         echo "[allowed_target_window=${allowed_target_window} seed=${seed}] PID: ${pid}"
@@ -76,7 +69,6 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --config ${config} \
         --model ${model} \
         --map-name "${map_name}" \
-        --use-centralized-critic ${use_centralized_critic} \
         --causal-lambda ${causal_lambda} \
         --allowed-target-window ${allowed_target_window} \
         --n-rollout-threads ${n_rollout_threads} \
@@ -86,7 +78,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb \
-        --wandb-project pci-marl-smax-jax-v2
+        --wandb-project pci-marl-smax-jax-v3
     fi
   done
 done
