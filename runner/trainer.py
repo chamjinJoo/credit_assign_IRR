@@ -66,6 +66,7 @@ class Trainer:
         use_wandb: bool = False,
         wandb_project: str = "pci-mappo",
         wandb_run_name: Optional[str] = None,
+        wandb_group: Optional[str] = None,
         device: str = "cpu",
         n_rollout_threads: int = 1,  # [ADDED] Number of parallel environments
         env_fn: Optional[callable] = None,  # [ADDED] Function to create environment (for parallel)
@@ -174,6 +175,7 @@ class Trainer:
             wandb.init(
                 project=wandb_project,
                 name=wandb_run_name,
+                group=wandb_group,
                 config=serialized_config
             )
             

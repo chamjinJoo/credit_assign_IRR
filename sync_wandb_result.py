@@ -1,8 +1,9 @@
 """
-sync_wandb_to_sheet.py
-======================
+sync_wandb_result.py
+====================
 wandb에서 eval/success_rate (마지막 값)를 가져와
-로컬 SMAX_results.xlsx 파일을 업데이트하는 스크립트.
+로컬 SMAX_results.xlsx 파일을 업데이트하거나,
+xlsx 결과를 Overleaf용 LaTeX table 코드로 변환하는 스크립트.
 
 사전 준비
 ---------
@@ -19,13 +20,16 @@ wandb에서 eval/success_rate (마지막 값)를 가져와
 사용법
 ------
     # 테스트 (파일 변경 없이 결과만 출력)
-    python sync_wandb_to_sheet.py --dry-run
+    python sync_wandb_result.py --dry-run
 
     # 특정 조합만 업데이트
-    python sync_wandb_to_sheet.py --map 3m --condition "Tar, w=3" --model pci+ippo ippo
+    python sync_wandb_result.py --map 3m --condition "Tar, w=3" --model pci+ippo ippo
 
     # 전체 업데이트
-    python sync_wandb_to_sheet.py
+    python sync_wandb_result.py
+
+    # xlsx -> LaTeX table 출력
+    python sync_wandb_result.py latex
 """
 
 import argparse
@@ -42,7 +46,7 @@ import wandb
 # ★ 설정부 — 필요에 따라 수정하세요
 # ============================================================
 WANDB_ENTITY  = "chamjin-korea-advanced-institute-of-science-and-technology"
-WANDB_PROJECT = "pci-marl-smax-jax-v2"
+WANDB_PROJECT = "pci-marl-smax-jax-v3"
 METRIC_KEY    = "eval/success_rate"
 
 XLSX_PATH     = Path("SMAX_results.xlsx")   # 스크립트와 같은 폴더에 위치
@@ -81,6 +85,49 @@ CONDITION_MAP = {
 KNOWN_CONDITIONS = sorted(CONDITION_MAP.keys(), key=len, reverse=True)
 
 SHEET_MODELS = ["pci+ippo", "ippo", "pci+mappo", "mappo"]
+
+LATEX_MODEL_ORDER = [
+    ("pci+ippo", "PCI-IPPO"),
+    ("pci+mappo", "PCI-MAPPO"),
+    ("ippo", "IPPO"),
+    ("mappo", "MAPPO"),
+]
+
+LATEX_MAP_ORDER = [
+    "3m",
+    "2s3z",
+    "3s5z",
+    "smacv2_5units",
+    "smacv2_10units",
+]
+
+LATEX_VARIANT_ORDER = {
+    "3m": ["vanila", "Tar, w=2", "C.B."],
+    "2s3z": ["vanila", "Tar, w=3", "Tar, w=4"],
+    "3s5z": ["vanila", "Tar, w=4", "Tar, w=6", "Tar, w=3"],
+    "smacv2_5units": ["vanila", "Tar, w=4", "Tar, w=3"],
+    "smacv2_10units": ["vanila", "Tar, w=8", "Tar, w=6", "Tar, w=5", "Tar, w=4"],
+}
+
+LATEX_VARIANT_LABELS = {
+    ("3m", "vanila"): "Vanilla",
+    ("3m", "Tar, w=2"): "Hard",
+    ("3m", "C.B."): "C.B.",
+    ("2s3z", "vanila"): "Vanilla",
+    ("2s3z", "Tar, w=3"): "Medium",
+    ("2s3z", "Tar, w=4"): "Hard",
+    ("3s5z", "vanila"): "Vanilla",
+    ("3s5z", "Tar, w=4"): "Medium",
+    ("3s5z", "Tar, w=6"): "Hard",
+    ("smacv2_5units", "vanila"): "Vanilla",
+    ("smacv2_5units", "Tar, w=4"): "Medium",
+    ("smacv2_5units", "Tar, w=3"): "Hard",
+    ("smacv2_10units", "vanila"): "Vanilla",
+    ("smacv2_10units", "Tar, w=6"): "Medium",
+    ("smacv2_10units", "Tar, w=8"): "Hard",
+}
+
+LATEX_MISSING = "--"
 
 # ============================================================
 # run name 파싱
@@ -252,6 +299,149 @@ def find_header_row(ws, required_cols):
     return None, {}
 
 
+def find_sheet_with_headers(wb, required_cols):
+    for ws in wb.worksheets:
+        header_row, col_map = find_header_row(ws, required_cols)
+        if header_row is not None:
+            return ws, header_row, col_map
+    return None, None, {}
+
+
+def find_summary_sheet(wb):
+    for ws in wb.worksheets:
+        for row in ws.iter_rows():
+            if any(str(c.value).strip() == "Models" for c in row if c.value):
+                return ws
+    return None
+
+
+def collect_detail_rows(ws):
+    header_row, col_map = find_header_row(ws, ["Map", "Variant", "Seed"])
+    if header_row is None:
+        raise ValueError("Detail 테이블 헤더(Map/Variant/Seed)를 찾지 못했습니다.")
+
+    map_c = col_map["Map"]
+    variant_c = col_map["Variant"]
+    model_cols = {m: col_map.get(m) for m in SHEET_MODELS}
+
+    grouped = defaultdict(list)
+    present = defaultdict(set)
+
+    for row in ws.iter_rows(min_row=header_row + 1):
+        row_map = row[map_c - 1].value
+        row_variant = row[variant_c - 1].value
+        if row_map is None or row_variant is None:
+            continue
+
+        row_map = str(row_map).strip()
+        row_variant = str(row_variant).strip()
+        if not row_map or not row_variant:
+            continue
+
+        present[row_map].add(row_variant)
+        for model, mcol in model_cols.items():
+            if mcol is None:
+                continue
+            value = row[mcol - 1].value
+            if value is None or value == "":
+                continue
+            grouped[(row_map, row_variant, model)].append(float(value))
+
+    return grouped, present
+
+
+def latex_escape(text: str) -> str:
+    replacements = {
+        "\\": r"\textbackslash{}",
+        "&": r"\&",
+        "%": r"\%",
+        "$": r"\$",
+        "#": r"\#",
+        "_": r"\_",
+        "{": r"\{",
+        "}": r"\}",
+    }
+    return "".join(replacements.get(ch, ch) for ch in str(text))
+
+
+def format_latex_stat(values):
+    if not values:
+        return LATEX_MISSING
+
+    arr = np.asarray(values, dtype=float) * 100.0
+    ddof = 1 if len(arr) > 1 else 0
+    mean = arr.mean()
+    std = arr.std(ddof=ddof)
+    return f"{mean:.1f} \\scriptsize({{{std:.1f}}})"
+
+
+def ordered_items(items, preferred_order):
+    preferred = [item for item in preferred_order if item in items]
+    extra = sorted(item for item in items if item not in preferred_order)
+    return preferred + extra
+
+
+def variant_display_name(map_name: str, variant: str) -> str:
+    if (map_name, variant) in LATEX_VARIANT_LABELS:
+        return LATEX_VARIANT_LABELS[(map_name, variant)]
+    if variant == "vanila":
+        return "Vanilla"
+    return variant
+
+
+def build_latex_table(xlsx_path: Path) -> str:
+    wb = openpyxl.load_workbook(xlsx_path, data_only=True)
+    detail_ws, _, _ = find_sheet_with_headers(wb, ["Map", "Variant", "Seed"])
+    if detail_ws is None:
+        raise ValueError("Detail 테이블이 있는 시트를 찾지 못했습니다.")
+
+    grouped, present = collect_detail_rows(detail_ws)
+    maps = [
+        map_name for map_name in ordered_items(present.keys(), LATEX_MAP_ORDER)
+        if any(
+            grouped.get((map_name, variant, model), [])
+            for variant in present[map_name]
+            for model in SHEET_MODELS
+        )
+    ]
+
+    lines = [
+        r"\begin{tabular}{c c c c c c}",
+        r"    \toprule",
+        r"    Map & Target Constraint & PCI-IPPO & PCI-MAPPO & IPPO & MAPPO \\",
+        r"    \midrule",
+    ]
+
+    rendered_map_count = 0
+    for map_name in maps:
+        variants = ordered_items(
+            present[map_name],
+            LATEX_VARIANT_ORDER.get(map_name, ["vanila"]),
+        )
+        if not variants:
+            continue
+
+        rendered_map_count += 1
+        map_rows = []
+        for idx, variant in enumerate(variants):
+            cells = [
+                format_latex_stat(grouped.get((map_name, variant, model), []))
+                for model, _ in LATEX_MODEL_ORDER
+            ]
+            map_cell = latex_escape(map_name) if idx == 0 else ""
+            variant_cell = latex_escape(variant_display_name(map_name, variant))
+            row = f"    {map_cell} & {variant_cell} & " + " & ".join(cells) + r" \\"
+            map_rows.append(row)
+
+        lines.extend(map_rows)
+        if rendered_map_count < len(maps):
+            lines.append(r"    \midrule")
+
+    lines.append(r"    \bottomrule")
+    lines.append(r"\end{tabular}")
+    return "\n".join(lines)
+
+
 def update_detail_table(ws, results: dict, dry_run: bool) -> int:
     """Map | Variant | Seed | model... 테이블 업데이트."""
     header_row, col_map = find_header_row(ws, ["Map", "Variant", "Seed"])
@@ -367,8 +557,13 @@ def main():
     valid_models = list(MODEL_MAP.values())
 
     parser = argparse.ArgumentParser(
-        description="wandb -> SMAX_results.xlsx 동기화",
+        description="wandb -> SMAX_results.xlsx 동기화 / xlsx -> LaTeX 변환",
         formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        "mode", nargs="?", default="sync",
+        choices=["sync", "latex", "LATEX"],
+        help="실행 모드: sync(기본값) 또는 latex",
     )
     parser.add_argument(
         "--map", dest="maps", nargs="+", default=[],
@@ -401,30 +596,47 @@ def main():
         "--xlsx", default=str(XLSX_PATH), metavar="FILE",
         help=f"대상 xlsx 파일 경로 (기본값: {XLSX_PATH})",
     )
+    parser.add_argument(
+        "--latex-output", default="",
+        metavar="FILE",
+        help="latex 모드에서 결과를 저장할 파일 경로 (미지정 시 stdout만 출력)",
+    )
     parser.add_argument("--dry-run",    action="store_true",
                         help="파일 변경 없이 결과만 출력")
     parser.add_argument("--no-summary", action="store_true",
                         help="Summary 테이블 업데이트 건너뜀")
     args = parser.parse_args()
 
+    mode = args.mode.lower()
     xlsx_path = Path(args.xlsx)
 
     print("=" * 60)
+    print(f"실행 모드     : {mode}")
     print(f"wandb 프로젝트: {WANDB_ENTITY}/{WANDB_PROJECT}")
     print(f"대상 파일     : {xlsx_path}")
-    print(f"Dry-run       : {args.dry_run}")
-    if args.maps:       print(f"map 필터      : {args.maps}")
-    if args.conditions: print(f"condition 필터: {args.conditions}")
-    if args.models:     print(f"model 필터    : {args.models}")
+    if mode == "sync":
+        print(f"Dry-run       : {args.dry_run}")
+        if args.maps:       print(f"map 필터      : {args.maps}")
+        if args.conditions: print(f"condition 필터: {args.conditions}")
+        if args.models:     print(f"model 필터    : {args.models}")
+    if mode == "latex" and args.latex_output:
+        print(f"LaTeX 출력 파일: {args.latex_output}")
     print("=" * 60)
 
-    # 1. xlsx 존재 확인
     if not xlsx_path.exists():
         print(f"\n[오류] 파일을 찾을 수 없습니다: {xlsx_path}")
         print("Google Sheet -> 파일 -> 다운로드 -> Microsoft Excel(.xlsx) 후 재시도하세요.")
         sys.exit(1)
 
-    # 2. wandb 수집
+    if mode == "latex":
+        latex_code = build_latex_table(xlsx_path)
+        print("\n" + latex_code)
+        if args.latex_output:
+            output_path = Path(args.latex_output)
+            output_path.write_text(latex_code + "\n", encoding="utf-8")
+            print(f"\n저장 완료: {output_path}")
+        return
+
     print("\n[1/3] wandb 데이터 수집 중...")
     results = fetch_wandb_results()
     print(f"\n총 {len(results)}개 결과 수집 완료.")
@@ -443,18 +655,28 @@ def main():
     # 4. xlsx 로드 및 업데이트
     print(f"\n[2/3] {xlsx_path} 로드 중...")
     wb = openpyxl.load_workbook(xlsx_path)
-    ws = wb.active
-    print(f"  시트: {ws.title}  (row={ws.max_row}, col={ws.max_column})")
+    detail_ws, _, _ = find_sheet_with_headers(wb, ["Map", "Variant", "Seed"])
+    if detail_ws is None:
+        print("[오류] Detail 테이블이 있는 시트를 찾지 못했습니다.")
+        sys.exit(1)
+
+    summary_ws = find_summary_sheet(wb)
+    print(f"  Detail 시트 : {detail_ws.title}  (row={detail_ws.max_row}, col={detail_ws.max_column})")
+    if summary_ws is not None:
+        print(f"  Summary 시트: {summary_ws.title}  (row={summary_ws.max_row}, col={summary_ws.max_column})")
 
     print("\n[3/3] 셀 업데이트 중...")
 
     print("\n  --- Detail 테이블 ---")
-    n_detail = update_detail_table(ws, results, dry_run=args.dry_run)
+    n_detail = update_detail_table(detail_ws, results, dry_run=args.dry_run)
 
     n_summary = 0
     if not args.no_summary:
-        print("\n  --- Summary 테이블 ---")
-        n_summary = update_summary_table(ws, results, dry_run=args.dry_run)
+        if summary_ws is None:
+            print("\n  [경고] Summary 테이블이 있는 시트를 찾지 못했습니다.")
+        else:
+            print("\n  --- Summary 테이블 ---")
+            n_summary = update_summary_table(summary_ws, results, dry_run=args.dry_run)
 
     # 5. 저장
     if not args.dry_run:

@@ -10,8 +10,8 @@ model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(3 4 5)
+map_name="6h_vs_8z"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(6 8)
 
 # training settings
 seeds=(42 1 2)
@@ -21,7 +21,7 @@ max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 run_in_background=false
-
+wandb_run_name_postfix=""
 # test=false
 # checkpoint="./save_checkpoints/20260406_185738_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_1599.pkl"
 # save_replay=true
@@ -44,6 +44,15 @@ pids=()
 for allowed_target_window in "${allowed_target_windows[@]}"; do
   echo "[allowed_target_window=${allowed_target_window}] start"
   for seed in "${seeds[@]}"; do
+      wandb_group="${map_name:-default}"
+      wandb_args=(
+        --use-wandb
+        --wandb-project pci-marl-smax-jax-v3
+        --wandb-group "${wandb_group}"
+      )
+      if [[ -n "${wandb_run_name_postfix}" ]]; then
+        wandb_args+=(--wandb-run-name-postfix "${wandb_run_name_postfix}")
+      fi
       echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
       if ${run_in_background}; then
         python main.py \
@@ -59,8 +68,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
           --log-interval ${log_interval} \
           --device ${device} \
           --seed ${seed} \
-          --use-wandb \
-          --wandb-project pci-marl-smax-jax-v3 &
+          "${wandb_args[@]}" &
         pid=$!
         pids+=("${pid}")
         echo "[allowed_target_window=${allowed_target_window} seed=${seed}] PID: ${pid}"
@@ -78,8 +86,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
           --log-interval ${log_interval} \
           --device ${device} \
           --seed ${seed} \
-          --use-wandb \
-          --wandb-project pci-marl-smax-jax-v3
+          "${wandb_args[@]}"
       fi
   done
 done

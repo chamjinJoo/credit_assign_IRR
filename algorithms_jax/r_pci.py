@@ -56,6 +56,8 @@ class JAXRPCIAlgorithm:
         clip_delta: float = 0.2,
         causal_lambda: float = 0.0,
         causal_lambda_schedule: bool = False,
+        causal_lambda_warmup_tau: float = 1.0e5,  # exponential time constant (steps)
+        causal_lambda_schedule_type: str = "exponential",  # "linear" | "exponential" | "none"   
         causal_lambda_start: float = 0.0,
         causal_lambda_final: float = 0.0,
         causal_lambda_warmup_steps: int = 10000,
@@ -116,10 +118,13 @@ class JAXRPCIAlgorithm:
 
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
+        self.causal_lambda_warmup_tau = causal_lambda_warmup_tau
+        self.causal_lambda_schedule_type = causal_lambda_schedule_type
         self.causal_lambda_start = causal_lambda_start
         self.causal_lambda_final = causal_lambda_final
         self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
         self.causal_lambda_startingpoint = causal_lambda_startingpoint
+        
         self.bridge_epoch = bridge_epoch
         self.causal_mini_batch_size = causal_mini_batch_size
         self.tikhonov_gamma = tikhonov_gamma
@@ -260,8 +265,22 @@ class JAXRPCIAlgorithm:
         return self.initialize_runner_state(n_envs)
 
     def get_current_causal_lambda(self) -> float:
-        if not self.causal_lambda_schedule:
+        if self.causal_lambda_schedule_type == "none" or not self.causal_lambda_schedule:
             return float(self.causal_lambda)
+
+        if self.causal_lambda_schedule_type == "exponential":
+            # Delay until startingpoint, then exponential ramp-up toward causal_lambda
+            if self.training_steps < self.causal_lambda_startingpoint:
+                return float(self.causal_lambda_start)
+            effective_steps = self.training_steps - self.causal_lambda_startingpoint
+            tau = max(1.0, float(self.causal_lambda_warmup_tau))
+            progress = 1.0 - math.exp(-effective_steps / tau)
+            return float(
+                self.causal_lambda_start
+                + progress * (self.causal_lambda_final - self.causal_lambda_start)
+            )
+
+        # fallback: existing linear schedule
         if self.training_steps < self.causal_lambda_startingpoint:
             return float(self.causal_lambda_start)
         effective_steps = self.training_steps - self.causal_lambda_startingpoint
@@ -366,8 +385,8 @@ class JAXRPCIAlgorithm:
 
         # normalize both adv before combining. 
         # # NOTE: if using adv norm here, at initial, pci_flat affects too much even though it is nearly zero.
-        # env_flat = self._normalize_actor_advantages(env_flat)
-        # pci_flat = self._normalize_actor_advantages(pci_flat)
+        env_flat = self._normalize_actor_advantages(env_flat)
+        pci_flat = self._normalize_actor_advantages(pci_flat)
 
         combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
 

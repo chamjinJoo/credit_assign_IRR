@@ -15,7 +15,7 @@ algorithm:
   clip_epsilon: 0.2
   entropy_coef: 0.01
   value_coef: 0.5
-  max_grad_norm: 0.5
+  max_grad_norm: 0.25
   ppo_epochs: 4
   bridge_epoch: 4
   causal_mini_batch_size: 10000
@@ -25,7 +25,7 @@ algorithm:
   use_centralized_critic: false
   add_agent_id: true             # 무조건 true, false시 성능 급감. IPPO/MAPPO도 마찬가지
   
-  causal_lambda_schedule: true
+  causal_lambda_schedule: false
   causal_lambda_start: 0.0
   causal_lambda_final: 1.0
   causal_lambda_startingpoint: 64000    # 100 iter (steps/iter = 6400) — bridge만 먼저 학습

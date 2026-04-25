@@ -330,6 +330,8 @@ class WandbConfig:
     use_wandb: bool = False
     project: str = "pci-mappo"
     run_name: Optional[str] = None
+    run_name_postfix: Optional[str] = None
+    group: Optional[str] = None
     tags: Optional[list] = None
 
 
@@ -530,6 +532,10 @@ def parse_args() -> argparse.Namespace:
                         help='Wandb project name')
     parser.add_argument('--wandb-run-name', type=str, default=None,
                         help='Wandb run name')
+    parser.add_argument('--wandb-run-name-postfix', type=str, default=None,
+                        help='Append postfix to wandb run name')
+    parser.add_argument('--wandb-group', type=str, default=None,
+                        help='Wandb group name')
     
     # Reproducibility
     parser.add_argument('--seed', type=int, default=None,
@@ -676,6 +682,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.wandb.project = args.wandb_project
     if hasattr(args, 'wandb_run_name') and args.wandb_run_name:
         config.wandb.run_name = args.wandb_run_name
+    if hasattr(args, 'wandb_run_name_postfix') and args.wandb_run_name_postfix:
+        config.wandb.run_name_postfix = args.wandb_run_name_postfix
+    if hasattr(args, 'wandb_group') and args.wandb_group:
+        config.wandb.group = args.wandb_group
     # Reproducibility settings
     if hasattr(args, 'seed') and args.seed is not None:
         config.training.seed = args.seed

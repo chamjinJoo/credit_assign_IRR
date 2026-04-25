@@ -1,6 +1,7 @@
 # checkpoints
 save_checkpoints/
 save_animations/
+checkpoints_for_eval/
 
 # plots
 plots/

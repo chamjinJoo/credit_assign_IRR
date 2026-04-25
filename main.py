@@ -771,6 +771,12 @@ def main():
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()
                 config.wandb.run_name = env_name
+
+        if getattr(config.wandb, 'run_name_postfix', None):
+            if config.wandb.run_name:
+                config.wandb.run_name = f"{config.wandb.run_name}_{config.wandb.run_name_postfix}"
+            else:
+                config.wandb.run_name = config.wandb.run_name_postfix
         
         # Log available environments
         available_envs = get_available_environments()
@@ -797,6 +803,7 @@ def main():
         # set wandb logging name
         wandb_project_name = config.wandb.project
         wandb_run_name = config.wandb.run_name
+        wandb_group_name = config.wandb.group
         wandb_algo_name = algorithm_type
         if algorithm_type.lower().replace('-', '_') in ['r_pci', 'pci_rnn']:
             if getattr(config.algorithm, 'use_centralized_critic', False):
@@ -812,7 +819,10 @@ def main():
             wandb_run_name = f"{wandb_algo_name}_{wandb_run_name}_seed{actual_seed}"
         else:
             wandb_run_name = wandb_algo_name
-        
+
+        if wandb_group_name:
+            wandb_group_name = f"{wandb_group_name}"
+
         # Create env_fn for parallel environments
         n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
 
@@ -863,6 +873,7 @@ def main():
             use_wandb=False if is_test_mode else config.wandb.use_wandb,
             wandb_project=wandb_project_name,
             wandb_run_name=wandb_run_name,
+            wandb_group=wandb_group_name,
             device=device,
             n_rollout_threads=n_rollout_threads,
             env_fn=env_fn
