@@ -188,6 +188,7 @@ class JAXRPCIAlgorithm:
 
         lr_actor_arg = _maybe_schedule(lr_actor)
         lr_critic_arg = _maybe_schedule(lr_critic)
+        lr_bridge_arg = _maybe_schedule(lr_bridge)
 
         init_rng, actor_key, critic_key, bridge_key = jax.random.split(init_rng, 4)
 
@@ -232,7 +233,7 @@ class JAXRPCIAlgorithm:
                     jnp.zeros((1, self.bridge_hidden_dim), dtype=jnp.float32),
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
-                lr_bridge,
+                lr_bridge_arg,
                 max_grad_norm,
             )
 
@@ -1403,10 +1404,36 @@ class JAXRPCIAlgorithm:
         metrics["bridge_grad_norm"] = global_norm(grads)
         return new_bridge_state, metrics
 
+    def _slice_batch(self, batch: Dict[str, jnp.ndarray], idx: jnp.ndarray) -> Dict[str, jnp.ndarray]:
+        return {key: value[idx] for key, value in batch.items()}
+
     def _iterate_minibatches(self, size: int):
-        effective_batch = self.batch_size if self.batch_size > 0 else math.ceil(size / self.num_batches)
-        for start in range(0, size, effective_batch):
-            yield jnp.arange(start, min(start + effective_batch, size))
+        if size <= 0:
+            return
+        if self.batch_size > 0:
+            for start in range(0, size, self.batch_size):
+                yield jnp.arange(start, min(start + self.batch_size, size))
+            return
+
+        n_batches = min(self.num_batches, size)
+        for batch_idx in range(n_batches):
+            start = (size * batch_idx) // n_batches
+            end = (size * (batch_idx + 1)) // n_batches
+            if end > start:
+                yield jnp.arange(start, end)
+
+    def _iterate_causal_minibatches(self, alive_idx: jnp.ndarray):
+        total_alive = int(alive_idx.shape[0])
+        if total_alive <= 0:
+            return
+
+        n_batches = min(self.num_batches, total_alive)
+        batch_len = total_alive // n_batches  # floor division (drop_last 핵심)
+
+        for batch_idx in range(n_batches):
+            start = batch_idx * batch_len
+            end = start + batch_len
+            yield alive_idx[start:end]
 
     def update_causal_networks(self, rollout: Optional[Dict[str, jnp.ndarray]] = None) -> Dict[str, float]:
         if rollout is None:
@@ -1419,23 +1446,16 @@ class JAXRPCIAlgorithm:
         causal_batch = self._causal_batch(rollout)
         # Gather alive-only indices (computed outside JIT to avoid variable shape).
         alive_idx = causal_batch["alive_indices"]
-        total_alive = int(alive_idx.shape[0])
         _KEYS = ("z", "w", "x_obs", "x_hid", "actions", "targets", "agent_ids")
 
         metrics = []
-        for start in range(0, total_alive, self.causal_mini_batch_size):
-            end = start + self.causal_mini_batch_size
-            if end <= total_alive:
-                idx = alive_idx[start:end]
-            else:
-                # Pad last batch with wrap-around from alive samples → fixed shape.
-                pad = self.causal_mini_batch_size - (total_alive - start)
-                idx = jnp.concatenate([alive_idx[start:], alive_idx[:pad]])
-            batch = {k: causal_batch[k][idx] for k in _KEYS}
-            # Compute Gram once per mini-batch and reuse across bridge epochs (matches Torch).
-            gram, reg_gram, gram_metrics = self._compute_gram(batch)
-            gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
-            for _ in range(self.bridge_epoch):
+        for _ in range(self.bridge_epoch):
+            self.bridge_rng, bridge_perm_rng = jax.random.split(self.bridge_rng)
+            shuffled_alive_idx = alive_idx[jax.random.permutation(bridge_perm_rng, alive_idx.shape[0])]
+            for idx in self._iterate_causal_minibatches(shuffled_alive_idx):
+                batch = {k: causal_batch[k][idx] for k in _KEYS}
+                gram, reg_gram, gram_metrics = self._compute_gram(batch)
+                gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
                 self.bridge_state, batch_metrics = self._bridge_update_step(self.bridge_state, batch, gram, reg_gram)
                 combined = {key: float(value) for key, value in tree_to_host(batch_metrics).items()}
                 combined.update(gram_metrics_host)
@@ -1565,12 +1585,28 @@ class JAXRPCIAlgorithm:
         critic_batch = self._flatten_critic_batch(rollout, returns)
 
         metrics = []
-        for epoch in range(self.ppo_epochs):
-            self.actor_state, actor_metrics = self._actor_update_step(self.actor_state, actor_batch)
-            metrics.append({key: float(value) for key, value in tree_to_host(actor_metrics).items()})
+        actor_size = int(actor_batch["obs"].shape[0])
+        critic_size = int(critic_batch["obs"].shape[0])
+        for _ in range(self.ppo_epochs):
+            self.rng, actor_perm_rng = jax.random.split(self.rng)
+            actor_perm = jax.random.permutation(actor_perm_rng, actor_size)
 
-            self.critic_state, critic_metrics = self._critic_update_step(self.critic_state, critic_batch)
-            metrics.append({key: float(value) for key, value in tree_to_host(critic_metrics).items()})
+            # shuffle
+            for idx in self._iterate_minibatches(actor_size):
+                idx = actor_perm[idx]
+                actor_minibatch = self._slice_batch(actor_batch, idx)
+                self.actor_state, actor_metrics = self._actor_update_step(self.actor_state, actor_minibatch)
+                metrics.append({key: float(value) for key, value in tree_to_host(actor_metrics).items()})
+
+            self.rng, critic_perm_rng = jax.random.split(self.rng)
+            critic_perm = jax.random.permutation(critic_perm_rng, critic_size)
+
+            # shuffle
+            for idx in self._iterate_minibatches(critic_size):
+                idx = critic_perm[idx]
+                critic_minibatch = self._slice_batch(critic_batch, idx)
+                self.critic_state, critic_metrics = self._critic_update_step(self.critic_state, critic_minibatch)
+                metrics.append({key: float(value) for key, value in tree_to_host(critic_metrics).items()})
 
         return stack_metrics(metrics)
 
@@ -1625,12 +1661,19 @@ class JAXRPCIAlgorithm:
             )
             delta_critic_batch = self._flatten_delta_critic_batch(rollout, delta_returns)
             raw_dc: list = []
+            delta_critic_size = int(delta_critic_batch["obs"].shape[0])
             for _ in range(self.ppo_epochs):
-                self.delta_critic_state, dc_metrics = self._delta_critic_update_step(
-                    self.delta_critic_state,
-                    delta_critic_batch,
-                )
-                raw_dc.append(dc_metrics)
+                self.rng, delta_critic_perm_rng = jax.random.split(self.rng)
+                delta_critic_perm = jax.random.permutation(delta_critic_perm_rng, delta_critic_size)
+
+                for idx in self._iterate_minibatches(delta_critic_size):
+                    idx = delta_critic_perm[idx]
+                    delta_critic_minibatch = self._slice_batch(delta_critic_batch, idx)
+                    self.delta_critic_state, dc_metrics = self._delta_critic_update_step(
+                        self.delta_critic_state,
+                        delta_critic_minibatch,
+                    )
+                    raw_dc.append(dc_metrics)
             for bm in raw_dc:
                 metrics.update({k: float(v) for k, v in tree_to_host(bm).items()})
         else:
@@ -1669,7 +1712,7 @@ class JAXRPCIAlgorithm:
             avail_actions,
             runner_state["actor_hidden"],
             runner_state["prev_actions"],
-            runner_state["agent_done_prev"],
+            runner_state["done_prev"],
             jax.random.PRNGKey(0),
             True,
         )

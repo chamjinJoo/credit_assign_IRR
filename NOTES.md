@@ -405,4 +405,10 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
   * `max_grad_norm=0.25` for all
   * `lr=4.0e-3` for `ippo`
   * `lr=2.0e-3` for `ippo`
-  * `lr=5.0e-4` for `pci-ippo/mappo` & `lr_bridge=2.0e-3`.
+  * `lr=5.0e-4` for `pci-ippo/mappo` & `lr_bridge=2.0e-3`. Note: `lr=2.0e-3` for 2s3z.
+
+# 26.04.27
+* Note: `r_pci.py` greedy_action() should take `done_prev` mask, not `agent_done_prev`. -> ippo-style model does not work.
+* lr-annealing is added: 3m에서 backbone model ippo/mappo lr annealing은 큰 효과 없음. 학습이 불안정한 map (2s3z, 3s5z 등) 위주로 진행해보기
+  
+**Fix PPO epoch and add shuffling for all networks**

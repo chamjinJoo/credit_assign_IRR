@@ -48,7 +48,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
       wandb_group="${map_name:-default}"
       wandb_args=(
         --use-wandb
-        --wandb-project pci-marl-smax-jax-v3
+        --wandb-project pci-marl-smax-jax
         --wandb-group "${wandb_group}"
       )
       if [[ -n "${wandb_run_name_postfix}" ]]; then

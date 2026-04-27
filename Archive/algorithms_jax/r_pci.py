@@ -56,6 +56,8 @@ class JAXRPCIAlgorithm:
         clip_delta: float = 0.2,
         causal_lambda: float = 0.0,
         causal_lambda_schedule: bool = False,
+        causal_lambda_warmup_tau: float = 1.0e5,  # exponential time constant (steps)
+        causal_lambda_schedule_type: str = "exponential",  # "linear" | "exponential" | "none"   
         causal_lambda_start: float = 0.0,
         causal_lambda_final: float = 0.0,
         causal_lambda_warmup_steps: int = 10000,
@@ -69,6 +71,9 @@ class JAXRPCIAlgorithm:
         print_bridge_predictions: bool = False,
         bridge_prediction_print_samples: int = 1,
         bridge_prediction_print_interval: int = 50,
+        bridge_prediction_batch_size: int = 2048,
+        normalize_pci_signal: bool = False,
+        use_delta_critic: bool = False,
         seed: int = 42,
         **_: Any,
     ):
@@ -100,21 +105,26 @@ class JAXRPCIAlgorithm:
         self.print_bridge_predictions = bool(print_bridge_predictions)
         self.bridge_prediction_print_samples = max(1, int(bridge_prediction_print_samples))
         self.bridge_prediction_print_interval = max(1, int(bridge_prediction_print_interval))
+        self.bridge_prediction_batch_size = max(1, int(bridge_prediction_batch_size))
         self.attack_action_threshold = self._infer_attack_action_threshold(action_dim)
-        # SMAX: stop (attack_threshold-1) is always available even for dead agents.
-        # SMAC: action 0 (no-op) is the dead-only action.
         env_name = self.env.__class__.__name__
-        if env_name in ('SMAXBatchWrapper', 'SMAXWrapper') and self.attack_action_threshold is not None:
-            self._dead_only_action_idx: Optional[int] = self.attack_action_threshold - 1
-        else:
-            self._dead_only_action_idx = None  # use avail[1:].sum() fallback
+        print(f"Environment name: {env_name}")
+        allowed_target_matrix = getattr(self.env, "_allowed_target_matrix_jax", None)
+        if allowed_target_matrix is None:
+            allowed_target_matrix = getattr(self.env, "_allowed_target_matrix_np", None)
+        self._allowed_target_matrix = (
+            None if allowed_target_matrix is None else jnp.asarray(allowed_target_matrix, dtype=jnp.float32)
+        )
 
         self.causal_lambda = causal_lambda
         self.causal_lambda_schedule = causal_lambda_schedule
+        self.causal_lambda_warmup_tau = causal_lambda_warmup_tau
+        self.causal_lambda_schedule_type = causal_lambda_schedule_type
         self.causal_lambda_start = causal_lambda_start
         self.causal_lambda_final = causal_lambda_final
         self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
         self.causal_lambda_startingpoint = causal_lambda_startingpoint
+        
         self.bridge_epoch = bridge_epoch
         self.causal_mini_batch_size = causal_mini_batch_size
         self.tikhonov_gamma = tikhonov_gamma
@@ -127,15 +137,18 @@ class JAXRPCIAlgorithm:
         self.policy_obs_dim = obs_dim + num_agents if add_agent_id else obs_dim
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
-        # Current proxy setting:
-        #   W^i_t = other agents' current observations
-        #   Z^i_t = agent i's previous hidden state h^i_{t-1}
-        #   X^i_t = (o^i_t, h^{-i}_{t-1})
+        self.delta_critic_state_dim = hidden_dim if use_delta_critic else 0
+        self.normalize_pci_signal = normalize_pci_signal
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
+        self.use_delta_critic = use_delta_critic
+        print("use_delta_critic:", use_delta_critic)
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
-        self.rng = jax.random.PRNGKey(seed)
-        self.rng, self.bridge_rng = jax.random.split(self.rng)
+        self.delta_critic_output_dim = num_agents if use_centralized_critic else 1
+        base_rng = jax.random.PRNGKey(int(seed))
+        init_rng = jax.random.fold_in(base_rng, 0)
+        self.rng = jax.random.fold_in(base_rng, 1)
+        self.bridge_rng = jax.random.fold_in(base_rng, 2)
 
         self.actor_model = (
             RecurrentActor(hidden_dim=hidden_dim, action_dim=action_dim)
@@ -157,7 +170,7 @@ class JAXRPCIAlgorithm:
             else None
         )
 
-        self.rng, actor_key, critic_key, bridge_key = jax.random.split(self.rng, 4)
+        init_rng, actor_key, critic_key, bridge_key = jax.random.split(init_rng, 4)
 
         self.actor_state = make_train_state(
             self.actor_model,
@@ -189,16 +202,38 @@ class JAXRPCIAlgorithm:
 
         self.bridge_state = None
         if self.bridge_model is not None:
+            # others_obs dim: mean-pooled → policy_obs_dim; concat → (N-1)*policy_obs_dim
+            bridge_others_obs_dim = (num_agents - 1) * self.policy_obs_dim
             self.bridge_state = make_train_state(
                 self.bridge_model,
                 bridge_key,
                 (
                     jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
-                    jnp.zeros((1, (num_agents - 1) * obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, bridge_others_obs_dim), dtype=jnp.float32),
                     jnp.zeros((1, self.bridge_hidden_dim), dtype=jnp.float32),
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
                 lr_bridge,
+                max_grad_norm,
+            )
+
+        self.delta_critic_state = None
+        if use_delta_critic:
+            self.delta_critic_model = RecurrentCritic(
+                hidden_dim=hidden_dim,
+                output_dim=self.delta_critic_output_dim,
+            )
+            init_rng, delta_critic_key = jax.random.split(init_rng)
+            self.delta_critic_state = make_train_state(
+                self.delta_critic_model,
+                delta_critic_key,
+                (
+                    jnp.zeros((1, critic_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, critic_prev_action_dim), dtype=jnp.float32),
+                    jnp.zeros((1, self.delta_critic_state_dim), dtype=jnp.float32),
+                    jnp.ones((1,), dtype=jnp.float32),
+                ),
+                lr_critic,
                 max_grad_norm,
             )
 
@@ -208,12 +243,19 @@ class JAXRPCIAlgorithm:
             if self.use_centralized_critic
             else (n_envs, self.num_agents, self.critic_state_dim)
         )
+        delta_critic_shape = (
+            (n_envs, self.delta_critic_state_dim)
+            if self.use_centralized_critic
+            else (n_envs, self.num_agents, self.delta_critic_state_dim)
+        )
         return {
             "actor_hidden": jnp.zeros((n_envs, self.num_agents, self.actor_state_dim), dtype=jnp.float32),
             "critic_hidden": jnp.zeros(critic_shape, dtype=jnp.float32),
+            "delta_critic_hidden": jnp.zeros(delta_critic_shape, dtype=jnp.float32),
             "prev_actions": jnp.zeros((n_envs, self.num_agents, self.action_dim), dtype=jnp.float32),
             "prev_obs": jnp.zeros((n_envs, self.num_agents, self.policy_obs_dim), dtype=jnp.float32),
             "done_prev": jnp.zeros((n_envs,), dtype=jnp.float32),
+            "agent_done_prev": jnp.zeros((n_envs, self.num_agents), dtype=jnp.float32),
         }
 
     def reset_agents(self):
@@ -223,8 +265,22 @@ class JAXRPCIAlgorithm:
         return self.initialize_runner_state(n_envs)
 
     def get_current_causal_lambda(self) -> float:
-        if not self.causal_lambda_schedule:
+        if self.causal_lambda_schedule_type == "none" or not self.causal_lambda_schedule:
             return float(self.causal_lambda)
+
+        if self.causal_lambda_schedule_type == "exponential":
+            # Delay until startingpoint, then exponential ramp-up toward causal_lambda
+            if self.training_steps < self.causal_lambda_startingpoint:
+                return float(self.causal_lambda_start)
+            effective_steps = self.training_steps - self.causal_lambda_startingpoint
+            tau = max(1.0, float(self.causal_lambda_warmup_tau))
+            progress = 1.0 - math.exp(-effective_steps / tau)
+            return float(
+                self.causal_lambda_start
+                + progress * (self.causal_lambda_final - self.causal_lambda_start)
+            )
+
+        # fallback: existing linear schedule
         if self.training_steps < self.causal_lambda_startingpoint:
             return float(self.causal_lambda_start)
         effective_steps = self.training_steps - self.causal_lambda_startingpoint
@@ -277,44 +333,31 @@ class JAXRPCIAlgorithm:
         threshold = max(0, min(int(threshold), int(action_dim) - 1))
         return threshold
 
-    def _alive_from_avail(self, avail_actions: jnp.ndarray) -> jnp.ndarray:
-        """Return boolean alive mask.
+    def _alive_from_agent_dones(self, agent_dones: jnp.ndarray) -> jnp.ndarray:
+        return jnp.logical_not(agent_dones.astype(jnp.bool_))
 
-        SMAX: stop action (index = attack_action_threshold - 1) is always
-        available even for dead agents, so exclude it from the alive check.
-        SMAC / default: action 0 is the dead-only no-op, so avail[1:].sum()>0 works.
-        """
-        if self._dead_only_action_idx is not None:
-            stop = avail_actions[..., self._dead_only_action_idx]
-            return (avail_actions.sum(axis=-1) - stop) > 0
-        return avail_actions[..., 1:].sum(axis=-1) > 0
-
-    def _normalize_advantage_signal(self, signal: jnp.ndarray) -> jnp.ndarray:
-        if signal.size <= 1:
-            return jnp.zeros_like(signal)
-        std = jnp.clip(signal.std(), a_min=1.0e-8)
-        return (signal - signal.mean()) / std
-
-    def _normalize_actor_advantages(self, advantages: jnp.ndarray) -> jnp.ndarray:
+    def _normalize_actor_advantages(
+        self,
+        advantages: jnp.ndarray,
+        alive_masks: Optional[jnp.ndarray] = None,
+    ) -> jnp.ndarray:
+        """Normalize advantages per agent (axis=0 = T*E direction)."""
         if advantages.shape[0] <= 1:
             return jnp.zeros_like(advantages)
-        centered = advantages - advantages.mean(axis=0, keepdims=True)
-        sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
-        denom = jnp.maximum(advantages.shape[0] - 1, 1)
-        std = jnp.sqrt(jnp.clip(sq_sum / denom, a_min=1.0e-8))
+        if alive_masks is not None:
+            w = alive_masks.astype(jnp.float32)
+            counts = jnp.sum(w, axis=0, keepdims=True)
+            mean = jnp.sum(advantages * w, axis=0, keepdims=True) / jnp.maximum(counts, 1.0)
+            centered = advantages - mean
+            sq_sum = jnp.sum(jnp.square(centered) * w, axis=0, keepdims=True)
+            denom = jnp.maximum(counts - 1.0, 1.0)
+        else:
+            centered = advantages - advantages.mean(axis=0, keepdims=True)
+            sq_sum = jnp.sum(jnp.square(centered), axis=0, keepdims=True)
+            denom = jnp.maximum(advantages.shape[0] - 1, 1)
+        var = sq_sum / denom
+        std = jnp.sqrt(jnp.clip(var, a_min=1.0e-8))
         return centered / std
-
-    def _combine_env_and_pci_advantages(
-        self,
-        env_advantages: jnp.ndarray,
-        pci_signal: jnp.ndarray,
-        causal_lambda: float,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        env_norm = self._normalize_advantage_signal(env_advantages)
-        pci_norm = self._normalize_advantage_signal(pci_signal)
-        combined = env_norm + causal_lambda * pci_norm
-        # combined = (1-causal_lambda) * env_norm + causal_lambda * pci_norm # convex combination
-        return combined, env_norm, pci_norm
 
     def _env_advantages_for_actor(self, env_advantages: jnp.ndarray) -> jnp.ndarray:
         if env_advantages.ndim == 2:
@@ -334,25 +377,22 @@ class JAXRPCIAlgorithm:
         pci_advantages: jnp.ndarray,
         causal_lambda: float,
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
+        
         env_for_actor = self._env_advantages_for_actor(env_advantages)
         orig_shape = env_for_actor.shape  # (T, E, N)
-        # Normalize each agent's slice independently (vectorized over agent dim).
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
-        env_norm = self._normalize_columns(env_flat)
-        pci_res  = self._normalize_columns(pci_flat)
 
-        # 1st normalization and combine:
-        combined = (env_norm + causal_lambda * pci_res).reshape(orig_shape)
-        # No 1st normalization:
-        # combined = (env_flat + causal_lambda * pci_res).reshape(orig_shape)
+        # normalize both adv before combining. 
+        # # NOTE: if using adv norm here, at initial, pci_flat affects too much even though it is nearly zero.
+        env_flat = self._normalize_actor_advantages(env_flat)
+        pci_flat = self._normalize_actor_advantages(pci_flat)
 
-        env_norm = env_norm.reshape(orig_shape)
-        pci_res  = pci_res.reshape(orig_shape)
+        combined = (env_flat + causal_lambda * pci_flat).reshape(orig_shape)
+
         info = {
-            "env_adv_std": float(jnp.std(env_norm)),
-            "pci_adv_res_std": float(jnp.std(pci_res)),
-            "pci_bonus_std": float(jnp.std(causal_lambda * pci_res)),
+            "env_adv_std": float(jnp.std(env_flat)),
+            "pci_adv_res_std": float(jnp.std(pci_flat)),
             "combined_adv_std": float(jnp.std(combined)),
         }
         return combined, info
@@ -369,87 +409,88 @@ class JAXRPCIAlgorithm:
         pci_res  = self._normalize_columns(pci_flat)
         return pci_res.reshape(orig_shape)
 
-    def _smac_attack_reward_event_metrics(
+    @partial(jax.jit, static_argnums=0)
+    def _categorized_action_delta_compute(
+        self,
+        actions: jnp.ndarray,        # (T, E, N)
+        agent_dones: jnp.ndarray,    # (T, E, N)
+        delta: jnp.ndarray,          # (T, E, N)
+        avail_actions: jnp.ndarray,  # (T, E, N, action_dim)
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        thr = self.attack_action_threshold
+        alive_f = self._alive_from_agent_dones(agent_dones).astype(jnp.float32)
+        is_attack = (actions >= thr).astype(jnp.float32)
+
+        if self._allowed_target_matrix is not None:
+            num_targets = self._allowed_target_matrix.shape[-1]
+            attack_targets = jnp.clip(actions - thr, 0, num_targets - 1)
+            chosen_target_one_hot = jax.nn.one_hot(
+                attack_targets.astype(jnp.int32), num_targets, dtype=jnp.float32,
+            )
+            chosen_target_allowed = jnp.sum(
+                chosen_target_one_hot * self._allowed_target_matrix[None, None, :, :],
+                axis=-1,
+            )
+            target_mask    = alive_f * is_attack * (chosen_target_allowed > 0).astype(jnp.float32)
+            nontarget_mask = alive_f * is_attack * (chosen_target_allowed <= 0).astype(jnp.float32)
+        else:
+            action_avail = jnp.take_along_axis(
+                avail_actions, actions[..., None].astype(jnp.int32), axis=-1
+            ).squeeze(-1)
+            target_mask    = alive_f * is_attack * (action_avail > 0).astype(jnp.float32)
+            nontarget_mask = alive_f * is_attack * (action_avail == 0).astype(jnp.float32)
+
+        other_mask = alive_f * (1.0 - is_attack)
+
+        def _stats(mask):
+            counts    = mask.sum(axis=(0, 1))
+            delta_sum = (delta * mask).sum(axis=(0, 1))
+            means     = jnp.where(counts > 0, delta_sum / jnp.maximum(counts, 1.0e-8), 0.0)
+            return counts, means
+
+        tc, tm = _stats(target_mask)
+        nc, nm = _stats(nontarget_mask)
+        oc, om = _stats(other_mask)
+        return tc, tm, nc, nm, oc, om
+
+    def _categorized_action_delta_metrics(
         self,
         rollout: Dict[str, jnp.ndarray],
         delta: jnp.ndarray,
-        pci_advantages: jnp.ndarray,
-        pci_residual: jnp.ndarray,
-        causal_lambda: float,
     ) -> Dict[str, float]:
+        """Per-agent delta split into 3 action categories for SMAX target allocation.
+
+        target_attack    : action >= attack_threshold AND chosen enemy is within
+                           the agent's allowed target set.
+        non_target_attack: action >= attack_threshold AND chosen enemy is outside
+                           the agent's allowed target set.
+        other_action     : action < attack_threshold
+                           (move / stop)
+
+        If the environment does not expose an allowed-target matrix, fall back to
+        the older avail-action based categorisation.
+        """
         if self.attack_action_threshold is None:
             return {}
 
-        actions = rollout["actions"]  # (T, E, N)
-        team_reward = rollout["rewards"].sum(axis=-1) / self.num_agents  # (T, E)
-        reward_hit = team_reward > 1.0e-8
+        tc, tm, nc, nm, oc, om = self._categorized_action_delta_compute(
+            rollout["actions"],
+            rollout["agent_dones"],
+            delta,
+            rollout["avail_actions"],
+        )
 
-        if self.action_dim > 1:
-            alive = (self._alive_from_avail(rollout["avail_actions"]))
-        else:
-            alive = jnp.ones_like(actions, dtype=bool)
-        attack_intent = actions >= self.attack_action_threshold
-        event_mask = attack_intent & alive & reward_hit[..., None]
+        cat_data = [
+            ("target_attack",     tree_to_host(tc), tree_to_host(tm)),
+            ("non_target_attack", tree_to_host(nc), tree_to_host(nm)),
+            ("other_action",      tree_to_host(oc), tree_to_host(om)),
+        ]
 
-        bonus_abs = jnp.abs(causal_lambda * pci_residual)
-        # Vectorize over agent dim: sum over (T, E) axes.
-        mask_f = event_mask.astype(jnp.float32)                        # (T, E, N)
-        counts   = mask_f.sum(axis=(0, 1))                             # (N,)
-        denoms   = counts + 1.0e-8
-        delta_means   = (delta        * mask_f).sum(axis=(0, 1)) / denoms
-        pci_means     = (pci_advantages * mask_f).sum(axis=(0, 1)) / denoms
-        res_means     = (pci_residual   * mask_f).sum(axis=(0, 1)) / denoms
-        bonus_means   = (bonus_abs      * mask_f).sum(axis=(0, 1)) / denoms
-        # Zero out agents with no events (count == 0 ⟹ numerator == 0 already, but be explicit).
-        has_events = counts > 0
-        delta_means = jnp.where(has_events, delta_means, 0.0)
-        pci_means   = jnp.where(has_events, pci_means,   0.0)
-        res_means   = jnp.where(has_events, res_means,   0.0)
-        bonus_means = jnp.where(has_events, bonus_means, 0.0)
-        # Move to host once, then build the dict.
-        counts_h      = [float(v) for v in counts]
-        delta_means_h = [float(v) for v in delta_means]
-        pci_means_h   = [float(v) for v in pci_means]
-        res_means_h   = [float(v) for v in res_means]
-        bonus_means_h = [float(v) for v in bonus_means]
         metrics: Dict[str, float] = {}
         for agent_id in range(self.num_agents):
-            metrics[f"delta_agent_{agent_id}_attack_reward_count"] = counts_h[agent_id]
-            metrics[f"delta_agent_{agent_id}_attack_reward_mean"]  = delta_means_h[agent_id]
-            metrics[f"pci_raw_adv_agent_{agent_id}_attack_reward_mean"] = pci_means_h[agent_id]
-            metrics[f"pci_res_adv_agent_{agent_id}_attack_reward_mean"] = res_means_h[agent_id]
-            metrics[f"pci_bonus_abs_agent_{agent_id}_attack_reward_mean"] = bonus_means_h[agent_id]
-        return metrics
-
-    def _per_action_delta_metrics(
-        self,
-        rollout: Dict[str, jnp.ndarray],
-        delta: jnp.ndarray,
-    ) -> Dict[str, float]:
-        """Log mean delta per (agent, action) for all alive steps."""
-        actions = rollout["actions"]  # (T, E, N)
-        if self.action_dim > 1:
-            alive = self._alive_from_avail(rollout["avail_actions"])  # (T, E, N)
-        else:
-            alive = jnp.ones_like(actions, dtype=bool)
-
-        # one_hot: (T, E, N, A); alive_f: (T, E, N, 1)
-        one_hot = jax.nn.one_hot(actions, self.action_dim, dtype=jnp.float32)
-        alive_f = alive.astype(jnp.float32)[..., None]
-        # mask[t,e,n,a] = 1 iff agent n was alive and took action a
-        mask = one_hot * alive_f                                       # (T, E, N, A)
-        counts     = mask.sum(axis=(0, 1))                             # (N, A)
-        delta_sums = (delta[..., None] * mask).sum(axis=(0, 1))       # (N, A)
-        means = jnp.where(counts > 0, delta_sums / jnp.maximum(counts, 1.0e-8), 0.0)
-        # Move to host once.
-        counts_h = [[float(counts[n, a]) for a in range(self.action_dim)] for n in range(self.num_agents)]
-        means_h  = [[float(means[n, a])  for a in range(self.action_dim)] for n in range(self.num_agents)]
-        metrics: Dict[str, float] = {}
-        for agent_id in range(self.num_agents):
-            for a in range(self.action_dim):
-                key_prefix = f"delta_agent{agent_id}_action{a}"
-                metrics[f"{key_prefix}_count"] = counts_h[agent_id][a]
-                metrics[f"{key_prefix}_mean"]  = means_h[agent_id][a]
+            for cat_name, counts_h, means_h in cat_data:
+                metrics[f"delta_agent{agent_id}_{cat_name}_count"] = float(counts_h[agent_id])
+                metrics[f"delta_agent{agent_id}_{cat_name}_mean"]  = float(means_h[agent_id])
         return metrics
 
     @partial(jax.jit, static_argnums=0)
@@ -460,12 +501,15 @@ class JAXRPCIAlgorithm:
         avail_actions: jnp.ndarray,
         actor_hidden: jnp.ndarray,
         prev_actions: jnp.ndarray,
-        done_prev: jnp.ndarray,
+        reset_masks: jnp.ndarray,
         rng: jax.Array,
         deterministic: bool = False,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         n_envs = obs.shape[0]
-        masks = jnp.broadcast_to((1.0 - done_prev)[:, None], (n_envs, self.num_agents))
+        if reset_masks.ndim == 1:
+            masks = jnp.broadcast_to((1.0 - reset_masks)[:, None], (n_envs, self.num_agents))
+        else:
+            masks = 1.0 - reset_masks
         flat_obs = obs.reshape(-1, obs.shape[-1])
         flat_prev_actions = prev_actions.reshape(-1, prev_actions.shape[-1])
         flat_hidden = actor_hidden.reshape((n_envs * self.num_agents, actor_hidden.shape[-1]))
@@ -500,10 +544,10 @@ class JAXRPCIAlgorithm:
         obs: jnp.ndarray,
         critic_hidden: jnp.ndarray,
         prev_actions: jnp.ndarray,
-        done_prev: jnp.ndarray,
+        reset_masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         if self.use_centralized_critic:
-            masks = 1.0 - done_prev
+            masks = 1.0 - reset_masks
             critic_obs = obs.reshape(obs.shape[0], -1)
             critic_prev_actions = prev_actions.reshape(prev_actions.shape[0], -1)
             next_hidden, values = self.critic_state.apply_fn(
@@ -516,7 +560,10 @@ class JAXRPCIAlgorithm:
             return next_hidden, values
 
         n_envs = obs.shape[0]
-        masks = jnp.broadcast_to((1.0 - done_prev)[:, None], (n_envs, self.num_agents))
+        if reset_masks.ndim == 1:
+            masks = jnp.broadcast_to((1.0 - reset_masks)[:, None], (n_envs, self.num_agents))
+        else:
+            masks = 1.0 - reset_masks
         flat_obs = obs.reshape(-1, obs.shape[-1])
         flat_prev_actions = prev_actions.reshape(-1, prev_actions.shape[-1])
         flat_hidden = critic_hidden.reshape((n_envs * self.num_agents, critic_hidden.shape[-1]))
@@ -533,47 +580,130 @@ class JAXRPCIAlgorithm:
             values_flat.reshape(n_envs, self.num_agents),
         )
 
+    @partial(jax.jit, static_argnums=0)
+    def _delta_value_step(
+        self,
+        delta_critic_params: Dict[str, Any],
+        obs: jnp.ndarray,
+        delta_critic_hidden: jnp.ndarray,
+        prev_actions: jnp.ndarray,
+        reset_masks: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray]:
+        if self.use_centralized_critic:
+            masks = 1.0 - reset_masks
+            delta_obs = obs.reshape(obs.shape[0], -1)
+            delta_prev_actions = prev_actions.reshape(prev_actions.shape[0], -1)
+            next_hidden, values = self.delta_critic_state.apply_fn(
+                {"params": delta_critic_params},
+                delta_obs,
+                delta_prev_actions,
+                delta_critic_hidden,
+                masks,
+            )
+            return next_hidden, values
+
+        n_envs = obs.shape[0]
+        if reset_masks.ndim == 1:
+            masks = jnp.broadcast_to((1.0 - reset_masks)[:, None], (n_envs, self.num_agents))
+        else:
+            masks = 1.0 - reset_masks
+        flat_obs = obs.reshape(-1, obs.shape[-1])
+        flat_prev_actions = prev_actions.reshape(-1, prev_actions.shape[-1])
+        flat_hidden = delta_critic_hidden.reshape((n_envs * self.num_agents, delta_critic_hidden.shape[-1]))
+        flat_masks = masks.reshape(-1)
+        next_hidden_flat, values_flat = self.delta_critic_state.apply_fn(
+            {"params": delta_critic_params},
+            flat_obs,
+            flat_prev_actions,
+            flat_hidden,
+            flat_masks,
+        )
+        return (
+            next_hidden_flat.reshape(n_envs, self.num_agents, delta_critic_hidden.shape[-1]),
+            values_flat.reshape(n_envs, self.num_agents),
+        )
+
+    @partial(jax.jit, static_argnums=0)
+    def _delta_critic_update_step(
+        self,
+        delta_critic_state: Any,
+        batch: Dict[str, jnp.ndarray],
+    ):
+        def loss_fn(params):
+            _, values = delta_critic_state.apply_fn(
+                {"params": params},
+                batch["obs"],
+                batch["prev_actions"],
+                batch["hidden"],
+                batch["masks"],
+            )
+            denom = jnp.sum(batch["loss_masks"]) + 1.0e-8
+            value_loss = jnp.sum(jnp.square(values - batch["returns"]) * batch["loss_masks"]) / denom
+            return self.value_coef * value_loss, {"delta_critic_loss": value_loss}
+
+        grads, metrics = jax.grad(loss_fn, has_aux=True)(delta_critic_state.params)
+        new_state = delta_critic_state.apply_gradients(grads=grads)
+        metrics["delta_critic_grad_norm"] = global_norm(grads)
+        return new_state, metrics
+
     def _get_rollout_fn(self, env: Any, horizon: int):
         if horizon in self._rollout_fns:
             return self._rollout_fns[horizon]
 
         def rollout_fn(
             env_rng: jax.Array,
+            action_rng: jax.Array,
             batch_states: Any,
             obs: jnp.ndarray,
             avail_actions: jnp.ndarray,
             runner_state: Dict[str, jnp.ndarray],
             actor_params: Dict[str, Any],
             critic_params: Dict[str, Any],
+            delta_critic_params: Dict[str, Any],
         ):
             def body_fn(carry, _):
-                rng, states, current_obs, current_avail, current_runner = carry
-                rng, action_rng = jax.random.split(rng)
+                rng, policy_rng, states, current_obs, current_avail, current_runner = carry
+                policy_rng, step_action_rng = jax.random.split(policy_rng)
                 obs_aug = self._augment_obs(current_obs)
 
                 actor_hidden_prev = current_runner["actor_hidden"]
                 critic_hidden_prev = current_runner["critic_hidden"]
-                prev_actions_prev = current_runner["prev_actions"]
+                delta_critic_hidden_prev = current_runner["delta_critic_hidden"]
+                raw_prev_actions_prev = current_runner["prev_actions"]
                 prev_obs_prev = current_runner["prev_obs"]
                 done_prev = current_runner["done_prev"]
+                agent_done_prev = current_runner["agent_done_prev"]
+                actor_reset_masks = agent_done_prev
+                critic_reset_masks = done_prev if self.use_centralized_critic else agent_done_prev
 
                 actor_hidden_next, actions, log_probs, probs = self._policy_step(
                     actor_params,
                     obs_aug,
                     current_avail,
                     actor_hidden_prev,
-                    prev_actions_prev,
-                    done_prev,
-                    action_rng,
+                    raw_prev_actions_prev,
+                    actor_reset_masks,
+                    step_action_rng,
                     False,
                 )
                 critic_hidden_next, values = self._value_step(
                     critic_params,
                     obs_aug,
                     critic_hidden_prev,
-                    prev_actions_prev,
-                    done_prev,
+                    raw_prev_actions_prev,
+                    critic_reset_masks,
                 )
+                if self.use_delta_critic and self.delta_critic_state is not None:
+                    delta_critic_hidden_next, delta_values = self._delta_value_step(
+                        delta_critic_params,
+                        obs_aug,
+                        delta_critic_hidden_prev,
+                        raw_prev_actions_prev,
+                        critic_reset_masks,
+                    )
+                else:
+                    delta_critic_hidden_next = delta_critic_hidden_prev
+                    delta_values = jnp.zeros((obs_aug.shape[0], self.num_agents), dtype=jnp.float32)
 
                 (
                     rng,
@@ -581,26 +711,33 @@ class JAXRPCIAlgorithm:
                     next_obs,
                     next_avail,
                     rewards,
-                    _,
+                    agent_dones,
                     dones_all,
                     battle_won,
                 ) = env.step_jax_pure(rng, states, actions)
 
+                agent_done_next = jnp.maximum(
+                    agent_dones.astype(jnp.float32),
+                    dones_all.astype(jnp.float32)[:, None],
+                )
                 next_prev_actions = action_one_hot(actions, self.action_dim)
                 next_prev_actions = next_prev_actions * (1.0 - dones_all)[:, None, None]
 
                 next_runner = {
                     "actor_hidden": actor_hidden_next,
                     "critic_hidden": critic_hidden_next,
+                    "delta_critic_hidden": delta_critic_hidden_next,
                     "prev_actions": next_prev_actions,
                     "prev_obs": obs_aug,
                     "done_prev": dones_all.astype(jnp.float32),
+                    "agent_done_prev": agent_done_next,
                 }
 
                 transition = {
                     "prev_obs": prev_obs_prev.astype(jnp.float32),
                     "obs": obs_aug,
                     "avail_actions": current_avail.astype(jnp.float32),
+                    "agent_dones": agent_done_prev.astype(jnp.float32),
                     "actions": actions,
                     "log_probs": log_probs,
                     "probs": probs,
@@ -608,13 +745,16 @@ class JAXRPCIAlgorithm:
                     "dones": dones_all.astype(jnp.float32),
                     "masks": (1.0 - done_prev).astype(jnp.float32),
                     "values": values.astype(jnp.float32),
+                    "delta_values": delta_values.astype(jnp.float32),
                     "actor_hidden": actor_hidden_prev.astype(jnp.float32),
                     "critic_hidden": critic_hidden_prev.astype(jnp.float32),
-                    "prev_actions": prev_actions_prev.astype(jnp.float32),
+                    "delta_critic_hidden": delta_critic_hidden_prev.astype(jnp.float32),
+                    "prev_actions": raw_prev_actions_prev.astype(jnp.float32),
                     "battle_won": battle_won.astype(jnp.float32),
                 }
                 next_carry = (
                     rng,
+                    policy_rng,
                     next_states,
                     next_obs.astype(jnp.float32),
                     next_avail.astype(jnp.float32),
@@ -622,17 +762,33 @@ class JAXRPCIAlgorithm:
                 )
                 return next_carry, transition
 
-            final_carry, rollout = jax.lax.scan(body_fn, (env_rng, batch_states, obs, avail_actions, runner_state), None, length=horizon)
-            rng, states, next_obs, next_avail, next_runner = final_carry
+            final_carry, rollout = jax.lax.scan(
+                body_fn,
+                (env_rng, action_rng, batch_states, obs, avail_actions, runner_state),
+                None,
+                length=horizon,
+            )
+            rng, action_rng, states, next_obs, next_avail, next_runner = final_carry
             next_obs_aug = self._augment_obs(next_obs)
+            last_value_reset_masks = next_runner["done_prev"]
             _, last_value = self._value_step(
                 critic_params,
                 next_obs_aug,
                 next_runner["critic_hidden"],
                 next_runner["prev_actions"],
-                next_runner["done_prev"],
+                last_value_reset_masks,
             )
-            return rng, states, next_obs, next_avail, next_runner, rollout, last_value
+            rollout_out = dict(rollout)
+            if self.use_delta_critic and self.delta_critic_state is not None:
+                _, last_delta_value = self._delta_value_step(
+                    delta_critic_params,
+                    next_obs_aug,
+                    next_runner["delta_critic_hidden"],
+                    next_runner["prev_actions"],
+                    last_value_reset_masks,
+                )
+                rollout_out["last_delta_value"] = last_delta_value.astype(jnp.float32)
+            return rng, action_rng, states, next_obs, next_avail, next_runner, rollout_out, last_value
 
         self._rollout_fns[horizon] = jax.jit(rollout_fn)
         return self._rollout_fns[horizon]
@@ -641,6 +797,7 @@ class JAXRPCIAlgorithm:
         self,
         env: Any,
         env_rng: jax.Array,
+        action_rng: Optional[jax.Array],
         batch_states: Any,
         obs: jnp.ndarray,
         avail_actions: jnp.ndarray,
@@ -648,14 +805,29 @@ class JAXRPCIAlgorithm:
         horizon: int,
     ):
         rollout_fn = self._get_rollout_fn(env, horizon)
+        if action_rng is None:
+            env_rng, _, states, next_obs, next_avail, next_runner, rollout, last_value = rollout_fn(
+                env_rng,
+                env_rng,
+                batch_states,
+                obs.astype(jnp.float32),
+                avail_actions.astype(jnp.float32),
+                runner_state,
+                self.actor_state.params,
+                self.critic_state.params,
+                self.delta_critic_state.params if self.use_delta_critic and self.delta_critic_state is not None else self.critic_state.params,
+            )
+            return env_rng, states, next_obs, next_avail, next_runner, rollout, last_value
         return rollout_fn(
             env_rng,
+            action_rng,
             batch_states,
             obs.astype(jnp.float32),
             avail_actions.astype(jnp.float32),
             runner_state,
             self.actor_state.params,
             self.critic_state.params,
+            self.delta_critic_state.params if self.use_delta_critic and self.delta_critic_state is not None else self.critic_state.params,
         )
 
     def _flatten_actor_batch(
@@ -677,13 +849,7 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(total_steps, self.num_agents)
-        if self.action_dim > 1:
-            alive_masks = (
-                self._alive_from_avail(rollout["avail_actions"])
-            ).astype(jnp.float32).reshape(total_steps, self.num_agents)
-        else:
-            alive_masks = jnp.ones_like(actions, dtype=jnp.float32)
-        loss_masks = masks * alive_masks
+        loss_masks = masks
 
         if advantages.ndim == 2:
             adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
@@ -713,11 +879,7 @@ class JAXRPCIAlgorithm:
                 loss_masks = base_masks
             else:
                 returns_flat = returns.reshape(-1, self.num_agents)
-                if self.action_dim > 1:
-                    alive_masks = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32)
-                else:
-                    alive_masks = jnp.ones(rollout["actions"].shape, dtype=jnp.float32)
-                loss_masks = base_masks[:, None] * alive_masks.reshape(-1, self.num_agents)
+                loss_masks = jnp.broadcast_to(base_masks[:, None], (total_steps, self.num_agents))
             return {
                 "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
                 "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
@@ -732,87 +894,103 @@ class JAXRPCIAlgorithm:
             rollout["masks"].reshape(rollout["masks"].shape + (1,)),
             rollout["actions"].shape,
         ).reshape(-1)
-        if self.action_dim > 1:
-            alive_masks = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32).reshape(-1)
-        else:
-            alive_masks = jnp.ones((total_steps,), dtype=jnp.float32)
         return {
             "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
             "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
             "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
             "masks": per_agent_masks,
-            "loss_masks": per_agent_masks * alive_masks,
+            "loss_masks": per_agent_masks,
             "returns": returns.reshape(-1),
         }
 
-    def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        time_steps, n_envs = rollout["actions"].shape[:2]
-        flat_batch = time_steps * n_envs
+    def _flatten_delta_critic_batch(
+        self,
+        rollout: Dict[str, jnp.ndarray],
+        delta_returns: jnp.ndarray,
+    ):
+        if self.use_centralized_critic:
+            total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
+            base_masks = rollout["masks"].reshape(-1)
+            return {
+                "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
+                "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
+                "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
+                "masks": base_masks,
+                "loss_masks": jnp.broadcast_to(base_masks[:, None], (total_steps, self.num_agents)),
+                "returns": delta_returns.reshape(-1, self.num_agents),
+            }
 
-        obs_flat = rollout["obs"].reshape(flat_batch, self.num_agents, self.policy_obs_dim)
-        local_obs = obs_flat.reshape(-1, self.policy_obs_dim)
-        raw_obs_flat = obs_flat[..., :self.obs_dim]
-        others_obs = gather_other_agent_obs(raw_obs_flat).reshape(-1, (self.num_agents - 1) * self.obs_dim)
-        if self.use_recurrent_policy:
-            hidden_all = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
-            z = hidden_all.reshape(-1, self.actor_state_dim)
-            hidden_others = gather_other_agent_obs(hidden_all).reshape(-1, self.bridge_hidden_dim)
-        else:
-            z = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
-            hidden_others = jnp.zeros((flat_batch * self.num_agents, 0), dtype=jnp.float32)
-
-        actions = rollout["actions"].reshape(-1)
-        if self.global_reward:
-            team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
-            targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
-        else:
-            targets = jnp.repeat(
-                rollout["rewards"][:, :, None, :],
-                self.num_agents,
-                axis=2,
-            ).reshape(-1, self.num_agents)
-
-        if self.action_dim > 1:
-            alive_mask = (
-                self._alive_from_avail(rollout["avail_actions"])
-            ).reshape(-1)
-        else:
-            alive_mask = jnp.ones((flat_batch * self.num_agents,), dtype=bool)
-
+        total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
+        per_agent_masks = jnp.broadcast_to(
+            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
+            rollout["actions"].shape,
+        ).reshape(-1)
         return {
-            "z": z[alive_mask].astype(jnp.float32),
-            "w": others_obs[alive_mask].astype(jnp.float32),
-            "x_obs": local_obs[alive_mask].astype(jnp.float32),
-            "x_hid": hidden_others[alive_mask].astype(jnp.float32),
-            "actions": actions[alive_mask].astype(jnp.int32),
-            "targets": targets[alive_mask].astype(jnp.float32),
+            "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
+            "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
+            "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
+            "masks": per_agent_masks,
+            "loss_masks": per_agent_masks,
+            "returns": delta_returns.reshape(-1),
         }
 
-    def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
+    def _preprocess_rollout(self, rollout: Dict[str, jnp.ndarray]):
+        """Shared rollout flattening used by both _causal_batch and _bridge_inputs."""
         obs = rollout["obs"]
-        local_obs = obs.reshape(-1, self.policy_obs_dim)
-        raw_obs = obs[..., :self.obs_dim]
-        others_obs = gather_other_agent_obs(raw_obs).reshape(-1, (self.num_agents - 1) * self.obs_dim)
+        time_steps, n_envs = obs.shape[:2]
+        flat_batch = time_steps * n_envs
+
+        obs_4d = obs.reshape(flat_batch, self.num_agents, self.policy_obs_dim)
+        local_obs = obs_4d.reshape(-1, self.policy_obs_dim)
+        others_obs = gather_other_agent_obs(obs_4d).reshape(
+            -1, (self.num_agents - 1) * self.policy_obs_dim
+        )
+
         if self.use_recurrent_policy:
-            hidden_others = gather_other_agent_obs(rollout["actor_hidden"]).reshape(-1, self.bridge_hidden_dim)
+            hidden_4d = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
+            z = hidden_4d.reshape(-1, self.actor_state_dim)
+            hidden_others = gather_other_agent_obs(hidden_4d).reshape(-1, self.bridge_hidden_dim)
         else:
-            hidden_others = jnp.zeros((local_obs.shape[0], 0), dtype=jnp.float32)
+            n_flat = flat_batch * self.num_agents
+            z = jnp.zeros((n_flat, 0), dtype=jnp.float32)
+            hidden_others = jnp.zeros((n_flat, 0), dtype=jnp.float32)
+
         actions = rollout["actions"].reshape(-1)
+        agent_ids = jnp.tile(jnp.arange(self.num_agents, dtype=jnp.int32), flat_batch)
         if self.global_reward:
             team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
             reward_targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
         else:
             reward_targets = jnp.repeat(
-                rollout["rewards"][:, :, None, :],
-                self.num_agents,
-                axis=2,
+                rollout["rewards"][:, :, None, :], self.num_agents, axis=2
             ).reshape(-1, self.num_agents)
+
+        return local_obs, others_obs, z, hidden_others, actions, reward_targets, agent_ids
+
+    def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
+        local_obs, others_obs, z, hidden_others, actions, targets, agent_ids = self._preprocess_rollout(rollout)
+        alive_indices = jnp.where(
+            self._alive_from_agent_dones(rollout["agent_dones"]).reshape(-1)
+        )[0]
+        return {
+            "z":            z.astype(jnp.float32),
+            "w":            others_obs.astype(jnp.float32),
+            "x_obs":        local_obs.astype(jnp.float32),
+            "x_hid":        hidden_others.astype(jnp.float32),
+            "actions":      actions.astype(jnp.int32),
+            "targets":      targets.astype(jnp.float32),
+            "agent_ids":    agent_ids.astype(jnp.int32),
+            "alive_indices": alive_indices,
+        }
+
+    def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
+        local_obs, others_obs, _, hidden_others, actions, reward_targets, _ = self._preprocess_rollout(rollout)
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
 
     @partial(jax.jit, static_argnums=0)
-    def _bridge_predictions(
+    def _bridge_predictions_chunk(
         self,
         bridge_params: Dict[str, Any],
         local_obs: jnp.ndarray,
@@ -821,7 +999,7 @@ class JAXRPCIAlgorithm:
         probs: jnp.ndarray,
         actions: jnp.ndarray,
         avail_actions: jnp.ndarray,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
         actual_pred = self.bridge_state.apply_fn(
             {"params": bridge_params},
             local_obs,
@@ -844,7 +1022,8 @@ class JAXRPCIAlgorithm:
 
         all_preds = jax.vmap(predict_one_action)(all_actions).transpose(1, 0, 2)
         factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
-        probs_counterfactual = probs * factual_mask * avail_actions
+        probs_counterfactual = probs * factual_mask * avail_actions # consider avail actions
+   
         renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
         # Match Torch: clip with 1e-10 so that when no valid CF exists,
         # renormalized_probs ≈ 0 → baseline ≈ 0 → delta = r_factual (same as Torch).
@@ -853,8 +1032,46 @@ class JAXRPCIAlgorithm:
 
         no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
         baseline = jnp.where(no_valid_cf[:, None], jnp.zeros_like(baseline), baseline)
+        return actual_pred, baseline, all_preds, no_valid_cf
+
+    def _bridge_predictions(
+        self,
+        bridge_params: Dict[str, Any],
+        local_obs: jnp.ndarray,
+        others_obs: jnp.ndarray,
+        hidden_others: jnp.ndarray,
+        probs: jnp.ndarray,
+        actions: jnp.ndarray,
+        avail_actions: jnp.ndarray,
+    ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+        chunk_size = self.bridge_prediction_batch_size
+        actual_chunks = []
+        baseline_chunks = []
+        all_pred_chunks = []
+        no_valid_chunks = []
+
+        for start in range(0, local_obs.shape[0], chunk_size):
+            end = min(start + chunk_size, local_obs.shape[0])
+            actual_pred, baseline, all_preds, no_valid_cf = self._bridge_predictions_chunk(
+                bridge_params,
+                local_obs[start:end],
+                others_obs[start:end],
+                hidden_others[start:end],
+                probs[start:end],
+                actions[start:end],
+                avail_actions[start:end],
+            )
+            actual_chunks.append(actual_pred)
+            baseline_chunks.append(baseline)
+            all_pred_chunks.append(all_preds)
+            no_valid_chunks.append(no_valid_cf)
+
+        actual_pred = jnp.concatenate(actual_chunks, axis=0)
+        baseline = jnp.concatenate(baseline_chunks, axis=0)
+        all_preds = jnp.concatenate(all_pred_chunks, axis=0)
+        no_valid_cf = jnp.concatenate(no_valid_chunks, axis=0)
         no_valid_cf_rate = jnp.mean(no_valid_cf.astype(jnp.float32))
-        return actual_pred, baseline, all_preds, no_valid_cf_rate
+        return actual_pred, baseline, all_preds, no_valid_cf_rate, no_valid_cf
 
     def _update_bridge_prediction_debug_lines(
         self,
@@ -883,12 +1100,8 @@ class JAXRPCIAlgorithm:
         time_steps, num_envs, _ = rollout_actions.shape
         flat_states = time_steps * num_envs
 
-        if self.action_dim > 1:
-            alive_flat = tree_to_host(self._alive_from_avail(rollout["avail_actions"]).reshape(-1))
-            state_alive = alive_flat.reshape(flat_states, self.num_agents).any(axis=-1)
-        else:
-            state_alive = jnp.ones((flat_states,), dtype=bool)
-            state_alive = tree_to_host(state_alive)
+        alive_flat = tree_to_host(self._alive_from_agent_dones(rollout["agent_dones"]).reshape(-1))
+        state_alive = alive_flat.reshape(flat_states, self.num_agents).any(axis=-1)
 
         selected_states = []
         for state_idx in range(flat_states):
@@ -1060,11 +1273,22 @@ class JAXRPCIAlgorithm:
         self,
         batch: Dict[str, jnp.ndarray],
     ) -> tuple[jnp.ndarray, jnp.ndarray, Dict[str, jnp.ndarray]]:
-        """Compute Gram matrix and regularized Gram once per mini-batch (reused across bridge epochs)."""
+        """Compute an agent-blocked Gram matrix and regularized Gram once per mini-batch."""
+        agent_ids = batch["agent_ids"].astype(jnp.int32)
+        agent_onehot = jax.nn.one_hot(agent_ids, self.num_agents, dtype=jnp.float32)
+        agent_counts = jnp.sum(agent_onehot, axis=0)[:, None]
+        same_agent_mask = agent_onehot @ agent_onehot.T
+
         def _standardize(x: jnp.ndarray) -> jnp.ndarray:
-            mean = jnp.mean(x, axis=0, keepdims=True)
-            std = jnp.std(x, axis=0, keepdims=True)
-            return (x - mean) / jnp.clip(std, a_min=1.0e-6)
+            if x.shape[-1] == 0:
+                return x
+            counts = jnp.clip(agent_counts, a_min=1.0)
+            means = (agent_onehot.T @ x) / counts
+            centered = x[:, None, :] - means[None, :, :]
+            var = jnp.sum(agent_onehot[:, :, None] * jnp.square(centered), axis=0) / counts
+            std = jnp.sqrt(jnp.clip(var, a_min=1.0e-6))
+            x_norm = centered / std[None, :, :]
+            return jnp.sum(agent_onehot[:, :, None] * x_norm, axis=1)
 
         def _rbf_gram(x: jnp.ndarray, gamma: float) -> jnp.ndarray:
             x_norm = jnp.sum(jnp.square(x), axis=-1, keepdims=True)
@@ -1073,7 +1297,9 @@ class JAXRPCIAlgorithm:
             return jnp.exp(-gamma * dists_sq)
 
         z_norm = _standardize(batch["z"])
-        x_obs_norm = _standardize(batch["x_obs"])
+        x_obs_cont = batch["x_obs"][:, :self.obs_dim]
+        x_obs_id   = batch["x_obs"][:, self.obs_dim:]   # shape (B, num_agents); empty if add_agent_id=False
+        x_obs_norm = jnp.concatenate([_standardize(x_obs_cont), x_obs_id], axis=-1)
         action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
 
         gamma_z = 1.0 / max(1, batch["z"].shape[-1])
@@ -1081,27 +1307,35 @@ class JAXRPCIAlgorithm:
         gamma_xobs = 1.0 / max(1, batch["x_obs"].shape[-1])
 
         gram = (
-            _rbf_gram(z_norm, gamma_z)
+            same_agent_mask
+            * _rbf_gram(z_norm, gamma_z)
             * _rbf_gram(action_onehot, gamma_a)
             * _rbf_gram(x_obs_norm, gamma_xobs)
         )
 
         if batch["x_hid"].shape[-1] > 0:
             x_hid_norm = _standardize(batch["x_hid"])
-            gamma_xhid = 1.0 / max(1, batch["x_hid"].shape[-1])
+            # Dead agent slots → 0 after standardization; only alive others contribute.
+            # Effective dim = mean # of non-zero dims per sample.
+            # gamma is rescaled to this effective dim so K_x_hid stays discriminative
+            # even when agents die (otherwise gamma is too small → kernel → 1).
+            effective_dim = jnp.mean(
+                jnp.sum(jnp.abs(x_hid_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
+            )
+            gamma_xhid = 1.0 / jnp.maximum(effective_dim, 1.0)
             gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
 
         eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
         # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci.
         reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
 
-        diag = jnp.diag(gram)
-        total_sum = jnp.sum(gram) - jnp.sum(diag)
-        off_count = gram.shape[0] * max(gram.shape[0] - 1, 1)
-        kz_offdiag_mean = total_sum / off_count
-        centered = gram - kz_offdiag_mean
-        sq_sum = jnp.sum(jnp.square(centered)) - jnp.sum(jnp.square(diag - kz_offdiag_mean))
-        kz_offdiag_std = jnp.sqrt(jnp.clip(sq_sum / off_count, a_min=0.0))
+        offdiag_mask = same_agent_mask * (1.0 - eye)
+        off_count = jnp.sum(offdiag_mask)
+        off_count_safe = jnp.clip(off_count, a_min=1.0)
+        offdiag_vals = gram * offdiag_mask
+        kz_offdiag_mean = jnp.sum(offdiag_vals) / off_count_safe
+        centered = (gram - kz_offdiag_mean) * offdiag_mask
+        kz_offdiag_std = jnp.sqrt(jnp.sum(jnp.square(centered)) / off_count_safe)
 
         gram_metrics = {
             "Kz_offdiag_mean": kz_offdiag_mean,
@@ -1129,12 +1363,21 @@ class JAXRPCIAlgorithm:
             residuals = batch["targets"] - preds
             solved = jnp.linalg.solve(reg_gram, residuals)
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
-            outcome_bridge_loss = jnp.mean(per_sample_loss)
+            agent_onehot = jax.nn.one_hot(batch["agent_ids"].astype(jnp.int32), self.num_agents, dtype=per_sample_loss.dtype)
+            agent_counts = jnp.sum(agent_onehot, axis=0)
+            valid_agents = agent_counts > 0
+            loss_sum_per_agent = agent_onehot.T @ per_sample_loss
+            loss_per_agent = loss_sum_per_agent / jnp.clip(agent_counts, a_min=1.0)
+            valid_count = jnp.maximum(jnp.sum(valid_agents), 1.0)
+            outcome_bridge_loss = jnp.sum(loss_per_agent * valid_agents) / valid_count
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
-            return outcome_bridge_loss + action_bridge_loss, {
+            metrics = {
                 "outcome_bridge_loss": outcome_bridge_loss,
                 "action_bridge_loss": action_bridge_loss,
             }
+            for agent_id in range(self.num_agents):
+                metrics[f"agent_{agent_id}_outcome_bridge_loss"] = loss_per_agent[agent_id]
+            return outcome_bridge_loss + action_bridge_loss, metrics
 
         grads, metrics = jax.grad(loss_fn, has_aux=True)(bridge_state.params)
         new_bridge_state = bridge_state.apply_gradients(grads=grads)
@@ -1151,27 +1394,25 @@ class JAXRPCIAlgorithm:
             rollout = self.latest_rollout
         if rollout is None:
             return {}
-        if self.get_current_causal_lambda() == 0.0:
-            return {"outcome_bridge_loss": 0.0, "action_bridge_loss": 0.0}
         if self.bridge_state is None:
             return {"outcome_bridge_loss": 0.0, "action_bridge_loss": 0.0}
 
         causal_batch = self._causal_batch(rollout)
+        # Gather alive-only indices (computed outside JIT to avoid variable shape).
+        alive_idx = causal_batch["alive_indices"]
+        total_alive = int(alive_idx.shape[0])
+        _KEYS = ("z", "w", "x_obs", "x_hid", "actions", "targets", "agent_ids")
+
         metrics = []
-        total = causal_batch["actions"].shape[0]
-        for start in range(0, total, self.causal_mini_batch_size):
-            indices = jnp.arange(
-                start,
-                min(start + self.causal_mini_batch_size, total),
-            )
-            batch = {
-                "z": causal_batch["z"][indices],
-                "w": causal_batch["w"][indices],
-                "x_obs": causal_batch["x_obs"][indices],
-                "x_hid": causal_batch["x_hid"][indices],
-                "actions": causal_batch["actions"][indices],
-                "targets": causal_batch["targets"][indices],
-            }
+        for start in range(0, total_alive, self.causal_mini_batch_size):
+            end = start + self.causal_mini_batch_size
+            if end <= total_alive:
+                idx = alive_idx[start:end]
+            else:
+                # Pad last batch with wrap-around from alive samples → fixed shape.
+                pad = self.causal_mini_batch_size - (total_alive - start)
+                idx = jnp.concatenate([alive_idx[start:], alive_idx[:pad]])
+            batch = {k: causal_batch[k][idx] for k in _KEYS}
             # Compute Gram once per mini-batch and reuse across bridge epochs (matches Torch).
             gram, reg_gram, gram_metrics = self._compute_gram(batch)
             gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
@@ -1192,7 +1433,7 @@ class JAXRPCIAlgorithm:
         rollout: Dict[str, jnp.ndarray],
         baseline_type: str = "weighted",
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
-        if baseline_type not in ("weighted", "averaged"):
+        if baseline_type not in ("weighted", "averaged", "max"):
             raise ValueError(f"Unsupported baseline_type for JAXRPCIAlgorithm: {baseline_type}")
         if self.bridge_state is None or self.get_current_causal_lambda() == 0.0:
             self._bridge_prediction_debug_lines = []
@@ -1204,7 +1445,7 @@ class JAXRPCIAlgorithm:
             }
 
         local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions = self._bridge_inputs(rollout)
-        actual_pred, baseline_weighted, all_preds, no_valid_cf_rate = self._bridge_predictions(
+        actual_pred, baseline_weighted, all_preds, no_valid_cf_rate, no_valid_cf = self._bridge_predictions(
             self.bridge_state.params,
             local_obs,
             others_obs,
@@ -1216,14 +1457,26 @@ class JAXRPCIAlgorithm:
 
         if baseline_type == "weighted":
             baseline = baseline_weighted
-        else:  # averaged
-            # Factual action을 제외한 가능한 action들의 단순 평균
-            # all_preds: (B*N, action_dim, reward_dim)
-            # avail_actions, actions: (B*N, action_dim)
+            # no_valid_cf: policy concentrates prob on factual action → renorm ≈ 0
+            effective_no_valid_cf = no_valid_cf
+        elif baseline_type == "averaged":
             factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
+            
             valid_non_factual = factual_mask * avail_actions  # (B*N, action_dim)
+            # valid_non_factual = factual_mask # consider all actions (including unavailable ones) as counterfactuals.
+            
             denom = jnp.clip(valid_non_factual.sum(axis=-1, keepdims=True), a_min=1.0)
             baseline = (all_preds * valid_non_factual[..., None]).sum(axis=1) / denom  # (B*N, reward_dim)
+            effective_no_valid_cf = valid_non_factual.sum(axis=-1) <= 0  # (B*N,)
+        else:  # max
+            factual_mask = 1.0 - jax.nn.one_hot(
+                actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32
+            )
+            valid_non_factual = (factual_mask > 0) & (avail_actions > 0)
+            masked_preds = jnp.where(valid_non_factual[..., None], all_preds, -jnp.inf)
+            baseline = jnp.max(masked_preds, axis=1)
+            effective_no_valid_cf = ~jnp.any(valid_non_factual, axis=1)
+            baseline = jnp.where(effective_no_valid_cf[:, None], actual_pred, baseline)
 
         self._update_bridge_prediction_debug_lines(
             rollout,
@@ -1238,14 +1491,13 @@ class JAXRPCIAlgorithm:
 
         actual_team_reward = reward_targets
         raw_effects = actual_team_reward - baseline
+        raw_effects = jnp.where(effective_no_valid_cf[:, None], jnp.zeros_like(raw_effects), raw_effects)
 
-        # raw_effects = actual_pred - baseline 
+        # raw_effects = actual_pred - baseline
         # the final r^i = r - lambda_c*(h_factual - E[h_cf])
         
-        if self.action_dim > 1:
-            alive = (self._alive_from_avail(rollout["avail_actions"])).astype(jnp.float32)
-        else:
-            alive = jnp.ones_like(rollout["actions"], dtype=jnp.float32)
+        alive = self._alive_from_agent_dones(rollout["agent_dones"]).astype(jnp.float32)
+            
         if self.global_reward:
             actor_team_effects = raw_effects.reshape(rollout["actions"].shape + (1,))
             alive_counts = jnp.clip(alive.sum(axis=-1, keepdims=True), a_min=1.0)
@@ -1257,11 +1509,27 @@ class JAXRPCIAlgorithm:
             c_matrix = c_matrix * alive[..., :, None] * alive[..., None, :]
 
         delta = c_matrix.sum(axis=-1)
+
+        alive_flat = alive.reshape(-1).astype(jnp.bool_)   # (T*E*N,)
+        dead_fraction = float(jnp.mean(~alive_flat))
+        no_valid_cf_flat = no_valid_cf                       # (T*E*N,)
+        alive_count = jnp.sum(alive_flat).astype(jnp.float32)
+        dead_count  = jnp.sum(~alive_flat).astype(jnp.float32)
+        no_valid_cf_rate_alive = float(
+            jnp.sum(no_valid_cf_flat & alive_flat) / jnp.maximum(alive_count, 1.0)
+        )
+        no_valid_cf_rate_dead = float(
+            jnp.sum(no_valid_cf_flat & ~alive_flat) / jnp.maximum(dead_count, 1.0)
+        )
+
         info = {
             "causal_lambda": self.get_current_causal_lambda(),
             "delta_mean": float(jnp.mean(delta)),
             "delta_std": float(jnp.std(delta)),
             "no_valid_cf_rate": float(no_valid_cf_rate),
+            "no_valid_cf_rate_alive": no_valid_cf_rate_alive,   # policy entropy 지표
+            "no_valid_cf_rate_dead": no_valid_cf_rate_dead,     # 항상 ≈1.0 (sanity check)
+            "dead_agent_fraction": dead_fraction,               # 팀 생존율 지표
         }
         return c_matrix, info
 
@@ -1291,7 +1559,7 @@ class JAXRPCIAlgorithm:
         if self.latest_rollout is None:
             return {}
 
-        rollout = self.latest_rollout
+        rollout = self.latest_rollout # training data for one iteration. handled in runner_jax/trainer.py
         metrics = {}
         causal_lambda = self.get_current_causal_lambda()
 
@@ -1301,6 +1569,7 @@ class JAXRPCIAlgorithm:
         c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="weighted")
         delta = c_matrix.sum(axis=-1)
         delta = jnp.where(jnp.abs(delta) < self.clip_delta, 0.0, delta)
+        # delta = jnp.maximum(delta, 0.0) # ReLU
         metrics.update(pci_metrics)
 
         raw_team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
@@ -1324,14 +1593,36 @@ class JAXRPCIAlgorithm:
             self.gae_lambda,
         )
 
-        pci_advantages, _ = compute_gae(
-            delta,
-            jnp.zeros_like(delta),
-            jnp.zeros_like(delta[0]),
-            rollout["dones"],
-            self.gamma,
-            self.gae_lambda,
-        )
+        if self.use_delta_critic and self.delta_critic_state is not None:
+            delta_values = rollout["delta_values"]
+            last_delta_value = rollout["last_delta_value"]
+            pci_advantages, delta_returns = compute_gae(
+                delta,
+                delta_values,
+                last_delta_value,
+                rollout["dones"],
+                self.gamma,
+                self.gae_lambda,
+            )
+            delta_critic_batch = self._flatten_delta_critic_batch(rollout, delta_returns)
+            raw_dc: list = []
+            for _ in range(self.ppo_epochs):
+                self.delta_critic_state, dc_metrics = self._delta_critic_update_step(
+                    self.delta_critic_state,
+                    delta_critic_batch,
+                )
+                raw_dc.append(dc_metrics)
+            for bm in raw_dc:
+                metrics.update({k: float(v) for k, v in tree_to_host(bm).items()})
+        else:
+            pci_advantages, _ = compute_gae(
+                delta,
+                jnp.zeros_like(delta),
+                jnp.zeros_like(delta[0]),
+                rollout["dones"],
+                self.gamma,
+                self.gae_lambda,
+            )
 
         combined_advantages, combine_metrics = self._combine_actor_advantages(
             env_advantages,
@@ -1339,17 +1630,7 @@ class JAXRPCIAlgorithm:
             causal_lambda,
         )
         metrics.update(combine_metrics)
-        pci_residual = self._pci_residual_tensor(env_advantages, pci_advantages, causal_lambda)
-        metrics.update(
-            self._smac_attack_reward_event_metrics(
-                rollout,
-                delta,
-                pci_advantages,
-                pci_residual,
-                causal_lambda,
-            )
-        )
-        metrics.update(self._per_action_delta_metrics(rollout, delta))
+        metrics.update(self._categorized_action_delta_metrics(rollout, delta))
 
         metrics.update(self._update_actor_critic(rollout, combined_advantages, returns))
         self.training_steps += int(rollout["actions"].shape[0] * rollout["actions"].shape[1])
@@ -1363,7 +1644,6 @@ class JAXRPCIAlgorithm:
         runner_state: Dict[str, jnp.ndarray],
     ) -> tuple[jnp.ndarray, Dict[str, jnp.ndarray]]:
         obs_aug = self._augment_obs(obs)
-        self.rng, action_rng = jax.random.split(self.rng)
         actor_hidden_next, actions, _, _ = self._policy_step(
             self.actor_state.params,
             obs_aug,
@@ -1371,7 +1651,7 @@ class JAXRPCIAlgorithm:
             runner_state["actor_hidden"],
             runner_state["prev_actions"],
             runner_state["done_prev"],
-            action_rng,
+            jax.random.PRNGKey(0),
             True,
         )
         next_runner = dict(runner_state)
@@ -1383,6 +1663,7 @@ class JAXRPCIAlgorithm:
             "actor_state": serialization.to_state_dict(self.actor_state),
             "critic_state": serialization.to_state_dict(self.critic_state),
             "bridge_state": serialization.to_state_dict(self.bridge_state) if self.bridge_state is not None else None,
+            "delta_critic_state": serialization.to_state_dict(self.delta_critic_state) if self.delta_critic_state is not None else None,
             "rng": tree_to_host(self.rng),
             "bridge_rng": tree_to_host(self.bridge_rng),
             "training_steps": self.training_steps,
@@ -1393,6 +1674,8 @@ class JAXRPCIAlgorithm:
         self.critic_state = serialization.from_state_dict(self.critic_state, state_dict["critic_state"])
         if self.bridge_state is not None and state_dict.get("bridge_state") is not None:
             self.bridge_state = serialization.from_state_dict(self.bridge_state, state_dict["bridge_state"])
+        if self.delta_critic_state is not None and state_dict.get("delta_critic_state") is not None:
+            self.delta_critic_state = serialization.from_state_dict(self.delta_critic_state, state_dict["delta_critic_state"])
         self.rng = jnp.asarray(state_dict["rng"])
         if "bridge_rng" in state_dict:
             self.bridge_rng = jnp.asarray(state_dict["bridge_rng"])

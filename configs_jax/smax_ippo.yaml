@@ -15,9 +15,9 @@ algorithm:
   entropy_coef: 0.0
   value_coef: 0.5
   max_grad_norm: 0.25
-  ppo_epochs: 4
+  ppo_epochs: 2
+  num_batches: 2
   batch_size: 0 # unused
-  num_batches: 4
   use_centralized_critic: false
   global_reward: true
   add_agent_id: true
