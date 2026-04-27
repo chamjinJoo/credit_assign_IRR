@@ -10,8 +10,8 @@ model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="6h_vs_8z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(6 8)
+map_name="smacv2_10_units"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(6 8 10)
 
 # training settings
 seeds=(42 1 2)
@@ -21,6 +21,7 @@ max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 run_in_background=false
+anneal_lr=true
 wandb_run_name_postfix=""
 # test=false
 # checkpoint="./save_checkpoints/20260406_185738_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_1599.pkl"
@@ -68,6 +69,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
           --log-interval ${log_interval} \
           --device ${device} \
           --seed ${seed} \
+          --anneal-lr ${anneal_lr} \
           "${wandb_args[@]}" &
         pid=$!
         pids+=("${pid}")
@@ -86,6 +88,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
           --log-interval ${log_interval} \
           --device ${device} \
           --seed ${seed} \
+          --anneal-lr ${anneal_lr} \
           "${wandb_args[@]}"
       fi
   done

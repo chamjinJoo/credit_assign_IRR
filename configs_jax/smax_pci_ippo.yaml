@@ -10,6 +10,7 @@ network:
 
 algorithm:
   type: "jax_rpci"
+  anneal_lr: true
   gamma: 0.99
   gae_lambda: 0.95
   clip_epsilon: 0.2

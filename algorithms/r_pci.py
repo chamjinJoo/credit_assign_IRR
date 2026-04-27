@@ -121,7 +121,7 @@ class rPCIAlgorithm:
         use_centralized_critic: bool = False, # MAPPO/IPPO-style centralized critic
         use_recurrent_policy: bool = True,
         global_reward: bool = True,
-        use_delta_critic: bool = False,
+        use_delta_critic: bool = True,
     ):
         self.env = env
         self.num_agents = num_agents

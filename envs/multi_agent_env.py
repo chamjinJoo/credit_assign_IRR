@@ -2748,6 +2748,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
         cooperative_kill_window: int = 2,
         cooperative_kill_bonus: float = 2.0,
         cooperative_kill_owner_ratio: float = 0.7,
+        warmup_episodes: int = 3,
     ):
         try:
             import jax
@@ -2882,6 +2883,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         _seed_val = seed if seed is not None else 0
         self._rng = jax.random.PRNGKey(_seed_val)
+        self._warmup_episodes = max(0, int(warmup_episodes))
         self._batch_states = None  # 배치 상태 (n_envs, ...)
         self._coop_attack_memory_np = np.zeros((n_envs, _num_allies, _num_enemies), dtype=np.int32)
         self._coop_attack_memory_jax = jnp.zeros((n_envs, _num_allies, _num_enemies), dtype=jnp.int32)
@@ -2910,8 +2912,10 @@ class SMAXBatchWrapper(MultiAgentEnv):
         print(f"[SMAXBatchWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
         print(f"[SMAXBatchWrapper] {_num_allies}v{_num_enemies} × {n_envs} 환경 (vmap 병렬)")
 
-        # JIT 사전 컴파일
-        self._warmup()
+        if self._warmup_episodes > 0:
+            self._warmup()
+        else:
+            print("[SMAXBatchWrapper] 배치 JIT warm-up 생략")
 
     # ------------------------------------------------------------------
     # Warm-up
@@ -2925,8 +2929,11 @@ class SMAXBatchWrapper(MultiAgentEnv):
         print("[SMAXBatchWrapper] 배치 JIT warm-up 시작...")
         t0 = time.time()
 
-        for ep in range(3):
-            print(f"[SMAXBatchWrapper]   에피소드 {ep+1}/3 ({time.time()-t0:.1f}s)")
+        for ep in range(self._warmup_episodes):
+            print(
+                f"[SMAXBatchWrapper]   에피소드 {ep+1}/{self._warmup_episodes} "
+                f"({time.time()-t0:.1f}s)"
+            )
             self._rng, *env_keys = self._jax.random.split(self._rng, self.n_envs + 1)
             keys_arr = self._jnp.stack(env_keys)
 
@@ -3276,14 +3283,18 @@ class SMAXBatchWrapper(MultiAgentEnv):
     def reset_jax_pure(self, rng):
         rng, *env_keys = self._jax.random.split(rng, self.n_envs + 1)
         keys_arr = self._jnp.stack(env_keys)
+        return rng, *self.reset_jax_pure_from_keys(keys_arr)
+
+    def reset_jax_pure_from_keys(self, keys_arr):
+        if keys_arr.shape[0] != self.n_envs:
+            raise ValueError(f"Expected {self.n_envs} reset keys, got {keys_arr.shape[0]}")
         obs_b, env_state = self._batch_reset(keys_arr)
         coop_attack_memory = self._jnp.zeros(
             (self.n_envs, self.num_agents, self.num_enemies),
             dtype=self._jnp.int32,
         )
         avail_b = self._batch_avail(env_state)
-        avail_stacked = self._mask_avail_jax(self._stack_agent_dict(avail_b))
-        return rng, self._pack_batch_state(env_state, coop_attack_memory), self._stack_agent_dict(obs_b), avail_stacked
+        return self._pack_batch_state(env_state, coop_attack_memory), self._stack_agent_dict(obs_b), self._mask_avail_jax(self._stack_agent_dict(avail_b))
 
     def step_jax(self, actions):
         batch_state = self._pack_batch_state(self._batch_states, self._coop_attack_memory_jax)
@@ -3358,6 +3369,77 @@ class SMAXBatchWrapper(MultiAgentEnv):
 
         return (
             rng,
+            self._pack_batch_state(final_env_state, coop_attack_memory),
+            final_obs_b,
+            self._mask_avail_jax(self._stack_agent_dict(avail_b)),
+            rewards_stacked,
+            agent_dones,
+            done_flags,
+            battle_won,
+        )
+
+    def step_jax_pure_from_keys(self, rng_keys, batch_states, actions):
+        if rng_keys.shape[0] != self.n_envs:
+            raise ValueError(f"Expected {self.n_envs} RNG keys, got {rng_keys.shape[0]}")
+
+        env_state, coop_attack_memory = self._unpack_batch_state(batch_states)
+        jax_actions = {
+            self._id_to_key[i]: actions[:, i].astype(self._jnp.int32)
+            for i in range(self.num_agents)
+        }
+
+        step_split = self._jax.vmap(lambda key: self._jax.random.split(key, 2))(rng_keys)
+        next_rng_keys = step_split[:, 0]
+        step_keys_arr = step_split[:, 1]
+        prev_enemy_alive = env_state.state.unit_alive[:, self._env.num_allies:]
+        enemy_unit_types = env_state.state.unit_types[:, self._env.num_allies:]
+        prev_enemy_health = env_state.state.unit_health[:, self._env.num_allies:]
+        _, next_env_state, _, _, _ = self._batch_step(
+            step_keys_arr,
+            env_state,
+            jax_actions,
+        )
+        obs_b = self._batch_obs(next_env_state)
+        agent_dones = ~next_env_state.state.unit_alive[:, : self.num_agents]
+        next_enemy_health = next_env_state.state.unit_health[:, self._env.num_allies:]
+        next_enemy_alive = next_env_state.state.unit_alive[:, self._env.num_allies:]
+        battle_won = ~self._jnp.any(next_enemy_alive, axis=-1)
+        rewards_stacked = self._compute_team_rewards_jax(env_state, next_env_state)
+        coop_bonus, coop_attack_memory, _ = self._apply_cooperative_kill_bonus_jax(
+            coop_attack_memory,
+            actions,
+            enemy_unit_types,
+            prev_enemy_health,
+            next_enemy_health,
+            prev_enemy_alive,
+            next_enemy_alive,
+        )
+        rewards_stacked = rewards_stacked + coop_bonus
+
+        reset_split = self._jax.vmap(lambda key: self._jax.random.split(key, 2))(next_rng_keys)
+        final_rng_keys = reset_split[:, 0]
+        reset_keys_arr = reset_split[:, 1]
+        reset_obs_b, reset_states = self._batch_reset(reset_keys_arr)
+        done_flags = self._batch_terminal(next_env_state)
+
+        def _select(new, reset):
+            cond = done_flags.reshape((-1,) + (1,) * (new.ndim - 1))
+            return self._jnp.where(cond, reset, new)
+
+        final_env_state = self._jax.tree_map(_select, next_env_state, reset_states)
+        final_obs_b = _select(
+            self._stack_agent_dict(obs_b),
+            self._stack_agent_dict(reset_obs_b),
+        )
+        avail_b = self._batch_avail(final_env_state)
+        coop_attack_memory = self._jnp.where(
+            done_flags[:, None, None],
+            self._jnp.zeros_like(coop_attack_memory),
+            coop_attack_memory,
+        )
+
+        return (
+            final_rng_keys,
             self._pack_batch_state(final_env_state, coop_attack_memory),
             final_obs_b,
             self._mask_avail_jax(self._stack_agent_dict(avail_b)),

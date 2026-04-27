@@ -64,7 +64,7 @@ PRESETS = {
         "xlim": (0.0, 3e6),
     },
     "smax": {
-        "project": "pci-marl-smax-jax-v2",
+        "project": "pci-marl-smax-jax-v3",
         "models": SMAX_MODELS,
         "name_contains": (),
         "exclude_name_contains": (),
@@ -95,6 +95,7 @@ def _matches_filters(
     exclude_contains: Iterable[str],
     name_contains: Iterable[str] = (),
     exclude_name_contains: Iterable[str] = (),
+    exclude_group_contains: Iterable[str] = (),
     name_suffixes: Iterable[str] = (),
     exclude_name_suffixes: Iterable[str] = (),
 ) -> bool:
@@ -111,6 +112,10 @@ def _matches_filters(
 
     excluded_suffixes = tuple(s for s in exclude_name_suffixes if s)
     if excluded_suffixes and run_name_lower.endswith(tuple(s.lower() for s in excluded_suffixes)):
+        return False
+
+    run_group = str(getattr(run, "group", "") or "").lower()
+    if any(term.lower() in run_group for term in exclude_group_contains):
         return False
 
     text = _run_text(run).lower()
@@ -206,6 +211,7 @@ def fetch_wandb_training_curves(
     exclude_contains: Iterable[str] = (),
     name_contains: Iterable[str] = (),
     exclude_name_contains: Iterable[str] = (),
+    exclude_group_contains: Iterable[str] = (),
     name_suffixes: Iterable[str] = (),
     exclude_name_suffixes: Iterable[str] = (),
     page_size: int = 10000,
@@ -225,6 +231,7 @@ def fetch_wandb_training_curves(
     project = project or preset_config["project"]
     name_contains = tuple(preset_config.get("name_contains", ())) + tuple(name_contains)
     exclude_name_contains = tuple(preset_config.get("exclude_name_contains", ())) + tuple(exclude_name_contains)
+    exclude_group_contains = tuple(exclude_group_contains)
     name_suffixes = tuple(preset_config.get("name_suffixes", ())) + tuple(name_suffixes)
     preset_exclude_suffixes = () if name_suffixes else tuple(preset_config.get("exclude_name_suffixes", ()))
     exclude_name_suffixes = preset_exclude_suffixes + tuple(exclude_name_suffixes)
@@ -236,6 +243,8 @@ def fetch_wandb_training_curves(
             print(f"[filter] include run name containing: {', '.join(name_contains)}")
         if exclude_name_contains:
             print(f"[filter] exclude run name containing: {', '.join(exclude_name_contains)}")
+        if exclude_group_contains:
+            print(f"[filter] exclude run group containing: {', '.join(exclude_group_contains)}")
         if name_suffixes:
             print(f"[filter] include run name suffix: {', '.join(name_suffixes)}")
         if exclude_name_suffixes:
@@ -256,6 +265,7 @@ def fetch_wandb_training_curves(
             exclude_contains,
             name_contains,
             exclude_name_contains,
+            exclude_group_contains,
             name_suffixes,
             exclude_name_suffixes,
         ):
@@ -369,7 +379,7 @@ def plot(
         keyword = entry.get("keyword", "success_rate")
         color = entry["color"]
         lsty = entry.get("linestyle", "-")
-        lw = entry.get("linewidth", 3)
+        lw = entry.get("linewidth", 2)
         exclude = entry.get("exclude", None)
 
         try:
@@ -725,6 +735,7 @@ def list_runs(
     exclude_contains,
     name_contains=(),
     exclude_name_contains=(),
+    exclude_group_contains=(),
     name_suffixes=(),
     exclude_name_suffixes=(),
 ):
@@ -738,6 +749,7 @@ def list_runs(
     project = project or preset_config["project"]
     name_contains = tuple(preset_config.get("name_contains", ())) + tuple(name_contains)
     exclude_name_contains = tuple(preset_config.get("exclude_name_contains", ())) + tuple(exclude_name_contains)
+    exclude_group_contains = tuple(exclude_group_contains)
     name_suffixes = tuple(preset_config.get("name_suffixes", ())) + tuple(name_suffixes)
     preset_exclude_suffixes = () if name_suffixes else tuple(preset_config.get("exclude_name_suffixes", ()))
     exclude_name_suffixes = preset_exclude_suffixes + tuple(exclude_name_suffixes)
@@ -752,6 +764,7 @@ def list_runs(
             exclude_contains,
             name_contains,
             exclude_name_contains,
+            exclude_group_contains,
             name_suffixes,
             exclude_name_suffixes,
         ):
@@ -781,6 +794,7 @@ def main(argv=None):
     parser.add_argument("--exclude-contains", nargs="*", default=[], help="run name/tag/group substrings to exclude")
     parser.add_argument("--name-contains", nargs="*", default=[], help="run name substrings that must all appear")
     parser.add_argument("--exclude-name-contains", nargs="*", default=[], help="run name substrings to exclude")
+    parser.add_argument("--exclude-group-contains", nargs="*", default=[], help="run group substrings to exclude")
     parser.add_argument("--name-suffix", nargs="*", default=[], help="run name suffixes to include, e.g. _noise0.1")
     parser.add_argument("--exclude-name-suffix", nargs="*", default=[], help="run name suffixes to exclude")
     parser.add_argument("--max-runs", type=int, default=None)
@@ -804,6 +818,7 @@ def main(argv=None):
             args.exclude_contains,
             args.name_contains,
             args.exclude_name_contains,
+            args.exclude_group_contains,
             args.name_suffix,
             args.exclude_name_suffix,
         )
@@ -823,6 +838,7 @@ def main(argv=None):
         exclude_contains=args.exclude_contains,
         name_contains=args.name_contains,
         exclude_name_contains=args.exclude_name_contains,
+        exclude_group_contains=args.exclude_group_contains,
         name_suffixes=args.name_suffix,
         exclude_name_suffixes=args.exclude_name_suffix,
         page_size=args.page_size,

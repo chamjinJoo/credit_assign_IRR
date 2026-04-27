@@ -2,9 +2,9 @@
 
 network:
   hidden_dim: 128
-  lr_actor: 5.0e-4  # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
-  lr_critic: 5.0e-4 # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
-  lr_bridge: 2.0e-3 # 1.0e-3 origin
+  lr_actor: 2.0e-3  # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
+  lr_critic: 2.0e-3 # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
+  lr_bridge: 5.0e-4 # 1.0e-3 origin
   recurrent_N: 1
   use_recurrent_policy: true
 
@@ -25,7 +25,7 @@ algorithm:
   use_centralized_critic: true
   add_agent_id: true             # 무조건 true, false시 성능 급감. IPPO/MAPPO도 마찬가지
   
-  causal_lambda_schedule: true
+  causal_lambda_schedule: false
   causal_lambda_start: 0.0
   causal_lambda_final: 1.0
   causal_lambda_startingpoint: 64000    # 100 iter (steps/iter = 6400) — bridge만 먼저 학습

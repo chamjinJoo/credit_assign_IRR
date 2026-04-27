@@ -4,7 +4,7 @@ import math
 import os
 import pickle
 from collections import defaultdict
-from typing import Any, Dict
+from typing import Any, Dict, Sequence
 
 import jax
 import jax.numpy as jnp
@@ -14,6 +14,22 @@ from runner.trainer import Trainer
 
 
 class JAXTrainer(Trainer):
+    @staticmethod
+    def _summarize_eval_metrics(
+        episode_rewards: Dict[int, list[float]],
+        episode_lengths: list[int],
+        episode_successes: list[float],
+    ) -> Dict[str, float]:
+        mean_per_agent = [float(np.mean(rewards)) for rewards in episode_rewards.values()] if episode_rewards else []
+        return {
+            "eval_success_rate": float(np.mean(episode_successes)) if episode_successes else 0.0,
+            "eval_mean_reward": float(np.mean(mean_per_agent)) if mean_per_agent else 0.0,
+            "eval_std_reward": float(np.std(mean_per_agent)) if mean_per_agent else 0.0,
+            "eval_mean_length": float(np.mean(episode_lengths)) if episode_lengths else 0.0,
+            "eval_min_reward": float(np.min(mean_per_agent)) if mean_per_agent else 0.0,
+            "eval_max_reward": float(np.max(mean_per_agent)) if mean_per_agent else 0.0,
+        }
+
     def _build_eval_env(self, env):
         """Keep JAX-native SMAX evaluation in the JAX trainer path."""
         if env.__class__.__name__ == "SMAXBatchWrapper":
@@ -44,7 +60,7 @@ class JAXTrainer(Trainer):
         self._running_episode_lengths = np.zeros((self.rollout_envs,), dtype=np.int32)
         self._last_eval_is_best = False
 
-    def _run_jax_policy_evaluation(self, num_episodes: int) -> Dict[str, Any]:
+    def _run_jax_policy_evaluation(self, num_episodes: int, deterministic: bool = True) -> Dict[str, Any]:
         """Run SMAX/JAX evaluation using the native pure JAX environment API."""
         eval_rng = jax.random.fold_in(self._eval_rng, self.iteration)
         eval_envs = getattr(self.eval_env, "n_envs", self.rollout_envs)
@@ -65,6 +81,8 @@ class JAXTrainer(Trainer):
         eval_steps = 0
 
         while collected < num_episodes and eval_steps < max_eval_steps:
+            if not deterministic:
+                raise NotImplementedError("JAX SMAX evaluation currently supports deterministic greedy rollouts only.")
             actions, runner_state = self.algorithm.greedy_actions(obs, avail, runner_state)
             (
                 eval_rng,
@@ -120,6 +138,97 @@ class JAXTrainer(Trainer):
             "eval_steps": eval_steps,
             "episode_limit": episode_limit,
             "requested_episodes": num_episodes,
+        }
+
+    def _run_jax_policy_evaluation_by_seed_batch(
+        self,
+        eval_seeds: Sequence[int],
+        num_episodes: int,
+        deterministic: bool = True,
+    ) -> Dict[str, Any]:
+        eval_seeds = [int(seed) for seed in eval_seeds]
+        if not eval_seeds:
+            raise ValueError("eval_seeds must contain at least one seed")
+
+        eval_envs = getattr(self.eval_env, "n_envs", self.rollout_envs)
+        if len(eval_seeds) != eval_envs:
+            raise ValueError(f"Expected {eval_envs} eval seeds, got {len(eval_seeds)}")
+        if not hasattr(self.eval_env, "reset_jax_pure_from_keys") or not hasattr(self.eval_env, "step_jax_pure_from_keys"):
+            raise ValueError("Batched explicit-seed JAX evaluation requires reset_jax_pure_from_keys/step_jax_pure_from_keys.")
+
+        episode_limit = self._get_eval_episode_limit()
+        max_eval_steps = max(episode_limit, episode_limit * max(1, num_episodes) * 2)
+        runner_state = self.algorithm.initialize_runner_state(eval_envs)
+        seed_keys = jnp.stack([jax.random.PRNGKey(seed) for seed in eval_seeds], axis=0)
+        batch_states, obs, avail = self.eval_env.reset_jax_pure_from_keys(seed_keys)
+        env_rng_keys = seed_keys
+
+        running_rewards = np.zeros((eval_envs, self.eval_env.num_agents), dtype=np.float32)
+        running_lengths = np.zeros((eval_envs,), dtype=np.int32)
+        episode_rewards = [defaultdict(list) for _ in range(eval_envs)]
+        episode_lengths = [[] for _ in range(eval_envs)]
+        episode_successes = [[] for _ in range(eval_envs)]
+        collected = np.zeros((eval_envs,), dtype=np.int32)
+        eval_steps = 0
+
+        while np.any(collected < num_episodes) and eval_steps < max_eval_steps:
+            if not deterministic:
+                raise NotImplementedError("JAX SMAX evaluation currently supports deterministic greedy rollouts only.")
+            actions, runner_state = self.algorithm.greedy_actions(obs, avail, runner_state)
+            (
+                env_rng_keys,
+                batch_states,
+                obs,
+                avail,
+                rewards,
+                agent_dones,
+                dones_all,
+                battle_won,
+            ) = self.eval_env.step_jax_pure_from_keys(env_rng_keys, batch_states, actions)
+
+            rewards_np = np.asarray(jax.device_get(rewards))
+            dones_np = np.asarray(jax.device_get(dones_all)).astype(bool)
+            battle_won_np = np.asarray(jax.device_get(battle_won))
+
+            running_rewards += rewards_np
+            running_lengths += 1
+            eval_steps += 1
+
+            next_prev_actions = jax.nn.one_hot(
+                actions,
+                self.algorithm.action_dim,
+                dtype=jnp.float32,
+            )
+            agent_done_prev = jnp.maximum(
+                jnp.asarray(agent_dones, dtype=jnp.float32),
+                jnp.asarray(dones_all, dtype=jnp.float32)[:, None],
+            )
+            next_prev_actions = next_prev_actions * (1.0 - agent_done_prev[..., None])
+            runner_state["prev_actions"] = next_prev_actions
+            runner_state["done_prev"] = jnp.asarray(dones_all, dtype=jnp.float32)
+            runner_state["agent_done_prev"] = agent_done_prev
+
+            for env_idx in range(eval_envs):
+                if not dones_np[env_idx] or collected[env_idx] >= num_episodes:
+                    continue
+                total_reward = running_rewards[env_idx].copy()
+                for agent_id, reward in enumerate(total_reward):
+                    episode_rewards[env_idx][agent_id].append(float(reward))
+                episode_lengths[env_idx].append(int(running_lengths[env_idx]))
+                episode_successes[env_idx].append(float(battle_won_np[env_idx] > 0.5))
+                collected[env_idx] += 1
+                running_rewards[env_idx] = 0.0
+                running_lengths[env_idx] = 0
+
+        return {
+            "eval_seeds": eval_seeds,
+            "episode_rewards": [dict(agent_rewards) for agent_rewards in episode_rewards],
+            "episode_lengths": episode_lengths,
+            "episode_successes": episode_successes,
+            "collected_episodes": collected.tolist(),
+            "eval_steps": eval_steps,
+            "episode_limit": episode_limit,
+            "requested_episodes": int(num_episodes),
         }
 
     def collect_rollouts(self) -> Dict[str, Any]:
@@ -187,8 +296,8 @@ class JAXTrainer(Trainer):
         }
         return rollout_data
 
-    def evaluate_policy(self, num_episodes: int = 10) -> Dict[str, float]:
-        eval_data = self._run_jax_policy_evaluation(num_episodes)
+    def evaluate_policy(self, num_episodes: int = 10, deterministic: bool = True) -> Dict[str, float]:
+        eval_data = self._run_jax_policy_evaluation(num_episodes, deterministic=deterministic)
         episode_rewards = eval_data["episode_rewards"]
         episode_lengths = eval_data["episode_lengths"]
         episode_successes = eval_data["episode_successes"]
@@ -200,15 +309,8 @@ class JAXTrainer(Trainer):
                 f"Episode limit={eval_data['episode_limit']}."
             )
 
-        eval_info = {
-            "eval_success_rate": float(np.mean(episode_successes)) if episode_successes else 0.0,
-            "eval_mean_reward": float(np.mean([np.mean(v) for v in episode_rewards.values()])) if episode_rewards else 0.0,
-            "eval_std_reward": float(np.std([np.mean(v) for v in episode_rewards.values()])) if episode_rewards else 0.0,
-            "eval_mean_length": float(np.mean(episode_lengths)) if episode_lengths else 0.0,
-            "eval_min_reward": float(np.min([np.mean(v) for v in episode_rewards.values()])) if episode_rewards else 0.0,
-            "eval_max_reward": float(np.max([np.mean(v) for v in episode_rewards.values()])) if episode_rewards else 0.0,
-            "causal_effects": None,
-        }
+        eval_info = self._summarize_eval_metrics(episode_rewards, episode_lengths, episode_successes)
+        eval_info["causal_effects"] = None
 
         if eval_info["eval_mean_reward"] > self.best_eval_reward:
             self.best_eval_reward = eval_info["eval_mean_reward"]
@@ -217,6 +319,33 @@ class JAXTrainer(Trainer):
             eval_info["is_best"] = False
         self._last_eval_is_best = eval_info["is_best"]
         return eval_info
+
+    def evaluate_policy_by_seeds(
+        self,
+        eval_seeds: Sequence[int],
+        num_episodes: int = 1,
+        deterministic: bool = True,
+    ) -> list[Dict[str, float]]:
+        eval_data = self._run_jax_policy_evaluation_by_seed_batch(
+            eval_seeds,
+            num_episodes=num_episodes,
+            deterministic=deterministic,
+        )
+        results = []
+        for env_idx, eval_seed in enumerate(eval_data["eval_seeds"]):
+            episode_rewards = eval_data["episode_rewards"][env_idx]
+            episode_lengths = eval_data["episode_lengths"][env_idx]
+            episode_successes = eval_data["episode_successes"][env_idx]
+            collected = int(eval_data["collected_episodes"][env_idx])
+            if collected < num_episodes:
+                self.logger.warning(
+                    f"JAX evaluation for eval_seed={eval_seed} stopped after {eval_data['eval_steps']} steps with "
+                    f"{collected}/{num_episodes} episodes collected. Episode limit={eval_data['episode_limit']}."
+                )
+            eval_info = self._summarize_eval_metrics(episode_rewards, episode_lengths, episode_successes)
+            eval_info["eval_seed"] = int(eval_seed)
+            results.append(eval_info)
+        return results
 
     def test_policy(
         self,
@@ -237,7 +366,7 @@ class JAXTrainer(Trainer):
         """
         self.logger.info(f"Testing policy for {num_episodes} episodes (JAX path)...")
 
-        eval_data = self._run_jax_policy_evaluation(num_episodes)
+        eval_data = self._run_jax_policy_evaluation(num_episodes, deterministic=True)
         episode_rewards = eval_data["episode_rewards"]
         episode_lengths = eval_data["episode_lengths"]
         episode_successes = eval_data["episode_successes"]
@@ -425,9 +554,16 @@ class JAXTrainer(Trainer):
             with open(best_path, "wb") as f:
                 pickle.dump(checkpoint, f)
 
-    def load_checkpoint(self, checkpoint_path: str):
+    def load_checkpoint(self, checkpoint_path: str, actor_only: bool = False):
         with open(checkpoint_path, "rb") as f:
             checkpoint = pickle.load(f)
+
+        if actor_only or checkpoint.get("format") == "jax_eval_actor_only_v1":
+            self.algorithm.load_actor_state_dict(checkpoint["algorithm_state"])
+            self.iteration = int(checkpoint.get("iteration", 0))
+            self.total_steps = int(checkpoint.get("total_steps", 0))
+            self.best_eval_reward = float(checkpoint.get("best_eval_reward", float("-inf")))
+            return
 
         self.iteration = int(checkpoint.get("iteration", 0))
         self.total_steps = int(checkpoint.get("total_steps", 0))

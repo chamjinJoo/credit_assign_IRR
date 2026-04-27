@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 import flax.serialization as serialization
 import jax
 import jax.numpy as jnp
+import optax
 
 from .common import (
     CausalBridgeNetwork,
@@ -74,6 +75,8 @@ class JAXRPCIAlgorithm:
         bridge_prediction_batch_size: int = 2048,
         normalize_pci_signal: bool = False,
         use_delta_critic: bool = False,
+        anneal_lr: bool = False,
+        total_iterations: int = 0,
         seed: int = 42,
         **_: Any,
     ):
@@ -138,7 +141,6 @@ class JAXRPCIAlgorithm:
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
         self.delta_critic_state_dim = hidden_dim if use_delta_critic else 0
-        self.normalize_pci_signal = normalize_pci_signal
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
         self.use_delta_critic = use_delta_critic
         print("use_delta_critic:", use_delta_critic)
@@ -170,6 +172,23 @@ class JAXRPCIAlgorithm:
             else None
         )
 
+        self.anneal_lr = bool(anneal_lr)
+        self.total_iterations = int(total_iterations)
+
+        def _maybe_schedule(base_lr: float):
+            if not self.anneal_lr or self.total_iterations <= 0:
+                return base_lr
+            steps_per_iter = max(1, self.ppo_epochs * self.num_batches)
+            total_grad_steps = self.total_iterations * steps_per_iter
+            return optax.linear_schedule(
+                init_value=base_lr,
+                end_value=0.0,
+                transition_steps=total_grad_steps,
+            )
+
+        lr_actor_arg = _maybe_schedule(lr_actor)
+        lr_critic_arg = _maybe_schedule(lr_critic)
+
         init_rng, actor_key, critic_key, bridge_key = jax.random.split(init_rng, 4)
 
         self.actor_state = make_train_state(
@@ -181,7 +200,7 @@ class JAXRPCIAlgorithm:
                 jnp.zeros((1, self.actor_state_dim), dtype=jnp.float32),
                 jnp.ones((1,), dtype=jnp.float32),
             ),
-            lr_actor,
+            lr_actor_arg,
             max_grad_norm,
         )
 
@@ -196,7 +215,7 @@ class JAXRPCIAlgorithm:
                 jnp.zeros((1, self.critic_state_dim), dtype=jnp.float32),
                 jnp.ones((1,), dtype=jnp.float32),
             ),
-            lr_critic,
+            lr_critic_arg,
             max_grad_norm,
         )
 
@@ -233,7 +252,7 @@ class JAXRPCIAlgorithm:
                     jnp.zeros((1, self.delta_critic_state_dim), dtype=jnp.float32),
                     jnp.ones((1,), dtype=jnp.float32),
                 ),
-                lr_critic,
+                lr_critic_arg,
                 max_grad_norm,
             )
 
@@ -1650,7 +1669,7 @@ class JAXRPCIAlgorithm:
             avail_actions,
             runner_state["actor_hidden"],
             runner_state["prev_actions"],
-            runner_state["done_prev"],
+            runner_state["agent_done_prev"],
             jax.random.PRNGKey(0),
             True,
         )
@@ -1679,4 +1698,8 @@ class JAXRPCIAlgorithm:
         self.rng = jnp.asarray(state_dict["rng"])
         if "bridge_rng" in state_dict:
             self.bridge_rng = jnp.asarray(state_dict["bridge_rng"])
+        self.training_steps = int(state_dict.get("training_steps", 0))
+
+    def load_actor_state_dict(self, state_dict: Dict[str, Any]):
+        self.actor_state = serialization.from_state_dict(self.actor_state, state_dict["actor_state"])
         self.training_steps = int(state_dict.get("training_steps", 0))

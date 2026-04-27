@@ -68,6 +68,7 @@ class AlgorithmConfig:
     # JAX RPCI scalability options
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
     use_delta_critic: bool = False      # True: per-agent V^i_delta critic for TD-style PCI advantages
+    anneal_lr: bool = False             # True: linear LR annealing (actor/critic) from init_value to 0
 
     # Agent ID feature
     add_agent_id: bool = False  # If True, concatenate agent_id one-hot vector to observations
@@ -512,6 +513,8 @@ def parse_args() -> argparse.Namespace:
                         help='Initial exploration rate')
     parser.add_argument('--epsilon-finish', type=float, default=None,
                         help='Final exploration rate')
+    parser.add_argument('--anneal-lr', type=str, default=None,
+                        help='Enable linear LR annealing for actor/critic (true/false)')
     parser.add_argument('--epsilon-anneal-time', type=int, default=None,
                         help='Steps to anneal epsilon over')
     parser.add_argument('--replay-buffer-size', type=int, default=None,
@@ -642,6 +645,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         # Convert string to boolean
         use_adaptive = args.causal_lambda_adaptive_per_agent.lower() in ('true', '1', 'yes', 'on')
         config.algorithm.causal_lambda_adaptive_per_agent = use_adaptive
+    if hasattr(args, 'anneal_lr') and args.anneal_lr is not None:
+        config.algorithm.anneal_lr = args.anneal_lr.lower() in ('true', '1', 'yes', 'on')
     if hasattr(args, 'lr_actor') and args.lr_actor:
         config.network.lr_actor = args.lr_actor
     if hasattr(args, 'lr_bridge') and args.lr_bridge:

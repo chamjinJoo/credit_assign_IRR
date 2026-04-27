@@ -10,17 +10,17 @@ model="jax-ippo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="6h_vs_8z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(6 8)
-
+map_name="smacv2_10_units"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(10 8 6)
 # training settings
 seeds=(42 1 2)
-device="cpu"  # recommended to use cuda if available, but default to cpu for safety
+device="cuda"  # recommended to use cuda if available, but default to cpu for safety
 n_rollout_threads=2
 max_iterations=1600
 max_steps_per_iteration=6400
 log_interval=2
 run_in_background=false
+anneal_lr=true
 wandb_run_name_postfix=""
 
 if command -v conda >/dev/null 2>&1; then
@@ -61,6 +61,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
           --log-interval ${log_interval} \
           --device ${device} \
           --seed ${seed} \
+          --anneal-lr ${anneal_lr} \
           "${wandb_args[@]}" &
         pid=$!
         pids+=("${pid}")
@@ -79,6 +80,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
           --log-interval ${log_interval} \
           --device ${device} \
           --seed ${seed} \
+          --anneal-lr ${anneal_lr} \
           "${wandb_args[@]}"
       fi
   done
