@@ -142,6 +142,8 @@ class JAXRPCIAlgorithm:
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
         self.delta_critic_state_dim = hidden_dim if use_delta_critic else 0
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
+        self.bridge_prev_action_dim = (num_agents - 1) * action_dim
+        self.bridge_context_dim = self.bridge_hidden_dim + self.bridge_prev_action_dim
         self.use_delta_critic = use_delta_critic
         print("use_delta_critic:", use_delta_critic)
         self.bridge_output_dim = 1 if global_reward else num_agents
@@ -230,7 +232,7 @@ class JAXRPCIAlgorithm:
                 (
                     jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
                     jnp.zeros((1, bridge_others_obs_dim), dtype=jnp.float32),
-                    jnp.zeros((1, self.bridge_hidden_dim), dtype=jnp.float32),
+                    jnp.zeros((1, self.bridge_context_dim), dtype=jnp.float32),
                     jnp.zeros((1,), dtype=jnp.int32),
                 ),
                 lr_bridge_arg,
@@ -965,6 +967,10 @@ class JAXRPCIAlgorithm:
         others_obs = gather_other_agent_obs(obs_4d).reshape(
             -1, (self.num_agents - 1) * self.policy_obs_dim
         )
+        prev_actions_4d = rollout["prev_actions"].reshape(flat_batch, self.num_agents, self.action_dim)
+        prev_actions_others = gather_other_agent_obs(prev_actions_4d).reshape(
+            -1, self.bridge_prev_action_dim
+        )
 
         if self.use_recurrent_policy:
             hidden_4d = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
@@ -974,6 +980,8 @@ class JAXRPCIAlgorithm:
             n_flat = flat_batch * self.num_agents
             z = jnp.zeros((n_flat, 0), dtype=jnp.float32)
             hidden_others = jnp.zeros((n_flat, 0), dtype=jnp.float32)
+
+        bridge_context = jnp.concatenate([hidden_others, prev_actions_others], axis=-1)
 
         actions = rollout["actions"].reshape(-1)
         agent_ids = jnp.tile(jnp.arange(self.num_agents, dtype=jnp.int32), flat_batch)
@@ -985,10 +993,10 @@ class JAXRPCIAlgorithm:
                 rollout["rewards"][:, :, None, :], self.num_agents, axis=2
             ).reshape(-1, self.num_agents)
 
-        return local_obs, others_obs, z, hidden_others, actions, reward_targets, agent_ids
+        return local_obs, others_obs, z, bridge_context, actions, reward_targets, agent_ids
 
     def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        local_obs, others_obs, z, hidden_others, actions, targets, agent_ids = self._preprocess_rollout(rollout)
+        local_obs, others_obs, z, bridge_context, actions, targets, agent_ids = self._preprocess_rollout(rollout)
         alive_indices = jnp.where(
             self._alive_from_agent_dones(rollout["agent_dones"]).reshape(-1)
         )[0]
@@ -996,7 +1004,7 @@ class JAXRPCIAlgorithm:
             "z":            z.astype(jnp.float32),
             "w":            others_obs.astype(jnp.float32),
             "x_obs":        local_obs.astype(jnp.float32),
-            "x_hid":        hidden_others.astype(jnp.float32),
+            "x_hid":        bridge_context.astype(jnp.float32),
             "actions":      actions.astype(jnp.int32),
             "targets":      targets.astype(jnp.float32),
             "agent_ids":    agent_ids.astype(jnp.int32),
@@ -1004,10 +1012,10 @@ class JAXRPCIAlgorithm:
         }
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
-        local_obs, others_obs, _, hidden_others, actions, reward_targets, _ = self._preprocess_rollout(rollout)
+        local_obs, others_obs, _, bridge_context, actions, reward_targets, _ = self._preprocess_rollout(rollout)
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
-        return local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions
+        return local_obs, others_obs, bridge_context, actions, reward_targets, probs, avail_actions
 
     @partial(jax.jit, static_argnums=0)
     def _bridge_predictions_chunk(
@@ -1334,16 +1342,24 @@ class JAXRPCIAlgorithm:
         )
 
         if batch["x_hid"].shape[-1] > 0:
-            x_hid_norm = _standardize(batch["x_hid"])
-            # Dead agent slots → 0 after standardization; only alive others contribute.
-            # Effective dim = mean # of non-zero dims per sample.
-            # gamma is rescaled to this effective dim so K_x_hid stays discriminative
-            # even when agents die (otherwise gamma is too small → kernel → 1).
-            effective_dim = jnp.mean(
-                jnp.sum(jnp.abs(x_hid_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
-            )
-            gamma_xhid = 1.0 / jnp.maximum(effective_dim, 1.0)
-            gram = gram * _rbf_gram(x_hid_norm, gamma_xhid)
+            x_hid_hidden = batch["x_hid"][:, :self.bridge_hidden_dim]
+            x_hid_prev_action = batch["x_hid"][:, self.bridge_hidden_dim:]
+
+            if x_hid_hidden.shape[-1] > 0:
+                x_hid_hidden_norm = _standardize(x_hid_hidden)
+                effective_dim = jnp.mean(
+                    jnp.sum(jnp.abs(x_hid_hidden_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
+                )
+                gamma_xhid = 1.0 / jnp.maximum(effective_dim, 1.0)
+                gram = gram * _rbf_gram(x_hid_hidden_norm, gamma_xhid)
+
+            if x_hid_prev_action.shape[-1] > 0:
+                x_hid_prev_action_norm = _standardize(x_hid_prev_action)
+                effective_dim = jnp.mean(
+                    jnp.sum(jnp.abs(x_hid_prev_action_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
+                )
+                gamma_xprev_action = 1.0 / jnp.maximum(effective_dim, 1.0)
+                gram = gram * _rbf_gram(x_hid_prev_action_norm, gamma_xprev_action)
 
         eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
         # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci.
@@ -1424,16 +1440,13 @@ class JAXRPCIAlgorithm:
 
     def _iterate_causal_minibatches(self, alive_idx: jnp.ndarray):
         total_alive = int(alive_idx.shape[0])
-        if total_alive <= 0:
-            return
-
-        n_batches = min(self.num_batches, total_alive)
-        batch_len = total_alive // n_batches  # floor division (drop_last 핵심)
-
-        for batch_idx in range(n_batches):
-            start = batch_idx * batch_len
-            end = start + batch_len
-            yield alive_idx[start:end]
+        for start in range(0, total_alive, self.causal_mini_batch_size):
+            end = start + self.causal_mini_batch_size
+            if end <= total_alive:
+                yield alive_idx[start:end]
+            else:
+                pad = self.causal_mini_batch_size - (total_alive - start)
+                yield jnp.concatenate([alive_idx[start:], alive_idx[:pad]])
 
     def update_causal_networks(self, rollout: Optional[Dict[str, jnp.ndarray]] = None) -> Dict[str, float]:
         if rollout is None:
@@ -1450,9 +1463,11 @@ class JAXRPCIAlgorithm:
 
         metrics = []
         for _ in range(self.bridge_epoch):
-            self.bridge_rng, bridge_perm_rng = jax.random.split(self.bridge_rng)
-            shuffled_alive_idx = alive_idx[jax.random.permutation(bridge_perm_rng, alive_idx.shape[0])]
-            for idx in self._iterate_causal_minibatches(shuffled_alive_idx):
+            # with shuffling
+            # self.bridge_rng, bridge_perm_rng = jax.random.split(self.bridge_rng)
+            # shuffled_alive_idx = alive_idx[jax.random.permutation(bridge_perm_rng, alive_idx.shape[0])]
+            # for idx in self._iterate_causal_minibatches(shuffled_alive_idx):
+            for idx in self._iterate_causal_minibatches(alive_idx):
                 batch = {k: causal_batch[k][idx] for k in _KEYS}
                 gram, reg_gram, gram_metrics = self._compute_gram(batch)
                 gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
@@ -1665,7 +1680,6 @@ class JAXRPCIAlgorithm:
             for _ in range(self.ppo_epochs):
                 self.rng, delta_critic_perm_rng = jax.random.split(self.rng)
                 delta_critic_perm = jax.random.permutation(delta_critic_perm_rng, delta_critic_size)
-
                 for idx in self._iterate_minibatches(delta_critic_size):
                     idx = delta_critic_perm[idx]
                     delta_critic_minibatch = self._slice_batch(delta_critic_batch, idx)

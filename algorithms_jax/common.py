@@ -170,14 +170,14 @@ class CausalBridgeNetwork(nn.Module):
         self,
         local_obs: jnp.ndarray,
         others_obs: jnp.ndarray,
-        hidden_others: jnp.ndarray,
+        bridge_context: jnp.ndarray,
         actions: jnp.ndarray,
     ) -> jnp.ndarray:
         # Matches Torch OutcomeBridgeNetwork (MLPBase, use_orthogonal=True,
         # use_feature_normalization=True, use_layer_norm=True):
         #   LayerNorm(input) → [Dense(orth,√2) → ReLU → LayerNorm] × 2 → Dense(output)
         action_onehot = jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim)
-        x = jnp.concatenate([local_obs, others_obs, hidden_others, action_onehot], axis=-1)
+        x = jnp.concatenate([local_obs, others_obs, bridge_context, action_onehot], axis=-1)
         x = nn.LayerNorm()(x)
         x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
         x = nn.relu(x)
