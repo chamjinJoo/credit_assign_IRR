@@ -25,7 +25,7 @@ training:
   max_iterations: 1600
   max_steps_per_iteration: 6400
   log_interval: 1
-  save_interval: 100
+  save_interval: 500
   eval_interval: 25
   eval_episodes: 16
   save_dir: "./save_checkpoints"

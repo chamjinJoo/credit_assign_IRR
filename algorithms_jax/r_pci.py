@@ -72,7 +72,7 @@ class JAXRPCIAlgorithm:
         print_bridge_predictions: bool = False,
         bridge_prediction_print_samples: int = 1,
         bridge_prediction_print_interval: int = 50,
-        bridge_prediction_batch_size: int = 2048,
+        bridge_prediction_batch_size: int = 64,
         normalize_pci_signal: bool = False,
         use_delta_critic: bool = False,
         anneal_lr: bool = False,
@@ -878,6 +878,7 @@ class JAXRPCIAlgorithm:
         else:
             adv = advantages
         adv = adv.reshape(total_steps, self.num_agents)
+        # 2nd norm
         adv = self._normalize_actor_advantages(adv)
 
         return {
@@ -1331,7 +1332,7 @@ class JAXRPCIAlgorithm:
         action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
 
         gamma_z = 1.0 / max(1, batch["z"].shape[-1])
-        gamma_a = 1.0 / max(1, self.action_dim)
+        gamma_a = 1.0
         gamma_xobs = 1.0 / max(1, batch["x_obs"].shape[-1])
 
         gram = (
@@ -1354,12 +1355,10 @@ class JAXRPCIAlgorithm:
                 gram = gram * _rbf_gram(x_hid_hidden_norm, gamma_xhid)
 
             if x_hid_prev_action.shape[-1] > 0:
-                x_hid_prev_action_norm = _standardize(x_hid_prev_action)
-                effective_dim = jnp.mean(
-                    jnp.sum(jnp.abs(x_hid_prev_action_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
-                )
-                gamma_xprev_action = 1.0 / jnp.maximum(effective_dim, 1.0)
-                gram = gram * _rbf_gram(x_hid_prev_action_norm, gamma_xprev_action)
+                # x_hid_prev_action_norm = _standardize(x_hid_prev_action)
+                # gamma_xprev_action = 1.0 / max(1, self.num_agents - 1)
+                # gram = gram * _rbf_gram(x_hid_prev_action_norm, gamma_xprev_action)
+                gram = gram * _rbf_gram(x_hid_prev_action, 1.0)
 
         eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
         # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci.
@@ -1463,10 +1462,6 @@ class JAXRPCIAlgorithm:
 
         metrics = []
         for _ in range(self.bridge_epoch):
-            # with shuffling
-            # self.bridge_rng, bridge_perm_rng = jax.random.split(self.bridge_rng)
-            # shuffled_alive_idx = alive_idx[jax.random.permutation(bridge_perm_rng, alive_idx.shape[0])]
-            # for idx in self._iterate_causal_minibatches(shuffled_alive_idx):
             for idx in self._iterate_causal_minibatches(alive_idx):
                 batch = {k: causal_batch[k][idx] for k in _KEYS}
                 gram, reg_gram, gram_metrics = self._compute_gram(batch)

@@ -147,6 +147,9 @@ class rPCIAlgorithm:
         self.use_centralized_critic = use_centralized_critic
         self.use_recurrent_policy = use_recurrent_policy
         self.use_delta_critic = use_delta_critic
+        self.bridge_hidden_dim = hidden_dim * recurrent_N * (num_agents - 1) if use_recurrent_policy else 0
+        self.bridge_prev_action_dim = action_dim * (num_agents - 1)
+        self.bridge_context_dim = self.bridge_hidden_dim + self.bridge_prev_action_dim
 
         # for causal intrinsic reward
         self.clip_delta = clip_delta
@@ -271,8 +274,8 @@ class rPCIAlgorithm:
         # Current proxy setting:
         #   W^i_t = other agents' current observations
         #   Z^i_t = agent i's previous hidden state h^i_{t-1}
-        #   X^i_t = (o^i_t, h^{-i}_{t-1})
-        x_dim = obs_dim + (hidden_dim * recurrent_N * (num_agents - 1) if use_recurrent_policy else 0)
+        #   X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
+        x_dim = obs_dim + self.bridge_context_dim
         
 
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
@@ -311,7 +314,7 @@ class rPCIAlgorithm:
         # Current kernel factorization is over:
         #   Z^i_t = agent i's previous hidden state h^i_{t-1},
         #   A^i_t = my action,
-        #   X^i_t = (o^i_t, h^{-i}_{t-1}).
+        #   X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1}).
         self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)    # kept for checkpoint compatibility
         self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for Z^i_t
         self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for A^i_t one-hot
@@ -455,16 +458,16 @@ class rPCIAlgorithm:
         H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
 
         obs_super = obs_batch.view(-1, self.obs_dim)
-        # 2. Construct X_super = (o^i_t, h^{-i}_{t-1})
+        # 2. Construct X_super = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
         if self.use_recurrent_policy:
             H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
             hid_mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
                 batch_size, -1, -1, self.recurrent_N * self.hidden_dim
             )
             H_others_super = H_all_expanded[hid_mask].view(batch_size * num_agents, -1)  # (B*N, (N-1)*RecN*H)
-            X_super = torch.cat([obs_super, H_others_super], dim=1)
+            X_super = torch.cat([obs_super, H_others_super, A_others_super], dim=1)
         else:
-            X_super = obs_super
+            X_super = torch.cat([obs_super, A_others_super], dim=1)
 
         if self.use_recurrent_policy:
             Z_super = H_all.reshape(batch_size * num_agents, -1) # Z^i_t = h^i_{t-1}
@@ -570,11 +573,13 @@ class rPCIAlgorithm:
             x_s  = x_mb[sort_idx_mb]
 
             x_obs_raw_s = x_s[:, :self.obs_dim]
-            x_hid_raw_s = x_s[:, self.obs_dim:] if self.use_recurrent_policy else x_s[:, self.obs_dim:self.obs_dim]
+            x_hid_raw_s = x_s[:, self.obs_dim:self.obs_dim + self.bridge_hidden_dim]
+            x_act_raw_s = x_s[:, self.obs_dim + self.bridge_hidden_dim:]
 
             z_splits    = z_s.split(agent_sizes)
             xobs_splits = x_obs_raw_s.split(agent_sizes)
             xhid_splits = x_hid_raw_s.split(agent_sizes)
+            xact_splits = x_act_raw_s.split(agent_sizes)
             a_splits    = a_s.split(agent_sizes)
             y_splits    = list(y_s.split(agent_sizes))
 
@@ -584,13 +589,13 @@ class rPCIAlgorithm:
                 self.kernel_z_block.log_gamma.data.fill_(
                     torch.log(torch.tensor(1.0 / max(z_s.shape[1], 1))))
                 self.kernel_a_block.log_gamma.data.fill_(
-                    torch.log(torch.tensor(1.0 / self.action_dim)))
+                    torch.log(torch.tensor(1.0)))
                 if x_obs_raw_s.size(1) > 0:
                     self.kernel_xobs_block.log_gamma.data.fill_(
                         torch.log(torch.tensor(1.0 / x_obs_raw_s.shape[1])))
-                if x_hid_raw_s.size(1) > 0:
-                    self.kernel_xhid_block.log_gamma.data.fill_(
-                        torch.log(torch.tensor(1.0 / x_hid_raw_s.shape[1])))
+                if x_act_raw_s.size(1) > 0:
+                    self.kernel_xact_block.log_gamma.data.fill_(
+                        torch.log(torch.tensor(1.0)))
 
             # --- Per-agent kernel and regularized kernel ---
             K_blocks     = []
@@ -625,13 +630,24 @@ class rPCIAlgorithm:
                 else:
                     xhid_norm_i = xhid_i
 
+                xact_i = xact_splits[ag_i]
+
                 a_oh_i = F.one_hot(a_splits[ag_i].long(), self.action_dim).float()
 
                 K_i = self.kernel_z_block(z_norm_i) * self.kernel_a_block(a_oh_i)
                 if xobs_norm_i.size(1) > 0:
                     K_i = K_i * self.kernel_xobs_block(xobs_norm_i)
                 if xhid_norm_i.size(1) > 0:
+                    effective_dim = torch.mean(
+                        torch.sum(torch.abs(xhid_norm_i) > 1e-6, dim=-1).float()
+                    ).clamp_min(1.0)
+                    with torch.no_grad():
+                        self.kernel_xhid_block.log_gamma.data.fill_(
+                            torch.log(torch.tensor(1.0 / max(effective_dim.item(), 1.0)))
+                        )
                     K_i = K_i * self.kernel_xhid_block(xhid_norm_i)
+                if xact_i.size(1) > 0:
+                    K_i = K_i * self.kernel_xact_block(xact_i)
 
                 # Monitor off-diagonal within this agent's block.
                 with torch.no_grad():
@@ -653,47 +669,6 @@ class rPCIAlgorithm:
                 all_off = torch.cat(off_vals_list)
                 sum_off_mean += all_off.mean().item()
                 sum_off_std  += all_off.std(unbiased=False).item()
-
-            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # legacy single-kernel path with standardization
-            # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # legacy single-kernel path without standardization
-
-            # Legacy optional feature projection before applying a single kernel.
-            # with torch.no_grad():
-            #    kernel_feat_z = self.feature_projector(kernel_feat_z)
-
-            # Legacy median-heuristic gamma update for the single-kernel path.
-            # with torch.no_grad():
-            #     Xg = kernel_feat_z
-            #     max_for_gamma = getattr(self, "max_points_for_kernel_gamma", 256)
-            #     if Xg.size(0) > max_for_gamma:
-            #         idx = torch.randperm(Xg.size(0), device=Xg.device)[:max_for_gamma]
-            #         Xg = Xg[idx]
-            #     if Xg.size(0) >= 2:
-            #         d2 = torch.pdist(Xg, p=2).pow(2)
-            #         med = d2.median().clamp_min(1e-8)
-            #         new_gamma = 1.0 / (2.0 * med)
-            #         new_log_gamma = torch.log(new_gamma)
-            #         ema = getattr(self, "kernel_gamma_ema", 0.95)
-            #         self.critic_kernel_z.log_gamma.data = ema * self.critic_kernel_z.log_gamma.data + (1.0 - ema) * new_log_gamma
-
-            # Legacy single-kernel Gram matrix.
-            # K_z = self.critic_kernel_z(kernel_feat_z)
-
-            # ------------------------------------------------------------------- #
-            # Legacy product-kernel path with a single unsplit X block.           #
-            # ------------------------------------------------------------------- #
-            # with torch.no_grad():
-            #     for feat, kernel in [
-            #         (z_mb_norm,        self.kernel_z_block),
-            #         (action_onehot_mb, self.kernel_a_block),
-            #         (x_mb_norm,        self.kernel_x_block),
-            #     ]:
-            #         n = feat.shape[1]
-            #         var = feat.var(dim=0).mean().clamp_min(1e-8)
-            #         kernel.log_gamma.data.fill_(torch.log(1.0 / (n * var)))
-            # K_z = (self.kernel_z_block(z_mb_norm)
-            #        * self.kernel_a_block(action_onehot_mb)
-            #        * self.kernel_x_block(x_mb_norm))
 
             # --- Update Outcome Bridge h_φ for bridge_epoch times ---
             # Forward pass runs on the full sorted batch; per-agent solve on B_i×B_i blocks.
@@ -1185,7 +1160,22 @@ class rPCIAlgorithm:
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
-                # X^i_t = (o^i_t, h^{-i}_{t-1})
+                prev_actions_others_inf = None
+                if prev_actions_batch is not None:
+                    prev_actions_onehot_b = F.one_hot(prev_actions_batch[i:end].long(), self.action_dim).float()
+                    expanded_prev_actions = prev_actions_onehot_b.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                    action_mask = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(
+                        curr_bs, -1, -1, self.action_dim
+                    )
+                    prev_actions_others_inf = expanded_prev_actions[action_mask].view(curr_bs * num_agents, -1)
+                else:
+                    prev_actions_others_inf = torch.zeros(
+                        curr_bs * num_agents,
+                        self.bridge_prev_action_dim,
+                        device=self.device,
+                    )
+
+                # X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
                 if self.use_recurrent_policy:
                     h_prev_list_inf = []
                     for k in range(num_agents):
@@ -1200,9 +1190,12 @@ class rPCIAlgorithm:
                     )
                     H_prev_others_inf = H_prev_all_inf_expanded[hid_mask].view(curr_bs * num_agents, -1)
                     obs_flat = obs_b.reshape(curr_bs * num_agents, self.obs_dim)
-                    x_flat = torch.cat([obs_flat, H_prev_others_inf], dim=1)
+                    x_flat = torch.cat([obs_flat, H_prev_others_inf, prev_actions_others_inf], dim=1)
                 else:
-                    x_flat = obs_b.reshape(curr_bs * num_agents, self.obs_dim)
+                    x_flat = torch.cat(
+                        [obs_b.reshape(curr_bs * num_agents, self.obs_dim), prev_actions_others_inf],
+                        dim=1,
+                    )
 
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
@@ -2127,6 +2120,11 @@ class rPCIAlgorithm:
             C_matrix = self.compute_causal_rewards(
                 w_t_batch, z_t_batch, full_obs_batch, actions_batch, rewards_batch, 
                 hidden_states_batch=hidden_states_batch,
+                prev_actions_batch=torch.tensor(
+                    [[int(torch.argmax(self.agents[i].prev_action).item()) for i in range(N)]],
+                    dtype=torch.long,
+                    device=self.device,
+                ),
                 baseline_type='weighted'
             )
             
