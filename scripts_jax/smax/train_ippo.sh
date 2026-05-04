@@ -11,9 +11,11 @@ use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
 map_name="6h_vs_8z"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(6 8)
+allowed_target_windows=(8)
 # training settings
-seeds=(42 1 2)
+lr_actor=0.001
+lr_critic=0.001
+seeds=(42 1)
 
 device="cpu"  # recommended to use cuda if available, but default to cpu for safety
 n_rollout_threads=2
@@ -22,7 +24,7 @@ max_steps_per_iteration=6400
 log_interval=2
 run_in_background=false
 anneal_lr=true
-wandb_run_name_postfix=""
+wandb_run_name_postfix="lr1e-3_GD4"
 
 if command -v conda >/dev/null 2>&1; then
   eval "$(conda shell.bash hook)"
@@ -56,14 +58,16 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --map-name "${map_name}" \
         --use-recurrent-policy ${use_recurrent_policy} \
         --allowed-target-window ${allowed_target_window} \
+        --lr-actor ${lr_actor} \
+        --lr-critic ${lr_critic} \
         --n-rollout-threads ${n_rollout_threads} \
-          --max-iterations ${max_iterations} \
-          --max-steps ${max_steps_per_iteration} \
-          --log-interval ${log_interval} \
-          --device ${device} \
-          --seed ${seed} \
-          --anneal-lr ${anneal_lr} \
-          "${wandb_args[@]}" &
+        --max-iterations ${max_iterations} \
+        --max-steps ${max_steps_per_iteration} \
+        --log-interval ${log_interval} \
+        --device ${device} \
+        --seed ${seed} \
+        --anneal-lr ${anneal_lr} \
+        "${wandb_args[@]}" &
         pid=$!
         pids+=("${pid}")
         echo "[allowed_target_window=${allowed_target_window} seed=${seed}] PID: ${pid}"
@@ -75,14 +79,16 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --map-name "${map_name}" \
         --use-recurrent-policy ${use_recurrent_policy} \
         --allowed-target-window ${allowed_target_window} \
+        --lr-actor ${lr_actor} \
+        --lr-critic ${lr_critic} \
         --n-rollout-threads ${n_rollout_threads} \
-          --max-iterations ${max_iterations} \
-          --max-steps ${max_steps_per_iteration} \
-          --log-interval ${log_interval} \
-          --device ${device} \
-          --seed ${seed} \
-          --anneal-lr ${anneal_lr} \
-          "${wandb_args[@]}"
+        --max-iterations ${max_iterations} \
+        --max-steps ${max_steps_per_iteration} \
+        --log-interval ${log_interval} \
+        --device ${device} \
+        --seed ${seed} \
+        --anneal-lr ${anneal_lr} \
+        "${wandb_args[@]}"
       fi
   done
 done

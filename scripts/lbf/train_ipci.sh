@@ -4,16 +4,19 @@ env="LBForaging"
 config="configs/lbforaging.yaml"
 
 # model setting
-model="r-pci" # [pci-rnn, pci-mappo, mappo, ippo]
-causal_lambda=1.0
-clip_delta=0.0
+model="r-pci" 
+lr_bridge=0.0001 # 1e-3 default
+use_recurrent_policy=true
+use_centralized_critic=false
 use_value_parameter_sharing=true
+train_naivepredictor=false
 recurrent_N=1
 
+causal_lambda=1.0
+clip_delta=0.0
+
 # training and logging 
-max_iterations=1500
-max_steps_per_iteration=2000
-n_rollout_threads=8
+n_rollout_threads=4
 log_interval=2
 device="cpu"
 seed=42
@@ -24,11 +27,12 @@ conda activate pcimarl
 
 python main.py --env ${env} --config ${config} \
     --model ${model} \
+    --use-recurrent-policy ${use_recurrent_policy} \
+    --use-centralized-critic ${use_centralized_critic} \
     --use-value-parameter-sharing ${use_value_parameter_sharing} \
+    --lr-bridge ${lr_bridge} \
     --recurrent-N ${recurrent_N} \
     --n-rollout-threads ${n_rollout_threads} \
-    --max-steps ${max_steps_per_iteration} \
-    --max-iterations ${max_iterations} \
     --clip-delta ${clip_delta} \
     --causal-lambda ${causal_lambda} \
     --log-interval ${log_interval} \

@@ -1,25 +1,29 @@
 # PCI-MAPPO LBForaging Environment Configuration
 # Neural Network Configuration
 network:
-  hidden_dim: 64
+  hidden_dim: 128
   lr_actor: 3.0e-4
   lr_bridge: 1.0e-3
   lr_critic: 3.0e-4
   # RKHS Kernel parameters for analytical loss
   rkhs_gamma: 1.0  # Smaller gamma for more localized kernels
+  use_recurrent_policy: true
 
 # Algorithm Configuration
 algorithm:
   type: pci_mappo  # Options: 'pci_mappo', 'mappo', 'ippo'
   gamma: 0.99
+  add_agent_id: true
+  rnn_chunk_length: 50
   gae_lambda: 0.95
   clip_epsilon: 0.2
-  entropy_coef: 0.01
+  entropy_coef: 0.001
   value_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 4
-  batch_size: 64
-  causal_lambda: 0.8
+  causal_lambda: 1.0
+  causal_mini_batch_size: 50  # Chunk size for RKHS solver
+
   causal_lambda_schedule: false  # Enable causal lambda scheduling
   causal_lambda_start: 0.0      # Starting causal lambda value
   causal_lambda_final: 0.8     # Final causal lambda value
@@ -31,10 +35,10 @@ algorithm:
 
 # Training Configuration
 training:
-  max_iterations: 1500
-  max_steps_per_iteration: 2000
+  max_iterations: 10000
+  max_steps_per_iteration: 500
   log_interval: 2
-  save_interval: 100
+  save_interval: 500
   eval_interval: 50
   eval_episodes: 10
   save_dir: "./save_checkpoints"
@@ -46,15 +50,21 @@ training:
 # Environment Configuration
 environment:
   env_name: "LBForaging"
+  # lbforaging:Foraging-2s-10x10-3p-3f-v3
+  field_size: 10
   num_agents: 3
-  field_size: 11
-  max_food: 2
+  max_food: 3
   player_level: [1, 2]
-  food_level: [1, 3]
+  food_level: [1, null]
   sight: 2
   max_episode_steps: 50
-  force_coop: true
+  force_coop: false
   grid_observation: true
+
+# Main              `15x15-3p-5f-v3' - not parital observable.
+# Medium            '2s-10x10-3p-3f-v3`
+# Sanity / appendix `2s-8x8-2p-2f-coop-v3`
+# Stress test       `2s-15x15-4p-5f-v3` 
 
 # Weights & Biases Configuration
 wandb:
@@ -62,4 +72,3 @@ wandb:
   project: "pci-maarl-lbforaging"
   run_name: false # for dynamically generating run_name with env_id 
   tags: ["pci", "mappo", "multi-agent", "lbforaging"]
-

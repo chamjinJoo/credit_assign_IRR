@@ -266,10 +266,6 @@ def fetch_wandb_results() -> dict:
 
     return results
 
-# ============================================================
-# 필터링
-# ============================================================
-
 def apply_filter(results: dict, maps, conditions, models) -> dict:
     """지정된 map/condition/model 조합만 남긴다. 빈 리스트 = 전체 허용."""
     def norm(s):

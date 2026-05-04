@@ -1355,9 +1355,6 @@ class JAXRPCIAlgorithm:
                 gram = gram * _rbf_gram(x_hid_hidden_norm, gamma_xhid)
 
             if x_hid_prev_action.shape[-1] > 0:
-                # x_hid_prev_action_norm = _standardize(x_hid_prev_action)
-                # gamma_xprev_action = 1.0 / max(1, self.num_agents - 1)
-                # gram = gram * _rbf_gram(x_hid_prev_action_norm, gamma_xprev_action)
                 gram = gram * _rbf_gram(x_hid_prev_action, 1.0)
 
         eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
@@ -1753,5 +1750,14 @@ class JAXRPCIAlgorithm:
         self.training_steps = int(state_dict.get("training_steps", 0))
 
     def load_actor_state_dict(self, state_dict: Dict[str, Any]):
-        self.actor_state = serialization.from_state_dict(self.actor_state, state_dict["actor_state"])
+        actor_state_dict = state_dict["actor_state"]
+        try:
+            self.actor_state = serialization.from_state_dict(self.actor_state, actor_state_dict)
+        except (ValueError, KeyError, TypeError):
+            params_state = actor_state_dict.get("params", actor_state_dict)
+            params = serialization.from_state_dict(self.actor_state.params, params_state)
+            updated_state = self.actor_state.replace(params=params)
+            if isinstance(actor_state_dict, dict) and "step" in actor_state_dict:
+                updated_state = updated_state.replace(step=jnp.asarray(actor_state_dict["step"]))
+            self.actor_state = updated_state
         self.training_steps = int(state_dict.get("training_steps", 0))

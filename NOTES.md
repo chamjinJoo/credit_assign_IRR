@@ -415,3 +415,6 @@ baseline: tensor([0.1636, 0.1637, 0.1636, 0.1636, 0.1636, 0.1636])
 # 26.04.29 
 * Comeback to PPO update: commit 788339e 'udpate[26.04.27] JAX ppo udpate' and add $A^{-i}_{t-1}$ to $X^i_t$.
 * Rollback rnn-reset to: actor, ippo critic = agent-done, mappo critic = episode-done.
+
+# 26.05.03
+* there is an error in Torch algorithm/rpci.py: `causal_min_batch_size` was set to 50 by AlgorithmConfig in `config.py`

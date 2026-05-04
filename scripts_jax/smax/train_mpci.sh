@@ -13,12 +13,16 @@ clip_delta=0.0
 model="jax-pci-mappo"
 
 # env settings
-map_name="2s3z"  # empty string keeps the YAML value; set to override the SMAX map
+map_name="3s5z"  # empty string keeps the YAML value; set to override the SMAX map
 # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
-allowed_target_windows=(3 4 5)
+allowed_target_windows=(6)
 
 # training settings
-seeds=(42 1 2)
+seeds=(2)
+lr_actor=0.002
+lr_critic=0.002
+wandb_run_name_postfix="lr2e-3_GD4"
+
 device="cuda"
 n_rollout_threads=8
 max_iterations=1600
@@ -26,8 +30,6 @@ max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
 log_interval=2
 run_in_background=false
 anneal_lr=true
-wandb_run_name_postfix="AdvNorm12_lr2e-3_lrb5e-4"
-#checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"
 
 # conda activation (optional)
 if command -v conda >/dev/null 2>&1; then
@@ -39,6 +41,7 @@ fi
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 # export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
+checkpoint="save_checkpoints/20260501_203441_seed2/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_0.pkl"
 pids=()
 
 # main training loop over config variants and seeds
@@ -62,6 +65,8 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --model ${model} \
         --map-name "${map_name}" \
         --causal-lambda ${causal_lambda} \
+        --lr-actor ${lr_actor} \
+        --lr-critic ${lr_critic} \
         --allowed-target-window ${allowed_target_window} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-iterations ${max_iterations} \
@@ -79,8 +84,11 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         --env SMAX \
         --config ${config} \
         --model ${model} \
+        --checkpoint ${checkpoint} \
         --map-name "${map_name}" \
         --causal-lambda ${causal_lambda} \
+        --lr-actor ${lr_actor} \
+        --lr-critic ${lr_critic} \
         --allowed-target-window ${allowed_target_window} \
         --n-rollout-threads ${n_rollout_threads} \
         --max-iterations ${max_iterations} \

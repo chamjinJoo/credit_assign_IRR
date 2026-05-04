@@ -4,6 +4,11 @@ from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 
 
+def _filter_dataclass_kwargs(dataclass_type, values: Dict[str, Any]) -> Dict[str, Any]:
+    valid_keys = dataclass_type.__dataclass_fields__.keys()
+    return {k: v for k, v in values.items() if k in valid_keys}
+
+
 @dataclass
 class NetworkConfig:
     """Neural network configuration."""
@@ -46,7 +51,7 @@ class AlgorithmConfig:
     bridge_epoch: int = 4  # Number of epochs for bridge network training
     bridge_update_interval: int = 1  # Update bridge network every N QMIX updates
     num_batches: int = 4  # Number of batches K for training
-    causal_mini_batch_size: int = 50  # Chunk size for RKHS solver
+    causal_mini_batch_size: int = 10000  # Chunk size for RKHS solver
     tikhonov_gamma: float = 1e-4  # Tikhonov regularization for RKHS solver
     stabilizer_lambda: float = 1.0  # Gram matrix scaling in RKHS loss
     use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
@@ -351,17 +356,20 @@ class Config:
         config = cls()
         
         if 'network' in config_dict:
-            config.network = NetworkConfig(**config_dict['network'])
+            network_dict = _filter_dataclass_kwargs(NetworkConfig, dict(config_dict['network']))
+            config.network = NetworkConfig(**network_dict)
         
         if 'algorithm' in config_dict:
             algorithm_dict = dict(config_dict['algorithm'])
             legacy_use_recurrent = algorithm_dict.pop('use_recurrent_policy', None)
+            algorithm_dict = _filter_dataclass_kwargs(AlgorithmConfig, algorithm_dict)
             config.algorithm = AlgorithmConfig(**algorithm_dict)
             if legacy_use_recurrent is not None and 'network' not in config_dict:
                 config.network.use_recurrent_policy = legacy_use_recurrent
         
         if 'training' in config_dict:
-            config.training = TrainingConfig(**config_dict['training'])
+            training_dict = _filter_dataclass_kwargs(TrainingConfig, dict(config_dict['training']))
+            config.training = TrainingConfig(**training_dict)
         
         # 'env' 또는 'environment' 키 지원
         env_config = config_dict.get('environment', config_dict.get('env', {}))
@@ -409,7 +417,8 @@ class Config:
             config.environment = env_conf_obj
         
         if 'wandb' in config_dict:
-            config.wandb = WandbConfig(**config_dict['wandb'])
+            wandb_dict = _filter_dataclass_kwargs(WandbConfig, dict(config_dict['wandb']))
+            config.wandb = WandbConfig(**wandb_dict)
         
         return config
     
@@ -647,6 +656,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.causal_lambda_adaptive_per_agent = use_adaptive
     if hasattr(args, 'anneal_lr') and args.anneal_lr is not None:
         config.algorithm.anneal_lr = args.anneal_lr.lower() in ('true', '1', 'yes', 'on')
+    if hasattr(args, 'add_agent_id') and args.add_agent_id is not None:
+        config.algorithm.add_agent_id = args.add_agent_id
     if hasattr(args, 'lr_actor') and args.lr_actor:
         config.network.lr_actor = args.lr_actor
     if hasattr(args, 'lr_bridge') and args.lr_bridge:

@@ -7,9 +7,9 @@ config="configs/stag_hunt.yaml"
 # model setting
 model="r-pci" 
 use_recurrent_policy=true
-use_centralized_critic=false
+use_centralized_critic=true # false: i-pci / true m-pci
 use_value_parameter_sharing=true
-train_naivepredictor=false
+train_naivepredictor=true
 recurrent_N=1
 
 causal_lambda=1.0
@@ -22,7 +22,7 @@ episodes_per_iteration=0 # if it is positive, use EpiosdeBuffer automatically
 n_rollout_threads=4
 log_interval=2
 device="cpu"
-seeds=(42)
+seeds=(31)
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
@@ -49,7 +49,7 @@ for seed in ${seeds[@]}; do
         --log-interval ${log_interval} --device ${device} --seed ${seed} \
         --use-wandb \
         --wandb-project pci-marl-staghunt \
-        # & # deactivate for sequential training
+        & # deactivate for sequential training
     echo "[seed=${seed}] PID: $!"
 done
 

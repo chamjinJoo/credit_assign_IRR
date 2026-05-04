@@ -25,7 +25,7 @@ PROJECT_FILTER = "pci-marl-smax-jax-v3"
 
 MAP_ORDER = ["3m", "2s3z", "3s5z", "smacv2_5_units", "smacv2_10_units", "6h_vs_8z"]
 CONSTRAINT_ORDER = ["vanilla", "tar_w=2", "tar_w=3", "tar_w=4", "tar_w=5", "tar_w=6", "tar_w=8", "cb"]
-MODEL_ORDER = ["pci-ippo", "ippo", "pci-mappo", "mappo"]
+MODEL_ORDER = [ "ippo", "pci-ippo", "mappo", "pci-mappo"]
 
 MODEL_PRETTY_NAMES = {
     "jax_pci_mappo": "pci-mappo",
@@ -2096,6 +2096,195 @@ def format_cross_map_latex(
         "\\end{tabular}%\n"
         "}\n"
         "\\end{table*}"
+    )
+
+
+def _target_window_value(constraint_key: str) -> int:
+    match = re.fullmatch(r"tar_w=(\d+)", str(constraint_key))
+    if match is None:
+        raise ValueError(f"Expected tar_w constraint, got {constraint_key!r}")
+    return int(match.group(1))
+
+
+def _target_constraint_group_map(constraint_keys: Iterable[str]) -> Dict[str, str]:
+    ordered_keys = _ordered_constraint_keys(constraint_keys)
+    target_keys = [key for key in ordered_keys if key != "vanilla"]
+    group_map = {}
+    if "vanilla" in ordered_keys:
+        group_map["vanilla"] = "Vanilla"
+    if not target_keys:
+        return group_map
+    if len(target_keys) == 1:
+        group_map[target_keys[0]] = "Hard"
+        return group_map
+    if len(target_keys) == 2:
+        target_keys = sorted(target_keys, key=_target_window_value)
+        group_map[target_keys[0]] = "Hard"
+        group_map[target_keys[1]] = "Medium"
+        return group_map
+    raise ValueError(f"Expected at most two target constraints per map, got {target_keys}")
+
+
+def summarize_target_constraint_groups(
+    model_summary: pd.DataFrame,
+    *,
+    map_order: Optional[list[str]] = None,
+    model_order: Optional[list[str]] = None,
+) -> pd.DataFrame:
+    if model_summary.empty:
+        return pd.DataFrame(
+            columns=[
+                "summary_constraint",
+                "model_label",
+                "mean_success_rate",
+                "n_map_constraints",
+            ]
+        )
+    if map_order is None:
+        map_order = ordered_map_names(model_summary["map_name"].dropna().unique().tolist())
+    if model_order is None:
+        model_order = ordered_model_labels(model_summary["model_label"].dropna().unique().tolist())
+
+    grouped_rows = []
+    for map_name in map_order:
+        map_rows = model_summary.loc[model_summary["map_name"] == map_name].copy()
+        if map_rows.empty:
+            continue
+        group_map = _target_constraint_group_map(map_rows["constraint_key"].dropna().unique().tolist())
+        map_rows["summary_constraint"] = map_rows["constraint_key"].map(group_map)
+        missing = map_rows["summary_constraint"].isna()
+        if missing.any():
+            missing_keys = map_rows.loc[missing, "constraint_key"].dropna().unique().tolist()
+            raise ValueError(f"Missing target-constraint group assignment for {map_name}: {missing_keys}")
+        grouped_rows.append(map_rows)
+
+    if not grouped_rows:
+        return pd.DataFrame(
+            columns=[
+                "summary_constraint",
+                "model_label",
+                "mean_success_rate",
+                "n_map_constraints",
+            ]
+        )
+
+    grouped_df = pd.concat(grouped_rows, ignore_index=True)
+    summary = (
+        grouped_df.groupby(["summary_constraint", "model_label"], as_index=False)
+        .agg(
+            mean_success_rate=("mean_success_rate", "mean"),
+            n_map_constraints=("map_name", "size"),
+        )
+    )
+    overall = (
+        grouped_df.groupby("model_label", as_index=False)
+        .agg(
+            mean_success_rate=("mean_success_rate", "mean"),
+            n_map_constraints=("map_name", "size"),
+        )
+        .assign(summary_constraint="Overall")
+    )
+    summary = pd.concat([summary, overall], ignore_index=True)
+
+    constraint_rank = {
+        name: idx for idx, name in enumerate(["Vanilla", "Medium", "Hard", "Overall"])
+    }
+    model_rank = {name: idx for idx, name in enumerate(model_order)}
+    summary["_constraint_rank"] = summary["summary_constraint"].map(constraint_rank)
+    summary["_model_rank"] = summary["model_label"].map(model_rank)
+    return (
+        summary.sort_values(["_constraint_rank", "_model_rank"])
+        .drop(columns=["_constraint_rank", "_model_rank"])
+        .reset_index(drop=True)
+    )
+
+
+def format_target_constraint_summary_latex(
+    model_summary: pd.DataFrame,
+    *,
+    map_order: Optional[list[str]] = None,
+    model_order: Optional[list[str]] = None,
+    caption: str | None = None,
+    label: str = "tab:smax_summary",
+) -> str:
+    if model_order is None:
+        model_order = ordered_model_labels(model_summary["model_label"].dropna().unique().tolist())
+    summary = summarize_target_constraint_groups(
+        model_summary,
+        map_order=map_order,
+        model_order=model_order,
+    )
+    summary_lookup = {
+        (row["summary_constraint"], row["model_label"]): row
+        for _, row in summary.iterrows()
+    }
+
+    def mean_percent(constraint: str, model: str) -> float | None:
+        row = summary_lookup.get((constraint, model))
+        if row is None:
+            return None
+        return float(row["mean_success_rate"]) * 100.0
+
+    def fmt_base(constraint: str, model: str) -> str:
+        value = mean_percent(constraint, model)
+        if value is None:
+            return "--"
+        return f"{value:.1f}"
+
+    def fmt_pci(constraint: str, base_model: str, pci_model: str) -> str:
+        base_value = mean_percent(constraint, base_model)
+        pci_value = mean_percent(constraint, pci_model)
+        if pci_value is None:
+            return "--"
+        if base_value is None:
+            return f"{pci_value:.1f}"
+        improvement = pci_value - base_value
+        return f"{pci_value:.1f} {{\\scriptsize$({improvement:+.1f})$}}"
+
+    if caption is None:
+        caption = (
+            "Average test win rates (\\%) on SMAX, grouped by target constraint. "
+            "Results are averaged over six maps: \\texttt{3m}, \\texttt{2s3z}, \\texttt{3s5z}, "
+            "\\texttt{6h\\_vs\\_8z}, \\texttt{smacv2\\_5\\_units}, and \\texttt{smacv2\\_10\\_units}. "
+            "Values in parentheses indicate absolute improvement over the baseline. "
+            "Refer to Appendix \\ref{app:exp_details} for full results."
+        )
+
+    rows = []
+    for constraint in ["Vanilla", "Medium", "Hard", "Overall"]:
+        if constraint != "Overall":
+            rows.append(
+                f"{constraint} \n"
+                f"& {fmt_base(constraint, 'ippo')} \n"
+                f"& {fmt_pci(constraint, 'ippo', 'pci-ippo')} \n"
+                f"& {fmt_base(constraint, 'mappo')} \n"
+                f"& {fmt_pci(constraint, 'mappo', 'pci-mappo')} \\\\"
+            )
+            rows.append("")
+            continue
+        rows.append("\\midrule")
+        rows.append(
+            f"{constraint} \n"
+            f"& {fmt_base(constraint, 'ippo')} \n"
+            f"& {fmt_pci(constraint, 'ippo', 'pci-ippo')} \n"
+            f"& {fmt_base(constraint, 'mappo')} \n"
+            f"& {fmt_pci(constraint, 'mappo', 'pci-mappo')} \\\\"
+        )
+
+    body = "\n".join(rows)
+    return (
+        "\\begin{table}[htbp]\n"
+        "\\centering\n"
+        f"\\caption{{{caption}}}\n"
+        f"\\label{{{label}}}\n"
+        "\\begin{tabular}{c c c c c}\n"
+        "\\toprule\n"
+        "Constraint & IPPO & PCI-IPPO* & MAPPO & PCI-MAPPO* \\\\\n"
+        "\\midrule\n"
+        f"{body}\n"
+        "\\bottomrule\n"
+        "\\end{tabular}\n"
+        "\\end{table}"
     )
 
 

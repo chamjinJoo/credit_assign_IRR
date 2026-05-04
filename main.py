@@ -179,6 +179,7 @@ def create_algorithm(env, config):
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
             global_reward=getattr(algorithm_config, 'global_reward', True),
             use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
+            add_agent_id=getattr(algorithm_config, 'add_agent_id', False),
         )
     elif algorithm_type in ['q_pci', 'qpci']:
         algorithm = qPCIAlgorithm(

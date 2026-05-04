@@ -23,7 +23,6 @@ from algorithms.common import (
 )
 from algorithms.networks.rnn import RNNValueNetwork
 from algorithms.networks import (
-    ActionBridgeNetwork,
     FeedForwardValueNetworkCompat,
     OutcomeBridgeNetwork,
     NaivePredictor,
@@ -122,19 +121,22 @@ class rPCIAlgorithm:
         use_recurrent_policy: bool = True,
         global_reward: bool = True,
         use_delta_critic: bool = True,
+        add_agent_id: bool = False,
     ):
         self.env = env
         self.num_agents = num_agents
         self.obs_dim = obs_dim
+        self.base_obs_dim = obs_dim - num_agents if add_agent_id else obs_dim
+        if self.base_obs_dim <= 0:
+            raise ValueError(
+                f"Invalid observation dimensions for add_agent_id={add_agent_id}: "
+                f"obs_dim={obs_dim}, num_agents={num_agents}"
+            )
+        self.policy_obs_dim = obs_dim
         self.action_dim = action_dim
         self.global_reward = global_reward
-        # W dimension: complementary observations from other agents
-        # obs_dim may include agent_id if config.algorithm.add_agent_id=True
-        # We need the base observation dimension (without agent_id) for W
-        # Since we don't know if agent_id is included, we assume obs_dim is the actual dimension
-        # and let main.py handle the adjustment by passing base_obs_dim separately if needed
-        # For now, use obs_dim as-is for W calculation
-        self.w_dim = obs_dim * (num_agents - 1)
+        self.add_agent_id = add_agent_id
+        self.w_dim = self.policy_obs_dim * (num_agents - 1)
         self.hidden_dim = hidden_dim
         self.recurrent_N = recurrent_N
         self.rnn_chunk_length = rnn_chunk_length
@@ -184,7 +186,7 @@ class rPCIAlgorithm:
         for i in range(num_agents):
             self.agents[i] = rPCIAgent(
                 agent_id=i,
-                obs_dim=obs_dim,
+                obs_dim=self.policy_obs_dim,
                 action_dim=action_dim,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
@@ -198,7 +200,7 @@ class rPCIAlgorithm:
             # MAPPO-style centralized critic
             self.value_net = (
                 RNNValueNetwork(
-                    obs_dim=obs_dim * num_agents,
+                    obs_dim=self.policy_obs_dim * num_agents,
                     hidden_dim=hidden_dim,
                     recurrent_N=recurrent_N,
                     out_dim=1 if global_reward else num_agents,
@@ -207,7 +209,7 @@ class rPCIAlgorithm:
                 )
                 if use_recurrent_policy
                 else FeedForwardValueNetworkCompat(
-                    obs_dim=obs_dim * num_agents,
+                    obs_dim=self.policy_obs_dim * num_agents,
                     hidden_dim=hidden_dim,
                     recurrent_N=recurrent_N,
                     out_dim=1 if global_reward else num_agents,
@@ -218,16 +220,16 @@ class rPCIAlgorithm:
             self.value_nets = {agent_id: self.value_net for agent_id in range(num_agents)}
             self.value_optimizers = {agent_id: self.value_optimizer for agent_id in range(num_agents)}
             critic_out_dim = 1 if global_reward else num_agents
-            print(f'[R-PCI] Using MAPPO-style centralized critic (input_dim={obs_dim * num_agents}, out_dim={critic_out_dim})')
+            print(f'[R-PCI] Using MAPPO-style centralized critic (input_dim={self.policy_obs_dim * num_agents}, out_dim={critic_out_dim})')
 
         elif self.use_value_parameter_sharing:
             # one shared value network (IPPO-style)
             self.shared_value_net = (
-                RNNValueNetwork(obs_dim=obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, 
+                RNNValueNetwork(obs_dim=self.policy_obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, 
                                 out_dim=1, action_dim=action_dim, num_agents=1)
                 if use_recurrent_policy
                 else FeedForwardValueNetworkCompat(
-                    obs_dim=obs_dim,
+                    obs_dim=self.policy_obs_dim,
                     hidden_dim=hidden_dim,
                     recurrent_N=recurrent_N,
                     out_dim=1,
@@ -254,7 +256,7 @@ class rPCIAlgorithm:
         self.rnn_states_delta_value = None
         self.rnn_states_delta_value_batch = None
         if self.use_delta_critic:
-            delta_obs_dim = obs_dim * num_agents if self.use_centralized_critic else obs_dim
+            delta_obs_dim = self.policy_obs_dim * num_agents if self.use_centralized_critic else self.policy_obs_dim
             delta_num_agents = num_agents if self.use_centralized_critic else 1
             delta_out_dim = num_agents if self.use_centralized_critic else 1
             self.delta_value_net = RNNValueNetwork(
@@ -275,29 +277,22 @@ class rPCIAlgorithm:
         #   W^i_t = other agents' current observations
         #   Z^i_t = agent i's previous hidden state h^i_{t-1}
         #   X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
-        x_dim = obs_dim + self.bridge_context_dim
+        x_dim = self.policy_obs_dim + self.bridge_context_dim
         
 
         self.outcome_bridge_net = OutcomeBridgeNetwork( 
             action_dim=action_dim,
             num_agents=num_agents,
-            w_dim=obs_dim * (num_agents-1), # W^i_t = others' observations
+            w_dim=self.policy_obs_dim * (num_agents-1), # W^i_t = others' observations
             outcome_dim=1 if global_reward else num_agents,
             hidden_dim=hidden_dim, # 128 for SMAC -> 64 is enough?
             action_embedding_dim=8,
             x_dim=x_dim
         )
         
-        self.action_bridge_net = ActionBridgeNetwork(
-            z_dim=hidden_dim * recurrent_N if use_recurrent_policy else 0, # Z^i_t = h^i_{t-1}
-            action_dim=action_dim,
-            num_agents=num_agents,
-            hidden_dim=hidden_dim,
-            action_embedding_dim=8
-        )
         # --- Feautre probjector for RBFKernel, NOTE: use with standardization and EMAGamma. ----- #
         self.feature_projector = nn.Sequential(
-            nn.Linear(obs_dim + action_dim + x_dim, hidden_dim),
+            nn.Linear(self.policy_obs_dim + action_dim + x_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, hidden_dim)
         )
@@ -318,7 +313,8 @@ class rPCIAlgorithm:
         self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)    # kept for checkpoint compatibility
         self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for Z^i_t
         self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for A^i_t one-hot
-        # self.kernel_x_block = RBFKernel(gamma=1.0).to(self.device)   # legacy unsplit X block
+        
+        # kernel X is splited again. 
         self.kernel_xobs_block = RBFKernel(gamma=1.0).to(self.device)  # reserved for an observation sub-block inside X
         self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # kernel for hidden-state block in X^i_t
         self.kernel_xact_block = RBFKernel(gamma=1.0).to(self.device)  # reserved for action sub-block inside X
@@ -435,7 +431,9 @@ class rPCIAlgorithm:
 
         A_super = action_batch.view(-1)
         expanded_obs = obs_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)
-        mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.obs_dim)
+        mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+            batch_size, -1, -1, self.policy_obs_dim
+        )
         obs_others_super = expanded_obs[mask].view(batch_size * num_agents, -1)
 
         A_onehot = F.one_hot(action_batch, self.action_dim).float()
@@ -457,7 +455,7 @@ class rPCIAlgorithm:
                 h_list.append(torch.zeros(batch_size, self.recurrent_N * self.hidden_dim, device=device))
         H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
 
-        obs_super = obs_batch.view(-1, self.obs_dim)
+        obs_super = obs_batch.view(-1, self.policy_obs_dim)
         # 2. Construct X_super = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
         if self.use_recurrent_policy:
             H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
@@ -511,7 +509,7 @@ class rPCIAlgorithm:
             policy_log_probs = torch.stack(log_probs_list, dim=1).view(-1)
             policy_probs_super = torch.exp(policy_log_probs) 
             
-        obs_super = obs_batch.view(-1, self.obs_dim)
+        obs_super = obs_batch.view(-1, self.policy_obs_dim)
 
         # Track agent IDs before alive filtering so they survive boolean indexing.
         agent_ids_super = torch.arange(num_agents, device=device).unsqueeze(0).expand(batch_size, -1).reshape(-1).clone()
@@ -553,11 +551,10 @@ class rPCIAlgorithm:
             current_batch_size = idx.size(0)
             
             a_mb = A_super[idx]; w_mb = W_super[idx]; y_mb = Y_super[idx]; z_mb = Z_super[idx]; x_mb = X_super[idx]; o_mb = obs_super[idx]
-            pi_mb = policy_probs_super[idx]
             batch_agent_ids = agent_ids_super[idx]
 
             eps = 1e-6
-            joint_obs_dim = self.obs_dim * self.num_agents
+            joint_obs_dim = self.policy_obs_dim * self.num_agents
 
             # --- Sort mini-batch by agent ID for contiguous per-agent blocks ---
             # This avoids building a full B×B kernel then masking out cross-agent pairs.
@@ -572,12 +569,14 @@ class rPCIAlgorithm:
             z_s  = z_mb[sort_idx_mb]
             x_s  = x_mb[sort_idx_mb]
 
-            x_obs_raw_s = x_s[:, :self.obs_dim]
-            x_hid_raw_s = x_s[:, self.obs_dim:self.obs_dim + self.bridge_hidden_dim]
-            x_act_raw_s = x_s[:, self.obs_dim + self.bridge_hidden_dim:]
+            x_obs_cont_s = x_s[:, :self.base_obs_dim]
+            x_obs_id_s = x_s[:, self.base_obs_dim:self.policy_obs_dim]
+            x_hid_raw_s = x_s[:, self.policy_obs_dim:self.policy_obs_dim + self.bridge_hidden_dim]
+            x_act_raw_s = x_s[:, self.policy_obs_dim + self.bridge_hidden_dim:]
 
             z_splits    = z_s.split(agent_sizes)
-            xobs_splits = x_obs_raw_s.split(agent_sizes)
+            xobs_cont_splits = x_obs_cont_s.split(agent_sizes)
+            xobs_id_splits = x_obs_id_s.split(agent_sizes)
             xhid_splits = x_hid_raw_s.split(agent_sizes)
             xact_splits = x_act_raw_s.split(agent_sizes)
             a_splits    = a_s.split(agent_sizes)
@@ -590,9 +589,9 @@ class rPCIAlgorithm:
                     torch.log(torch.tensor(1.0 / max(z_s.shape[1], 1))))
                 self.kernel_a_block.log_gamma.data.fill_(
                     torch.log(torch.tensor(1.0)))
-                if x_obs_raw_s.size(1) > 0:
+                if self.policy_obs_dim > 0:
                     self.kernel_xobs_block.log_gamma.data.fill_(
-                        torch.log(torch.tensor(1.0 / x_obs_raw_s.shape[1])))
+                        torch.log(torch.tensor(1.0 / self.policy_obs_dim)))
                 if x_act_raw_s.size(1) > 0:
                     self.kernel_xact_block.log_gamma.data.fill_(
                         torch.log(torch.tensor(1.0)))
@@ -621,8 +620,15 @@ class rPCIAlgorithm:
                 else:
                     z_norm_i = (z_i - z_i.mean(0, keepdim=True)) / z_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
 
-                xobs_i = xobs_splits[ag_i]
-                xobs_norm_i = (xobs_i - xobs_i.mean(0, keepdim=True)) / xobs_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                xobs_cont_i = xobs_cont_splits[ag_i]
+                if xobs_cont_i.size(1) > 0:
+                    xobs_cont_norm_i = (
+                        xobs_cont_i - xobs_cont_i.mean(0, keepdim=True)
+                    ) / xobs_cont_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                else:
+                    xobs_cont_norm_i = xobs_cont_i
+                xobs_id_i = xobs_id_splits[ag_i]
+                xobs_norm_i = torch.cat([xobs_cont_norm_i, xobs_id_i], dim=1)
 
                 xhid_i = xhid_splits[ag_i]
                 if xhid_i.size(1) > 0:
@@ -669,6 +675,47 @@ class rPCIAlgorithm:
                 all_off = torch.cat(off_vals_list)
                 sum_off_mean += all_off.mean().item()
                 sum_off_std  += all_off.std(unbiased=False).item()
+
+            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # legacy single-kernel path with standardization
+            # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # legacy single-kernel path without standardization
+
+            # Legacy optional feature projection before applying a single kernel.
+            # with torch.no_grad():
+            #    kernel_feat_z = self.feature_projector(kernel_feat_z)
+
+            # Legacy median-heuristic gamma update for the single-kernel path.
+            # with torch.no_grad():
+            #     Xg = kernel_feat_z
+            #     max_for_gamma = getattr(self, "max_points_for_kernel_gamma", 256)
+            #     if Xg.size(0) > max_for_gamma:
+            #         idx = torch.randperm(Xg.size(0), device=Xg.device)[:max_for_gamma]
+            #         Xg = Xg[idx]
+            #     if Xg.size(0) >= 2:
+            #         d2 = torch.pdist(Xg, p=2).pow(2)
+            #         med = d2.median().clamp_min(1e-8)
+            #         new_gamma = 1.0 / (2.0 * med)
+            #         new_log_gamma = torch.log(new_gamma)
+            #         ema = getattr(self, "kernel_gamma_ema", 0.95)
+            #         self.critic_kernel_z.log_gamma.data = ema * self.critic_kernel_z.log_gamma.data + (1.0 - ema) * new_log_gamma
+
+            # Legacy single-kernel Gram matrix.
+            # K_z = self.critic_kernel_z(kernel_feat_z)
+
+            # ------------------------------------------------------------------- #
+            # Legacy product-kernel path with a single unsplit X block.           #
+            # ------------------------------------------------------------------- #
+            # with torch.no_grad():
+            #     for feat, kernel in [
+            #         (z_mb_norm,        self.kernel_z_block),
+            #         (action_onehot_mb, self.kernel_a_block),
+            #         (x_mb_norm,        self.kernel_x_block),
+            #     ]:
+            #         n = feat.shape[1]
+            #         var = feat.var(dim=0).mean().clamp_min(1e-8)
+            #         kernel.log_gamma.data.fill_(torch.log(1.0 / (n * var)))
+            # K_z = (self.kernel_z_block(z_mb_norm)
+            #        * self.kernel_a_block(action_onehot_mb)
+            #        * self.kernel_x_block(x_mb_norm))
 
             # --- Update Outcome Bridge h_φ for bridge_epoch times ---
             # Forward pass runs on the full sorted batch; per-agent solve on B_i×B_i blocks.
@@ -1160,7 +1207,6 @@ class rPCIAlgorithm:
                 actions_range = torch.arange(action_dim, device=self.device).repeat(curr_bs * num_agents)
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
-                prev_actions_others_inf = None
                 if prev_actions_batch is not None:
                     prev_actions_onehot_b = F.one_hot(prev_actions_batch[i:end].long(), self.action_dim).float()
                     expanded_prev_actions = prev_actions_onehot_b.unsqueeze(1).expand(-1, num_agents, -1, -1)
@@ -1189,11 +1235,11 @@ class rPCIAlgorithm:
                         curr_bs, -1, -1, self.recurrent_N * self.hidden_dim
                     )
                     H_prev_others_inf = H_prev_all_inf_expanded[hid_mask].view(curr_bs * num_agents, -1)
-                    obs_flat = obs_b.reshape(curr_bs * num_agents, self.obs_dim)
+                    obs_flat = obs_b.reshape(curr_bs * num_agents, self.policy_obs_dim)
                     x_flat = torch.cat([obs_flat, H_prev_others_inf, prev_actions_others_inf], dim=1)
                 else:
                     x_flat = torch.cat(
-                        [obs_b.reshape(curr_bs * num_agents, self.obs_dim), prev_actions_others_inf],
+                        [obs_b.reshape(curr_bs * num_agents, self.policy_obs_dim), prev_actions_others_inf],
                         dim=1,
                     )
 

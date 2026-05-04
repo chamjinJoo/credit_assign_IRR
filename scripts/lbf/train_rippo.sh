@@ -1,18 +1,31 @@
 #!/bin/bash
+
+#env setting
 env="LBForaging"
+config="configs/lbforaging.yaml"
+
+# model setting
 model="r-ippo" # [pci-mappo, mappo, ippo]
-numagents=3
-seed=42
-max_iterations=1500
-max_steps_per_iteration=2000
+use_value_parameter_sharing=true
+recurrent_N=1
+
+# training and logging
+n_rollout_threads=4
 log_interval=2
 device="cpu"
-config="configs/lbforaging.yaml"
+seed=42
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
 conda activate pcimarl
 
-python main.py --env ${env} --num-agents ${numagents} --config ${config} --model ${model} \
-    --max-steps ${max_steps_per_iteration} --max-iterations ${max_iterations} \
-    --log-interval ${log_interval} --use-wandb --device ${device} --seed ${seed}
+python main.py --env ${env} --config ${config} \
+    --model ${model} \
+    --use-value-parameter-sharing ${use_value_parameter_sharing} \
+    --recurrent-N ${recurrent_N} \
+    --n-rollout-threads ${n_rollout_threads} \
+    --log-interval ${log_interval} \
+    --device ${device} \
+    --seed ${seed} \
+    --use-wandb \
+    --wandb-project pci-marl-lbf
