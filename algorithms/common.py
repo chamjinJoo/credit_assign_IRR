@@ -114,15 +114,22 @@ def classify_staghunt_delta_scenario(
 ) -> str:
     info = transition.get('info', {})
     stag_hunts = info.get('stag_hunts', {})
+    hare_hunts = info.get('hare_hunts')
+    hare_hunts_available = isinstance(hare_hunts, (list, tuple, set))
+    hare_hunt_ids = {int(hunter_id) for hunter_id in hare_hunts} if hare_hunts_available else set()
     other_stag = False
     other_forage = False
 
     for other_id in range(num_agents):
-        if other_id != agent_id:
-            if transition['bold_r_t'][other_id] == 5.0:
-                other_stag = True
-            elif transition['bold_r_t'][other_id] == 3.0:
+        if other_id == agent_id:
+            continue
+        if transition['bold_r_t'][other_id] == 5.0:
+            other_stag = True
+        if hare_hunts_available:
+            if other_id in hare_hunt_ids:
                 other_forage = True
+        elif transition['bold_r_t'][other_id] == 3.0:
+            other_forage = True
 
     if other_stag and env_required_agents is not None:
         for stag_id, participants in stag_hunts.items():

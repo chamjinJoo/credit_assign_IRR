@@ -5,8 +5,6 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from algorithms.networks import (
-    FeedForwardPolicyNetworkCompat,
-    FeedForwardValueNetworkCompat,
     RNNPolicyNetwork,
     RNNValueNetwork,
 )
@@ -32,11 +30,7 @@ class RecurrentPolicyAgent:
         self.device = device
         self.use_recurrent_policy = use_recurrent_policy
 
-        self.policy_net = (
-            RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
-            if use_recurrent_policy
-            else FeedForwardPolicyNetworkCompat(obs_dim, action_dim, hidden_dim)
-        )
+        self.policy_net = RNNPolicyNetwork(obs_dim, action_dim, hidden_dim, recurrent_N)
         if device is not None:
             self.policy_net.to(device)
 
@@ -171,13 +165,6 @@ class RecurrentActorCriticAgent(RecurrentPolicyAgent):
                 recurrent_N,
                 action_dim=action_dim,
                 num_agents=1,
-            )
-            if use_recurrent_policy
-            else FeedForwardValueNetworkCompat(
-                obs_dim=obs_dim,
-                hidden_dim=hidden_dim,
-                recurrent_N=recurrent_N,
-                out_dim=1,
             )
         )
         if device is not None:

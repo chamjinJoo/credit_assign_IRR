@@ -1,16 +1,10 @@
 import torch
-import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-import numpy as np
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
-import random
 
-from algorithms.networks import (
-    FeedForwardValueNetworkCompat,
-    RNNValueNetwork,
-)
+from algorithms.networks import RNNValueNetwork
 from algorithms.agent_common import RecurrentPolicyAgent
 from algorithms.common import (
     build_agent_active_masks,
@@ -101,8 +95,7 @@ class rMAPPOAlgorithm:
             )
             
         # Central RNN Critic
-        self.value_net = (
-            RNNValueNetwork(
+        self.value_net = RNNValueNetwork(
                 obs_dim=obs_dim * num_agents,
                 hidden_dim=hidden_dim,
                 recurrent_N=recurrent_N,
@@ -110,14 +103,7 @@ class rMAPPOAlgorithm:
                 action_dim=action_dim,
                 num_agents=num_agents
             )
-            if use_recurrent_policy
-            else FeedForwardValueNetworkCompat(
-                obs_dim=obs_dim * num_agents,
-                hidden_dim=hidden_dim,
-                recurrent_N=recurrent_N,
-                out_dim=1,
-            )
-        )
+           
 
         self.value_net.to(self.device)
         self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)

@@ -22,11 +22,7 @@ from algorithms.common import (
     split_action_and_log_probs,
 )
 from algorithms.networks.rnn import RNNValueNetwork
-from algorithms.networks import (
-    FeedForwardValueNetworkCompat,
-    OutcomeBridgeNetwork,
-    NaivePredictor,
-)
+from algorithms.networks import OutcomeBridgeNetwork
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class RBFKernel(nn.Module):
@@ -59,22 +55,6 @@ class RBFKernel(nn.Module):
         dists_sq = torch.sum((x1 - x2)**2, dim=-1) 
         return torch.exp(-gamma * dists_sq)
 
-class ConditionalMeanNet(nn.Module):
-    def __init__(self, z_dim, x_dim, action_dim, emb_dim=8, hidden=64):
-        super().__init__()
-        self.action_dim = action_dim
-        self.net = nn.Sequential(
-            nn.Linear(z_dim + x_dim + action_dim, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, hidden),
-            nn.ReLU(),
-            nn.Linear(hidden, 1),
-        )
-    def forward(self, z, a, x):
-        ea = F.one_hot(a.long(), self.action_dim).float()  # (B, action_dim)
-        inp = torch.cat([z, x, ea], dim=-1)
-        return self.net(inp).squeeze(-1)  # (B,)
-
 class rPCIAgent(RecurrentActorCriticAgent):
     pass
 
@@ -90,13 +70,7 @@ class rPCIAlgorithm:
         lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
-        clip_delta: float = 0.2, # for delta clipping
         causal_lambda: float = 1.0,
-        causal_lambda_schedule: bool = False,
-        causal_lambda_start: float = 0.0,
-        causal_lambda_final: float = 0.2,
-        causal_lambda_warmup_steps: int = 10000,
-        causal_lambda_startingpoint: int = 0,
         bridge_epoch: int = 4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -112,7 +86,6 @@ class rPCIAlgorithm:
         env_required_agents: Optional[Dict[int, List[int]]] = None,
         # Optimization parameter
         causal_mini_batch_size: int = 10000,
-        train_naivepredictor: bool = False,
         # Value network parameter sharing
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
@@ -142,8 +115,7 @@ class rPCIAlgorithm:
         self.rnn_chunk_length = rnn_chunk_length
         self.env_required_agents = env_required_agents
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
-        self.causal_mini_batch_size = causal_mini_batch_size 
-        self.train_naivepredictor = train_naivepredictor
+        self.causal_mini_batch_size = causal_mini_batch_size
         self.use_value_parameter_sharing = use_value_parameter_sharing
         self.use_episode_buffer = use_episode_buffer
         self.use_centralized_critic = use_centralized_critic
@@ -154,13 +126,7 @@ class rPCIAlgorithm:
         self.bridge_context_dim = self.bridge_hidden_dim + self.bridge_prev_action_dim
 
         # for causal intrinsic reward
-        self.clip_delta = clip_delta
         self.causal_lambda = causal_lambda
-        self.causal_lambda_schedule = causal_lambda_schedule
-        self.causal_lambda_start = causal_lambda_start
-        self.causal_lambda_final = causal_lambda_final
-        self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
-        self.causal_lambda_startingpoint = causal_lambda_startingpoint
         self.bridge_epoch = bridge_epoch
 
         # training steps
@@ -195,11 +161,10 @@ class rPCIAlgorithm:
                 use_recurrent_policy=use_recurrent_policy,
             )
         
-        # Value network 설정
+        # Value network
         if self.use_centralized_critic:
             # MAPPO-style centralized critic
-            self.value_net = (
-                RNNValueNetwork(
+            self.value_net = RNNValueNetwork(
                     obs_dim=self.policy_obs_dim * num_agents,
                     hidden_dim=hidden_dim,
                     recurrent_N=recurrent_N,
@@ -207,14 +172,6 @@ class rPCIAlgorithm:
                     action_dim=action_dim,
                     num_agents=num_agents
                 )
-                if use_recurrent_policy
-                else FeedForwardValueNetworkCompat(
-                    obs_dim=self.policy_obs_dim * num_agents,
-                    hidden_dim=hidden_dim,
-                    recurrent_N=recurrent_N,
-                    out_dim=1 if global_reward else num_agents,
-                )
-            )
             self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
             self.rnn_state_value = None  # 초기화는 reset_agents에서
             self.value_nets = {agent_id: self.value_net for agent_id in range(num_agents)}
@@ -224,17 +181,15 @@ class rPCIAlgorithm:
 
         elif self.use_value_parameter_sharing:
             # one shared value network (IPPO-style)
-            self.shared_value_net = (
-                RNNValueNetwork(obs_dim=self.policy_obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, 
-                                out_dim=1, action_dim=action_dim, num_agents=1)
-                if use_recurrent_policy
-                else FeedForwardValueNetworkCompat(
-                    obs_dim=self.policy_obs_dim,
-                    hidden_dim=hidden_dim,
-                    recurrent_N=recurrent_N,
-                    out_dim=1,
+            self.shared_value_net = RNNValueNetwork(
+                obs_dim=self.policy_obs_dim, 
+                hidden_dim=hidden_dim, 
+                recurrent_N=recurrent_N, 
+                out_dim=1,
+                action_dim=action_dim, 
+                num_agents=1
                 )
-            )
+                
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
             # parameter sharing
@@ -273,7 +228,7 @@ class rPCIAlgorithm:
             else:
                 print(f'[R-PCI] Using shared per-agent delta critic (input_dim={delta_obs_dim}, out_dim={delta_out_dim})')
         
-        # Current proxy setting:
+        # Proxy setting:
         #   W^i_t = other agents' current observations
         #   Z^i_t = agent i's previous hidden state h^i_{t-1}
         #   X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
@@ -285,7 +240,7 @@ class rPCIAlgorithm:
             num_agents=num_agents,
             w_dim=self.policy_obs_dim * (num_agents-1), # W^i_t = others' observations
             outcome_dim=1 if global_reward else num_agents,
-            hidden_dim=hidden_dim, # 128 for SMAC -> 64 is enough?
+            hidden_dim=hidden_dim,
             action_embedding_dim=8,
             x_dim=x_dim
         )
@@ -302,8 +257,7 @@ class rPCIAlgorithm:
         # ---------------------------------------------------------------------------------------- #
 
         # --- Legacy single-kernel path (kept for compatibility / experimentation) ---
-        # self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
-        self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
+        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
 
         # --- Block-wise product kernel over active bridge covariates ---
         # Current kernel factorization is over:
@@ -323,18 +277,6 @@ class rPCIAlgorithm:
         self.tikhonov_gamma = 1e-4
 
         self.outcome_bridge_optimizer = optim.Adam(self.outcome_bridge_net.parameters(), lr=lr_bridge)
-        self.action_bridge_optimizer = optim.Adam(self.action_bridge_net.parameters(), lr=lr_critic)
-        
-        if self.train_naivepredictor:
-            self.naive_predictor = NaivePredictor(
-                action_dim=action_dim,
-                num_agents=num_agents,
-                w_dim=self.w_dim,
-                x_dim=x_dim,
-                output_dim=1 if global_reward else num_agents,
-                hidden_dim=hidden_dim
-            )
-            self.naive_optimizer = optim.Adam(self.naive_predictor.parameters(), lr=lr_bridge)
         
         # Keep track of done status for masks
         self.last_dones = {i: False for i in range(num_agents)}
@@ -355,13 +297,9 @@ class rPCIAlgorithm:
         move_modules_to_device(
             self.device,
             self.outcome_bridge_net,
-            self.action_bridge_net,
             self.critic_kernel_z,
-            self.critic_kernel_w,
             self.feature_projector,
         )
-        if getattr(self, "train_naivepredictor", False):
-            move_modules_to_device(self.device, self.naive_predictor)
         move_modules_to_device(
             self.device,
             self.kernel_z_block,
@@ -372,19 +310,10 @@ class rPCIAlgorithm:
         )
     
     def get_current_causal_lambda(self) -> float:
-        if not self.causal_lambda_schedule:
-            return self.causal_lambda
-        if self.training_steps < self.causal_lambda_startingpoint:
-            return self.causal_lambda_start
-        effective_steps = self.training_steps - self.causal_lambda_startingpoint
-        if effective_steps >= self.causal_lambda_warmup_steps:
-            return self.causal_lambda_final
-        else:
-            progress = effective_steps / self.causal_lambda_warmup_steps
-            return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
+        return self.causal_lambda
 
     def _global_reward_from_dict(self, rewards: Dict[int, float]) -> float:
-        return sum(rewards.values()) / self.num_agents
+        return sum(rewards.values())
 
     def _build_reward_batch_tensor(self, transitions: List[Dict]) -> torch.Tensor:
         if self.global_reward:
@@ -401,7 +330,7 @@ class rPCIAlgorithm:
     
     def update_causal_networks(self, batch_data: List[Dict]) -> Dict[str, float]:
         if self.get_current_causal_lambda() == 0.0:
-            return {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
+            return {'outcome_bridge_loss': 0.0}
         
         batch_size = len(batch_data)
         num_agents = self.num_agents
@@ -539,7 +468,6 @@ class rPCIAlgorithm:
 
         avg_outcome_loss = 0.0
         avg_action_loss = 0.0
-        avg_naive_loss = 0.0
 
         sum_off_mean = 0.0
         sum_off_std = 0.0
@@ -747,86 +675,23 @@ class rPCIAlgorithm:
                 total_loss = loss_h + loss_q
 
                 self.outcome_bridge_optimizer.zero_grad()
-                self.action_bridge_optimizer.zero_grad()
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.outcome_bridge_net.parameters(), self.max_grad_norm)
                 self.outcome_bridge_optimizer.step()
-                # self.action_bridge_optimizer.step()
 
                 epoch_outcome_loss += loss_h.item()
 
             avg_outcome_loss += epoch_outcome_loss / self.bridge_epoch
-            avg_action_loss += loss_q.item()
-            
-            # --- Update Naive Predictor ---
-            if getattr(self, "train_naivepredictor", False):
-                naive_output = self.naive_predictor(a_mb, w_mb, x_mb) # (B, N)
-                naive_loss = F.mse_loss(naive_output, y_mb)
-                self.naive_optimizer.zero_grad()
-                naive_loss.backward()
-                self.naive_optimizer.step()
-                avg_naive_loss += naive_loss.item()
-                
+            avg_action_loss += loss_q.item()                
             num_updates += 1
 
         return_dict = {
             'outcome_bridge_loss': avg_outcome_loss / num_updates,
-            'action_bridge_loss': avg_action_loss / num_updates,
             'Kz_offdiag_mean': sum_off_mean / num_updates, # close to 0: Kernel is close to Identity I, close to 1: Kenrel is close to 11^\top
             'Kz_offdiag_std': sum_off_std / num_updates,
         }
-        
-        if getattr(self, "train_naivepredictor", False):
-            return_dict['naive_loss'] = avg_naive_loss / num_updates
-
+ 
         return return_dict
-
-    # for q-bridge function training
-    def _compute_kw2_sum_minibatch(self, w_mb, kernel_feat_w, o_mb, batch_agent_ids, M):
-        batch_size = w_mb.size(0)
-        
-        w_expanded = w_mb.repeat_interleave(M, dim=0)
-        
-        sampled_action_onehots = torch.zeros(
-            batch_size * M, 
-            self.action_dim, 
-            device=self.device
-        )
-        
-        with torch.no_grad():
-            unique_agents = torch.unique(batch_agent_ids)
-            for ag_id in unique_agents:
-                mask = (batch_agent_ids == ag_id)
-                if not mask.any(): continue
-                
-                obs_ag = o_mb[mask] # (B_subset, D)
-                curr_subset_size = obs_ag.size(0)
-                
-                obs_exp = obs_ag.repeat_interleave(M, dim=0) # (B_subset * M, D)
-                
-                # Zero state for sampling
-                dummy_state = torch.zeros(curr_subset_size * M, self.recurrent_N, self.hidden_dim, device=self.device)
-                dummy_mask = torch.ones(curr_subset_size * M, 1, device=self.device)
-                
-                # RNN Policy Forward for sampling
-                logits, _ = self.agents[ag_id.item()].policy_net(obs_exp, dummy_state, dummy_mask)
-                
-                dist = torch.distributions.Categorical(logits=logits)
-                actions_sampled = dist.sample()
-                onehots = F.one_hot(actions_sampled, self.action_dim).float()
-                
-                mask_expanded = mask.unsqueeze(1).expand(-1, M).reshape(-1)
-                sampled_action_onehots[mask_expanded] = onehots
-
-        features_w_sampled = torch.cat([w_expanded, sampled_action_onehots], dim=1)
-        
-        # kernel_feat_w is passed from caller!
-        K_w2_raw = self.critic_kernel_w.forward_asymmetric(kernel_feat_w, features_w_sampled)
-        
-        K_w2_mean = K_w2_raw.view(batch_size, batch_size, M).mean(dim=2)
-        K_w2_sum = K_w2_mean.sum(dim=1).unsqueeze(1)
-        
-        return K_w2_sum
 
     def reset_agents(self):
         """Reset agent hidden states."""
@@ -1421,8 +1286,6 @@ class rPCIAlgorithm:
         agent_pci_advantages = {}  # [Direction 2] pci-only advantages
         agent_delta_returns = {}
 
-        causal_lambda = self.get_current_causal_lambda()  # [Direction 2]
-
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
 
@@ -1470,14 +1333,13 @@ class rPCIAlgorithm:
                 agent_id=agent_id,
                 agent_obs=agent_obs,
                 my_actions=my_actions,
-                agent_advantage=agent_advantages[agent_id], # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
+                agent_advantage=agent_advantages[agent_id],
                 agent_return=agent_returns[agent_id],
                 agent_delta_return=agent_delta_returns.get(agent_id) if self.use_delta_critic else None,
                 masks_batch=masks_batch,
                 init_hidden_states=init_hidden_states,
                 available_actions_all=avail_actions_all,
             )
-            num_chunks = prepared['num_chunks']
             rnn_obs_batch = prepared['rnn_obs_batch']
             rnn_masks_batch = prepared['rnn_masks_batch']
             p_h0_batch = prepared['p_h0_batch']
@@ -1488,19 +1350,10 @@ class rPCIAlgorithm:
             delta_ret_batch = prepared.get('delta_ret_batch')
             active_masks_batch = prepared['active_masks_batch']
             prev_actions_batch = prepared['prev_actions_batch']
-            prev_actions_batch_merged = prepared['prev_actions_batch_merged']
             avail_actions_batch_merged = prepared['avail_actions_batch_merged']
             old_log_probs = prepared['old_log_probs']
             delta_v_h0_batch = prepared.get('delta_v_h0_batch')
 
-            # [Direction 2] Prepare PCI advantage batch with the same chunking as adv_batch
-            pci_adv_normalized = normalize_advantages(agent_pci_advantages[agent_id])
-            if num_chunks > 0:
-                pci_adv_batch = chunk_sequence(
-                    pci_adv_normalized[:num_chunks * self.rnn_chunk_length], self.rnn_chunk_length
-                ).reshape(-1)
-            else:
-                pci_adv_batch = pci_adv_normalized
 
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
@@ -1509,14 +1362,6 @@ class rPCIAlgorithm:
                 )
                 ratio = torch.exp(new_log_probs - old_log_probs)
 
-                # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
-                # surr1_env = ratio * adv_batch
-                # surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                # surr1_pci = ratio * pci_adv_batch
-                # surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
-                # policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
-                # policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
-                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
                 surr1 = ratio * adv_batch
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
                 policy_loss = -torch.min(surr1, surr2)
@@ -1713,8 +1558,6 @@ class rPCIAlgorithm:
                 )
             
                 delta = C_matrix.sum(dim=2)
-                # delta = torch.clamp(delta, min=0.0) # same as ReLU
-                delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
                 # Store delta for later advantage-level PCI construction
                 for t_idx, t in enumerate(traj):
@@ -2063,7 +1906,7 @@ class rPCIAlgorithm:
             if current_causal_lambda != 0.0:
                 causal_losses = self.update_causal_networks(batch_data)
             else:
-                causal_losses = {'outcome_bridge_loss': 0.0, 'action_bridge_loss': 0.0}
+                causal_losses = {'outcome_bridge_loss': 0.0}
             
             agent_and_value_losses = self.update_agents(batch_data)
 

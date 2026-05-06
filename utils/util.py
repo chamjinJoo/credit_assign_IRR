@@ -26,3 +26,23 @@ def get_grad_norm(parameters: Union[torch.nn.Module, Iterable[torch.Tensor]]) ->
             
     total_norm = total_norm ** 0.5
     return total_norm, num_params
+
+def is_value_network_shared(algorithm) -> bool:
+    """
+    Check if value networks use parameter sharing.
+    
+    Args:
+        algorithm: Algorithm instance
+        
+    Returns:
+        True if parameter sharing (single value_net), False if individual networks (value_nets)
+    """
+    if hasattr(algorithm, 'value_nets') and algorithm.value_nets is not None:
+        return False
+    
+    if hasattr(algorithm, 'value_net') and algorithm.value_net is not None:
+        return True
+    
+    raise AttributeError(
+        "Algorithm must have either 'value_nets' or 'value_net' attribute"
+    )

@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 ###########################################################################
-## From https://github.com/marlbenchmark/on-policy, edited for our usage.
+# From https://github.com/marlbenchmark/on-policy, edited for our usage.
 ###########################################################################
 
 def init_layer(module, init_method, gain=1.0):

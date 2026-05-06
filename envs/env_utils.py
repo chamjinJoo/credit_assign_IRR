@@ -13,34 +13,7 @@ def create_environment(env_config) -> MultiAgentEnv:
     
     env_name = config_dict.get('env_name', 'null')
     
-    if env_name == 'Toy':
-        from .multi_agent_env import ToyCausalEnv
-        return ToyCausalEnv(
-            num_agents=config_dict.get('num_agents', 2),
-            episode_length=config_dict.get('episode_length', 5),
-            seed=config_dict.get('seed', None)
-        )
-    
-    elif env_name == 'simple_cooperative' or env_name == 'SimpleCooperativeEnv':
-        from .multi_agent_env import SimpleCooperativeEnv
-        return SimpleCooperativeEnv(
-            num_agents=config_dict.get('num_agents', 3),
-            grid_size=config_dict.get('grid_size', 5),
-            max_steps=config_dict.get('max_steps', 50),
-            cooperation_bonus=config_dict.get('cooperation_bonus', 2.0),
-            seed=config_dict.get('seed', None)
-        )
-    
-    elif env_name == 'DecTiger':
-        from .multi_agent_env import DecTigerEnv
-        return DecTigerEnv(
-            seed=config_dict.get('seed', 0),
-            max_steps=config_dict.get('max_steps', 4),
-            failure_obs_prob=config_dict.get('failure_obs_prob', 0.15),
-            fully_observable=config_dict.get('fully_observable', False)
-        )
-    
-    elif env_name == 'StagHunt' or env_name == 'StagHuntEnv':
+    if env_name == 'StagHunt' or env_name == 'StagHuntEnv':
         from .multi_agent_env import StagHuntEnv
         return StagHuntEnv(
             num_agents=config_dict.get('num_agents', 2),
@@ -70,65 +43,6 @@ def create_environment(env_config) -> MultiAgentEnv:
             force_coop=config_dict.get('force_coop', False),
             seed=config_dict.get('seed', None),
             grid_observation=config_dict.get('grid_observation', True)
-        )
-
-    elif env_name == 'SimpleSpread' or env_name == 'simple_spread':
-        from .multi_agent_env import MPESimpleSpreadEnv
-        return MPESimpleSpreadEnv(
-            n_agents=config_dict.get('num_agents', 2),
-            local_ratio=config_dict.get('local_ratio', 0.5),
-            max_cycles=config_dict.get('max_cycles', 25),
-            continuous_actions=config_dict.get('continuous_actions', False),
-            seed=config_dict.get('seed', 0)
-        )
-
-    elif env_name in ['VMASNavigation', 'vmas_navigation', 'Navigation']:
-        from .multi_agent_env import VMASNavigationEnv
-        return VMASNavigationEnv(
-            num_agents=config_dict.get('num_agents', 4),
-            max_steps=config_dict.get('max_steps', 100),
-            seed=config_dict.get('seed', 0),
-            continuous_actions=config_dict.get('continuous_actions', False),
-            **config_dict.get('env_args', {})
-        )
-
-    elif env_name in ['VMASDispersion', 'vmas_dispersion', 'Dispersion']:
-        from .multi_agent_env import VMASDispersionEnv
-        return VMASDispersionEnv(
-            num_agents=config_dict.get('num_agents', 4),
-            max_steps=config_dict.get('max_steps', 100),
-            seed=config_dict.get('seed', 0),
-            continuous_actions=config_dict.get('continuous_actions', False),
-            **config_dict.get('env_args', {})
-        )
-    
-    elif env_name == 'SimpleStagHunt' or env_name == 'SimpleStagHuntEnv':
-        from .multi_agent_env import SimpleStagHuntEnv
-        return SimpleStagHuntEnv(
-            cooperation_reward=config_dict.get('cooperation_reward', 5),
-            defect_alone_reward=config_dict.get('defect_alone_reward', 1),
-            defect_together_reward=config_dict.get('defect_together_reward', 1),
-            failed_cooperation_punishment=config_dict.get('failed_cooperation_punishment', -5),
-            eps_per_game=config_dict.get('eps_per_game', 1),
-            seed=config_dict.get('seed', None)
-        )
-    
-    elif env_name == 'SMAC' or env_name == 'StarCraft2':
-        from .multi_agent_env import SMACWrapper
-        return SMACWrapper(
-            map_name=config_dict.get('map_name', '3m'),
-            seed=config_dict.get('seed', None),
-            **config_dict.get('env_args', {})
-        )
-
-    elif env_name == 'SMACv2':
-        from .multi_agent_env import SMACv2Wrapper
-        return SMACv2Wrapper(
-            map_name=config_dict.get('map_name'),
-            seed=config_dict.get('seed', None),
-            use_individual_rewards=config_dict.get('use_individual_rewards', False),
-            capability_config=config_dict.get('capability_config', None),
-            **config_dict.get('env_args', {})
         )
     
     elif env_name == 'SMAX':
@@ -167,27 +81,10 @@ def create_environment(env_config) -> MultiAgentEnv:
 
 
 def get_available_environments() -> Dict[str, str]:
-    """사용 가능한 환경 목록을 반환합니다."""
     return {
-        'ToyCausalEnv': '인과 추론을 위한 토이 환경 (2 에이전트)',
-        'simple_cooperative': '간단한 협력 환경 (3 에이전트)',
-        'SimpleCooperativeEnv': '간단한 협력 환경 (3 에이전트)',
-        'DecTiger': 'Dec-Tiger 협력 게임 환경 (2 에이전트)',
-        'StagHunt': 'Stag-Hunt 협력 게임 환경 (2 에이전트)',
-        'StagHuntEnv': 'Stag-Hunt 협력 게임 환경 (2 에이전트)',
-        'SimpleStagHunt': 'Simple Stag Hunt 게임 이론 환경 (2 에이전트)',
-        'SimpleStagHuntEnv': 'Simple Stag Hunt 게임 이론 환경 (2 에이전트)',
-        'MPESimpleSpread': 'MPE Simple Spread 환경 (N 에이전트)',
-        'MPE': 'MPE Simple Spread 환경 (N 에이전트)',
-        'mpe_simple_spread': 'MPE Simple Spread 환경 (N 에이전트)',
-        'VMASNavigation': 'VMAS Navigation benchmark (N 에이전트)',
-        'vmas_navigation': 'VMAS Navigation benchmark (N 에이전트)',
-        'VMASDispersion': 'VMAS Dispersion benchmark (N 에이전트)',
-        'vmas_dispersion': 'VMAS Dispersion benchmark (N 에이전트)',
-        'SMAC': 'StarCraftII 환경 (N 에이전트)',
-        'StarCraft2': 'StarCraftII 환경 (N 에이전트)',
-        'SMACv2': 'StarCraftII 환경 (N 에이전트)',
-        'SMAX': 'JaxMARL SMAX 환경 - SC2 바이너리 불필요, JAX 구현 (N 에이전트)',
+        'StagHuntEnv': 'Stag-Hunt',
+        'SMAX': 'JaxMARL SMAX',
+        'LBF': 'LBForaging',
     }
 
 

@@ -30,17 +30,18 @@ class ModelSpec:
 
 
 SH_MODELS = (
-    ModelSpec("PCI_rippo", "PCI+IPPO", "PCI_rippo", "blue", ("PCI_rippo", "PCI_rIPPO", "pci-rippo")),
-    ModelSpec("PCI_rmappo", "PCI+MAPPO", "PCI_rmappo", "red", ("PCI_rmappo", "PCI_rMAPPO", "pci-rmappo")),
-    ModelSpec("r_ippo", "IPPO", "rippo", "skyblue", ("r_ippo", "rIPPO", "r-ippo")),
-    ModelSpec("r_mappo", "MAPPO", "rmappo", "orange", ("r_mappo", "rMAPPO", "r-mappo")),
+    ModelSpec("PCI_rippo", "PCI-IPPO", "PCI_rippo", "blue", ("PCI_rippo", "PCI_rIPPO", "pci-rippo")),
+    ModelSpec("r_ippo", "IPPO", "rippo", "#8ecae6", ("r_ippo", "rIPPO", "r-ippo"), linestyle="--"),
+    ModelSpec("PCI_rmappo", "PCI-MAPPO", "PCI_rmappo", "red", ("PCI_rmappo", "PCI_rMAPPO", "pci-rmappo")),
+    ModelSpec("r_mappo", "MAPPO", "rmappo", "#ff9896", ("r_mappo", "rMAPPO", "r-mappo"), linestyle="--"),
 )
 
+
 SMAX_MODELS = (
-    ModelSpec("pci_ippo", "PCI+IPPO", "pci_ippo", "blue", ("pci_ippo", "jax_pci_ippo", "jax-pci-ippo")),
-    ModelSpec("pci_mappo", "PCI+MAPPO", "pci_mappo", "red", ("pci_mappo", "jax_pci_mappo", "jax-pci-mappo")),
-    ModelSpec("ippo", "IPPO", "ippo", "skyblue", ("ippo", "jax_ippo", "jax-ippo")),
-    ModelSpec("mappo", "MAPPO", "mappo", "orange", ("mappo", "jax_mappo", "jax-mappo")),
+    ModelSpec("pci_ippo", "PCI-IPPO", "pci_ippo", "blue", ("pci_ippo", "jax_pci_ippo", "jax-pci-ippo")),
+    ModelSpec("ippo", "IPPO", "ippo", "#2a9fd6", ("ippo", "jax_ippo", "jax-ippo"), linestyle="--"),
+    ModelSpec("pci_mappo", "PCI-MAPPO", "pci_mappo", "red", ("pci_mappo", "jax_pci_mappo", "jax-pci-mappo")),
+    ModelSpec("mappo", "MAPPO", "mappo", "#e15759", ("mappo", "jax_mappo", "jax-mappo"), linestyle="--"),
 )
 
 
@@ -64,7 +65,7 @@ PRESETS = {
         "xlim": (0.0, 3e6),
     },
     "smax": {
-        "project": "pci-marl-smax-jax-v3",
+        "project": "pci-marl-smax-jax",
         "models": SMAX_MODELS,
         "name_contains": (),
         "exclude_name_contains": (),
@@ -344,23 +345,30 @@ def build_plot_config(preset: str, csv_dir: str | Path) -> list[dict]:
     return config
 
 
+def _hide_outer_spines(ax) -> None:
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
 def plot(
     plot_config,
     window_size=50,
-    figsize=(8, 7),
+    figsize=(6.4, 4.8),
     ylim=None,
     xlim=None,
     save_path=None,
     show=True,
     uncertainty_metric="std",   # "std" or "iqr"
     mean_only=False,            # True면 하단 패널 없이 mean만
+    show_std_shading=False,
+    std_shading_alpha=0.15,
 ):
     plt.close("all")
-    plt.rc("font", size=14)
-    plt.rc("axes", labelsize=14)
-    plt.rc("xtick", labelsize=14)
-    plt.rc("ytick", labelsize=14)
-    plt.rc("legend", fontsize=14)
+    plt.rc("font", size=20)
+    plt.rc("axes", labelsize=20)
+    plt.rc("xtick", labelsize=20)
+    plt.rc("ytick", labelsize=20)
+    plt.rc("legend", fontsize=20)
 
     if mean_only:
         fig, ax = plt.subplots(figsize=figsize)
@@ -379,7 +387,7 @@ def plot(
         keyword = entry.get("keyword", "success_rate")
         color = entry["color"]
         lsty = entry.get("linestyle", "-")
-        lw = entry.get("linewidth", 2)
+        lw = entry.get("linewidth", 5)
         exclude = entry.get("exclude", None)
 
         try:
@@ -414,17 +422,19 @@ def plot(
 
         # mean curve
         y_mean = Y.mean(axis=1).rolling(window=window_size, min_periods=1).mean()
+        y_std = Y.std(axis=1).rolling(window=max(5, window_size // 4), min_periods=1).mean()
 
         # uncertainty curve
         if uncertainty_metric == "std":
-            y_unc = Y.std(axis=1)
+            y_unc = y_std
         elif uncertainty_metric == "iqr":
             y_unc = Y.quantile(0.75, axis=1) - Y.quantile(0.25, axis=1)
         else:
             raise ValueError("uncertainty_metric must be 'std' or 'iqr'")
 
         # uncertainty는 smoothing을 약하게 하거나 아예 안 하는 게 더 정직함
-        y_unc = y_unc.rolling(window=max(5, window_size // 4), min_periods=1).mean()
+        if uncertainty_metric != "std":
+            y_unc = y_unc.rolling(window=max(5, window_size // 4), min_periods=1).mean()
 
         # main panel: mean only
         ax.plot(
@@ -434,6 +444,15 @@ def plot(
             linestyle=lsty,
             linewidth=lw,
         )
+        if show_std_shading:
+            ax.fill_between(
+                x,
+                y_mean - y_std,
+                y_mean + y_std,
+                color=color,
+                alpha=std_shading_alpha,
+                linewidth=0,
+            )
 
         # lower panel: uncertainty only
         if ax_var is not None:
@@ -451,6 +470,7 @@ def plot(
     if xlim is not None:
         ax.set_xlim(xlim)
     ax.grid(True, linestyle="--", alpha=0.5)
+    _hide_outer_spines(ax)
     if entry.get("show_legend", False):
         ax.legend(loc="upper left", framealpha=0.9)
 
@@ -458,6 +478,7 @@ def plot(
         ax_var.set_xlabel("Total Steps")
         ax_var.set_ylabel("Std" if uncertainty_metric == "std" else "IQR")
         ax_var.grid(True, linestyle="--", alpha=0.5)
+        _hide_outer_spines(ax_var)
     else:
         ax.set_xlabel("Total Steps")
 
@@ -506,8 +527,8 @@ def plot_horizontal_legend(
         ncol=ncol,
         frameon=False,
         handlelength=2.5,
-        columnspacing=1.5,
-        fontsize=13,
+        columnspacing=1.0,
+        fontsize=18,
     )
 
     plt.tight_layout()
@@ -627,16 +648,17 @@ def plot_final_distribution(
     plot_config,
     window_size=50,
     last_n=100,
-    figsize=(7, 5),
+    figsize=(5, 4.5),
     ylim=(0, 1),
+    show_seed_points=True,
     save_path=None,
     show=True,
 ):
     plt.close("all")
-    plt.rc("font", size=14)
-    plt.rc("axes", labelsize=14)
-    plt.rc("xtick", labelsize=12)
-    plt.rc("ytick", labelsize=12)
+    plt.rc("font", size=20)
+    plt.rc("axes", labelsize=18)
+    plt.rc("xtick", labelsize=18)
+    plt.rc("ytick", labelsize=18)
 
     results = extract_final_seed_values(plot_config, window_size=window_size, last_n=last_n)
     if not results:
@@ -655,7 +677,7 @@ def plot_final_distribution(
         positions=positions,
         widths=0.5,
         patch_artist=True,
-        showfliers=False,
+        showfliers=True,
     )
 
     for patch, color in zip(bp["boxes"], colors):
@@ -676,23 +698,23 @@ def plot_final_distribution(
         median.set_color(color)
         median.set_linewidth(2.2)
 
-    # seed scatter overlay
-    rng = np.random.default_rng(0)
-    for i, (vals, color) in enumerate(zip(values, colors), start=1):
-        jitter = rng.uniform(-0.08, 0.08, size=len(vals))
-        ax.scatter(
-            np.full(len(vals), i) + jitter,
-            vals,
-            s=35,
-            color=color,
-            alpha=0.8,
-            edgecolor="white",
-            linewidth=0.6,
-        )
+    if show_seed_points:
+        rng = np.random.default_rng(0)
+        for i, (vals, color) in enumerate(zip(values, colors), start=1):
+            jitter = rng.uniform(-0.08, 0.08, size=len(vals))
+            ax.scatter(
+                np.full(len(vals), i) + jitter,
+                vals,
+                s=35,
+                color=color,
+                alpha=0.8,
+                edgecolor="white",
+                linewidth=0.6,
+            )
 
     ax.set_xticks(positions)
     ax.set_xticklabels(labels, rotation=0)
-    ax.set_ylabel(f"Final Success Rate\n(last {last_n} points avg)")
+    ax.set_ylabel(f"Final Success Rate")
     ax.set_ylim(ylim)
     ax.grid(True, axis="y", linestyle="--", alpha=0.5)
 
@@ -805,6 +827,8 @@ def main(argv=None):
     parser.add_argument("--window-size", type=int, default=20)
     parser.add_argument("--figsize", nargs=2, type=float, default=(8, 6))
     parser.add_argument("--xlim", nargs=2, default=None, help="example: --xlim 0 3000000. Omit for auto.")
+    parser.add_argument("--std-shading", action="store_true", help="shade mean +/- 1 std on the main plot")
+    parser.add_argument("--std-shading-alpha", type=float, default=0.15)
     parser.add_argument("--no-table", action="store_true")
     args = parser.parse_args(argv)
 
@@ -859,6 +883,8 @@ def main(argv=None):
             xlim=xlim,
             save_path=args.save_png,
             show=args.plot,
+            show_std_shading=args.std_shading,
+            std_shading_alpha=args.std_shading_alpha,
         )
 
     return 0

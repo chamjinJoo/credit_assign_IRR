@@ -3,9 +3,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 ###########################################################################
-## From https://github.com/marlbenchmark/on-policy, edited for our usage.
-## Modified: prev_action (one-hot) is concatenated to obs before feature extraction
-##           so that the RNN hidden state encodes (obs, action) pair history.
+# From https://github.com/marlbenchmark/on-policy, edited for our usage.
+# Modified: prev_action (one-hot) is concatenated to obs before feature extraction
+#           so that the RNN hidden state encodes (obs, action) pair history.
 ###########################################################################
 
 class RNNLayer(nn.Module):

@@ -3,18 +3,13 @@ from .policy_network import PolicyNetwork, ValueNetwork
 from .bridge_network import OutcomeBridgeNetwork, NaivePredictor
 from .mlp import MLPLayer, MLPBase
 
-from .rnn import RNNLayer, RNNPolicyNetwork, RNNValueNetwork
-from .feedforward_compat import FeedForwardPolicyNetworkCompat, FeedForwardValueNetworkCompat
-from .coma_rnn_critic import COMARNNCritic
-from .qmix_mixer import QMixer
+from .rnn import RNNPolicyNetwork, RNNValueNetwork
 
 __all__ = [
     "PolicyNetwork",
     "ValueNetwork",
     "RNNPolicyNetwork",
     "RNNValueNetwork",
-    "FeedForwardPolicyNetworkCompat",
-    "FeedForwardValueNetworkCompat",
     "OutcomeBridgeNetwork",
     "NaivePredictor",
     "MLPLayer",
