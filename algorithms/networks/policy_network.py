@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from torch.distributions import Categorical
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional
 from .mlp import MLPBase
 
 

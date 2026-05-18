@@ -2,7 +2,6 @@ import numpy as np
 from typing import Dict, Tuple, List, Any, Optional
 from abc import ABC, abstractmethod
 
-import gymnasium as gym
 import matplotlib.pyplot as plt
 import copy
 from envs.smax_target_env import swap_to_target_aware_inner_smax
@@ -84,22 +83,7 @@ class StagHuntEnv(MultiAgentEnv):
         vision: int = 2,
         obs_noise_std: float = 0.0,
         **kwargs):
-        """
-        Stag-Hunt 환경 초기화 (원본 게임 로직 기반)
-        
-        Args:
-            num_agents: 에이전트 수 (기본 2, n명으로 설정 가능)
-            max_steps: 최대 스텝 수 (기본 50)
-            stag_follows: Stag가 가장 가까운 에이전트를 추적할지 여부 (True) 또는 랜덤 이동 (False)
-            run_away_after_maul: Stag가 에이전트를 공격한 후 도망갈지 여부
-            forage_quantity: 식물(개별 사냥 대상)의 개수 (None이면 num_agents와 동일하게 설정)
-            forage_reward: 식물 수확 시 보상
-            stag_reward: Stag 협력 사냥 시 보상
-            mauling_punishment: 혼자 Stag를 사냥하려 할 때 페널티
-            mauling_punishment: 혼자 Stag를 사냥하려 할 때 페널티
-            grid_observation: True면 기존 grid observation 사용, False면 좌표 기반 observation 사용
-            vision: 에이전트의 시야 범위 
-        """
+
         super().__init__(num_agents=num_agents, seed=seed)
 
         self.grid_observation = grid_observation
@@ -109,7 +93,6 @@ class StagHuntEnv(MultiAgentEnv):
         self.stag_follows = stag_follows
         self.run_away_after_maul = run_away_after_maul
 
-        # forage_quantity가 None이면 num_agents와 동일하게 설정
         self.forage_quantity = forage_quantity if forage_quantity is not None else num_agents
         self.step_count = 0
         
@@ -133,10 +116,10 @@ class StagHuntEnv(MultiAgentEnv):
 
         # Environment state
         self.agent_positions = {}  # {agent_id: (x, y)}
-        self.stag_positions = {}  # {stag_id: (x, y)} - stag 1과 stag 2
-        self.stag_alive = {}  # {stag_id: bool} - stag 생존 상태 추적
-        self.hare_positions = {}  # {hare_id: (x, y)} - hares for individual hunting
-        self.hare_alive = {}  # {hare_id: bool} - hare 생존 상태 추적
+        self.stag_positions = {}  # {stag_id: (x, y)}
+        self.stag_alive = {}  # {stag_id: bool}
+        self.hare_positions = {}  # {hare_id: (x, y)} for individual hunting
+        self.hare_alive = {}  # {hare_id: bool}
               
         # Rewards
         self.global_reward = global_reward
@@ -145,13 +128,13 @@ class StagHuntEnv(MultiAgentEnv):
         self.mauling_punishment = mauling_punishment
         self.coop_bonus = coop_bonus
 
-        # Allocate agents to each stag: stag_i -> (agent i, agent i+1), 마지막 stag는 (agent N, agent 1)
+        # Allocate agents to each stag: stag_i -> (agent i, agent i+1), with wrap-around for the last stag.
         if required_agents is not None:
             self.required_agents = required_agents
         else:
             self.required_agents = {}
             for stag_id in range(num_agents):
-                if stag_id == num_agents - 1:  # 마지막 stag
+                if stag_id == num_agents - 1:  # Last stag wraps to agent 0.
                     self.required_agents[stag_id] = [stag_id, 0]
                 else:
                     self.required_agents[stag_id] = [stag_id, stag_id + 1]
@@ -161,16 +144,12 @@ class StagHuntEnv(MultiAgentEnv):
         print(f"stag allocated agents: {self.required_agents}")
             
     def get_env_state(self):
-        """현재 환경의 내부 상태(에이전트 위치, 사슴/토끼 위치, 스텝 수 등)를 깊은 복사하여 반환합니다."""
-        # 만약 numpy array나 기본 자료형으로만 이루어져 있다면 __dict__ 복사가 가장 빠릅니다.
         return copy.deepcopy(self.__dict__)
 
     def set_env_state(self, state):
-        """저장된 상태로 환경을 강제 복원(Reset 없이 되돌리기)합니다."""
         self.__dict__.update(copy.deepcopy(state))
 
     def _get_empty_positions(self):
-        """비어있는 위치들을 반환합니다."""
         occupied_positions = set()
         
         for agent_id in self.agents:
@@ -180,8 +159,7 @@ class StagHuntEnv(MultiAgentEnv):
             occupied_positions.add(stag_pos)
         for hare_pos in self.hare_positions.values():
             occupied_positions.add(hare_pos)
-        
-        # 모든 가능한 위치에서 점유된 위치 제외
+
         empty_positions = []
         for x in range(self.grid_size_x):
             for y in range(self.grid_size_y):
@@ -190,7 +168,6 @@ class StagHuntEnv(MultiAgentEnv):
         return empty_positions
 
     def _spawn_object_randomly(self):
-        """비어있는 위치에 객체를 랜덤하게 스폰합니다."""
         empty_positions = self._get_empty_positions()
         if empty_positions:
             if self._np_random is not None:
@@ -198,18 +175,15 @@ class StagHuntEnv(MultiAgentEnv):
             else:
                 return empty_positions[np.random.randint(len(empty_positions))]
         else:
-            # 비어있는 위치가 없으면 에러 발생 (충돌 방지)
             raise ValueError("No empty positions available for spawning object")
     
     def _spawn_stags_with_separation(self, num_stags):
-        """stag들을 서로 상하좌우로 붙어있지 않게 스폰합니다."""
         stag_positions = []
         empty_positions = self._get_empty_positions()
         
         if len(empty_positions) < num_stags:
             raise ValueError(f"Not enough empty positions for {num_stags} stags")
         
-        # 첫 번째 stag는 랜덤하게 선택
         if self._np_random is not None:
             first_stag_pos = empty_positions[self._np_random.randint(len(empty_positions))]
         else:
@@ -218,17 +192,14 @@ class StagHuntEnv(MultiAgentEnv):
         stag_positions.append(first_stag_pos)
         available_positions = [pos for pos in empty_positions if pos != first_stag_pos]
         
-        # 나머지 stag들을 상하좌우로 붙어있지 않게 배치
         for _ in range(num_stags - 1):
             valid_positions = []
             
             for pos in available_positions:
-                # 기존 stag들과 상하좌우로 붙어있지 않은지 확인
                 is_valid = True
                 for existing_pos in stag_positions:
                     x_diff = abs(pos[0] - existing_pos[0])
                     y_diff = abs(pos[1] - existing_pos[1])
-                    # 상하좌우로 붙어있으면 (맨하탄 거리가 1이면) 제외
                     if x_diff + y_diff == 1:
                         is_valid = False
                         break
@@ -237,10 +208,8 @@ class StagHuntEnv(MultiAgentEnv):
                     valid_positions.append(pos)
             
             if not valid_positions:
-                # 유효한 위치가 없으면 에러 발생
                 raise ValueError("No valid positions available for stag separation")
             
-            # 유효한 위치 중에서 랜덤 선택
             if self._np_random is not None:
                 selected_pos = valid_positions[self._np_random.randint(len(valid_positions))]
             else:
@@ -251,7 +220,6 @@ class StagHuntEnv(MultiAgentEnv):
         return stag_positions
 
     def reset(self) -> Dict[int, np.ndarray]:
-        """환경을 리셋하고 초기 관찰을 반환합니다."""
         self.step_count = 0
         self.stag_positions = {}
         self.stag_alive = {}
@@ -260,9 +228,9 @@ class StagHuntEnv(MultiAgentEnv):
             self.agent_positions[agent_id] = self._spawn_object_randomly() # random spawn
         
         stag_positions = self._spawn_stags_with_separation(self.num_agents)
-        for i, stag_id in enumerate(self.agents):  # num_agents만큼의 stag 생성
+        for i, stag_id in enumerate(self.agents):
             self.stag_positions[stag_id] = stag_positions[i]
-            self.stag_alive[stag_id] = True  # 모든 stag를 살아있는 상태로 초기화
+            self.stag_alive[stag_id] = True
     
         try:
             self.hare_positions = {}
@@ -270,12 +238,10 @@ class StagHuntEnv(MultiAgentEnv):
             for hare_id in range(self.forage_quantity):
                 hare_pos = self._spawn_object_randomly()
                 self.hare_positions[hare_id] = hare_pos
-                self.hare_alive[hare_id] = True  # 모든 hare를 살아있는 상태로 초기화
+                self.hare_alive[hare_id] = True 
         except ValueError as e:
-            # 매우 드문 경우지만, 빈 위치가 없으면 에러 처리
             print(f"Warning during reset: {e}")
-            # 기본 위치로 설정
-            self.hare_positions = {0: (1, 1), 1: (3, 3)}  # 대각선 위치
+            self.hare_positions = {0: (1, 1), 1: (3, 3)}
             self.hare_alive = {0: True, 1: True}
         
         return self._get_observations()
@@ -286,18 +252,12 @@ class StagHuntEnv(MultiAgentEnv):
         Dict[int, bool],
         Dict[str, Any]
     ]:
-        """환경에서 한 스텝을 진행합니다."""
         self.step_count += 1
-        
-        # Stag는 더 이상 이동하지 않음 (고정 위치)
-        
-        # 에이전트 이동 처리
         self._process_movement_actions(actions)
         
-        # 사냥 처리 직전의 사냥 가능 객체 상태를 캡처 (의사결정 기준 시점)
         huntable_objects_pre = self._get_huntable_objects()
         
-        # 사냥 처리 및 보상 계산
+        # Process hunting and rewards.
         rewards = {agent_id: 0.0 for agent_id in self.agents}
         hunting_info = self._process_hunting(rewards)
         
@@ -726,201 +686,51 @@ class StagHuntEnv(MultiAgentEnv):
             if not self.stag_alive.get(stag_id, False):
                 continue
             x, y = self.stag_positions[stag_id]
-            color = colors[stag_id % len(colors)]  # 같은 색상 사용
+            color = colors[stag_id % len(colors)]  # Reuse colors cyclically.
             
-            # Stag 삼각형 그리기
+            # Draw stag as a triangle.
             triangle = plt.Polygon([(x, y-0.3), (x-0.3, y+0.3), (x+0.3, y+0.3)], 
                                  color=color, alpha=0.8, ec='black', linewidth=2)
             ax.add_patch(triangle)
             
-            # Stag 번호 표시
+            # Label the stag.
             ax.text(x, y+0.1, f'S{stag_id}', ha='center', va='center', 
                         fontsize=10, fontweight='bold', color='white')
         
-        # hare (Rabbit) 렌더링 (사각형) - 살아있는 hare만
+        # Render only alive hares as gray rectangles.
         for hare_id, (x, y) in self.hare_positions.items():
             if not self.hare_alive.get(hare_id, False):
-                continue  # 수확된 hare는 렌더링하지 않음
+                continue
                 
-            # hare는 회색 사각형으로 표시
             rect = plt.Rectangle((x-0.25, y-0.25), 0.5, 0.5, 
                                color='gray', alpha=0.7, ec='black', linewidth=1)
             ax.add_patch(rect)
             
-            # hare 번호 표시
+            # Label the hare.
             ax.text(x, y, f'H{hare_id}', ha='center', va='center', 
                         fontsize=8, fontweight='bold', color='white')
         
-        # 스텝 정보 표시
+        # Show step info.
         info_text = f"Step: {self.step_count}/{self.max_steps}"
         ax.text(0.02, 0.98, info_text, transform=ax.transAxes, 
                     fontsize=12, verticalalignment='top',
                     bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
         
-        # RGB 배열로 변환
+        # Convert to an RGB array.
         fig.canvas.draw()
         buf = fig.canvas.buffer_rgba()
         arr = np.asarray(buf)
         
         plt.close(fig)
         
-        return arr[:, :, :3]  # Alpha 채널 제거
+        return arr[:, :, :3]  # Drop the alpha channel.
     
     def close_render(self):
-        """렌더링 창을 닫습니다."""
+        """Close the render window."""
         if hasattr(self, '_fig') and self._fig is not None:
             plt.close(self._fig)
             self._fig = None
             self._ax = None
-
-class LBForagingWrapper(MultiAgentEnv):
-    """
-    LBForaging environment wrapper
-    """
-    def __init__(
-        self,
-        seed: int = None,
-        field_size: int = 7,
-        num_agents: int = 2,
-        max_food: int = 2,
-        sight: int = 2,
-        max_episode_steps: int = 50,
-        force_coop: bool = False,
-        player_level: Tuple[int, int] = (1, 1),
-        food_level: Tuple[int, int] = (1, 3),
-        grid_observation: bool = True,
-        obs_noise_std: float = 0.0
-    ):
-        super().__init__(num_agents=num_agents, seed=seed)
-        
-        self.field_size = field_size
-        self.max_food = max_food
-        self.sight = sight
-        self.player_level = player_level
-        self.food_level = food_level
-        self.max_episode_steps = max_episode_steps
-        self.force_coop = force_coop
-        self.grid_observation = grid_observation
-        self.obs_noise_std = obs_noise_std
-
-        from gymnasium.envs.registration import register
-        env_id = f"Foraging-{field_size}x{field_size}-{num_agents}p-{max_food}f"
-        if force_coop:
-            env_id += "-coop"
-        env_id += "-v3"
-        self.env_id = env_id
-        try:
-            env_registered = env_id in gym.envs.registry
-        except:
-            env_registered = False
-
-        self.kwargs = {"players": num_agents,
-                    "min_player_level": player_level[0],
-                    "max_player_level": player_level[1],
-                    "min_food_level": food_level[0],
-                    "max_food_level": food_level[1],
-                    "field_size": (field_size, field_size),
-                    "max_num_food": max_food,
-                    "sight": sight,
-                    "max_episode_steps": max_episode_steps,
-                    "force_coop": force_coop,
-                    "grid_observation": grid_observation
-        }
-        if env_registered:
-            try:
-                from gymnasium.envs.registration import registry
-                del registry[env_id]
-            except:
-                pass
-        
-        # 항상 새로 등록하여 올바른 설정으로 환경 생성
-        register(
-            id=env_id,
-            entry_point="lbforaging.foraging:ForagingEnv",
-            kwargs=self.kwargs,
-        )
-        self.env = gym.make(env_id)
-        self.env_id = env_id
-        
-        # print(f"LBF env: {self.env_id}")
-        
-        self.agent_names = [f"agent_{i}" for i in range(self.num_agents)]
-        self.agent_mapping = {i: f"agent_{i}" for i in range(self.num_agents)}
-        self.reverse_mapping = {f"agent_{i}": i for i in range(self.num_agents)}
-
-        obs_array, _ = self.env.reset(seed=self._seed) 
-        # LBForaging observation is array of shape (N, obs_dim)
-
-        if self.kwargs.get("grid_observation", False):
-            self.obs_dim = int(np.prod(obs_array[0].shape))
-        else:
-            self.obs_dim = len(obs_array[0]) 
-        if hasattr(self.env.action_space, '__getitem__'):
-            self.action_dim = self.env.action_space[0].n
-        else:
-            self.action_dim = self.env.action_space.n
-
-    def reset(self) -> Dict[int, np.ndarray]:
-        obs_array, _ = self.env.reset() # (observation_array, info_dict)
-        observations = {i: obs_array[i].astype(np.float32).flatten() for i in range(self.num_agents)}
-        
-        # add noise to observations if std > 0
-        if self.obs_noise_std > 0:
-            for agent_id in observations:
-                observations[agent_id] = observations[agent_id] + np.random.normal(0, self.obs_noise_std, size=observations[agent_id].shape)
-        return observations
-
-    def step(self, actions: Dict[int, int]) -> Tuple[
-        Dict[int, np.ndarray],
-        Dict[int, float],
-        Dict[int, bool],
-        Dict[str, Any]
-    ]:
-        gym_actions = np.array([actions[i] for i in range(self.num_agents)], dtype=np.int64)
-        
-        step_result = self.env.step(gym_actions)
-        obs_array, reward_array, terminated, truncated, info = step_result
-        
-        observations = {}
-        rewards = {}
-        dones = {}
-        
-        for i in range(self.num_agents):
-            observations[i] = obs_array[i].astype(np.float32).flatten()
-            # add noise to observations if std > 0
-            if self.obs_noise_std > 0:
-                observations[i] = observations[i] + np.random.normal(0, self.obs_noise_std, size=observations[i].shape)
-            # reward: each agent's maximum reward in one episode is 1.0
-            rewards[i] = float(reward_array[i])
-     
-        episode_done = bool(terminated) or bool(truncated)
-        
-        for agent_id in self.agents:
-            dones[agent_id] = episode_done
-
-        # Info
-        info_dict = {
-            # 'step_count': self.env._elapsed_steps,
-            'max_cycles': self.max_episode_steps,
-            'episode_done': episode_done,
-            'raw_info': info
-        }
-        return observations, rewards, dones, info_dict
-
-    def get_obs_dim(self) -> int:
-        return self.obs_dim
-    
-    def get_action_dim(self) -> int:
-        return self.action_dim
-    
-    def render(self, mode='human'):
-        if hasattr(self.env, 'render'):
-            return self.env.render(mode)
-        return None
-    
-    def close(self):
-        if hasattr(self.env, 'close'):
-            self.env.close()
 
 class SMAXWrapper(MultiAgentEnv):
     """
@@ -968,7 +778,7 @@ class SMAXWrapper(MultiAgentEnv):
             except KeyError:
                 print(
                     f"[SMAXWrapper] Warning: Unknown map_name '{map_name}', "
-                    f"num_allies={num_allies}, num_enemies={num_enemies} 사용"
+                    f"falling back to num_allies={num_allies}, num_enemies={num_enemies}"
                 )
                 env_kwargs["num_allies"] = num_allies
                 env_kwargs["num_enemies"] = num_enemies
@@ -1245,7 +1055,7 @@ class SMAXWrapper(MultiAgentEnv):
             and self.allowed_target_window >= _num_enemies
         )
         self.use_allowed_targets = bool(use_allowed_targets) and not target_window_covers_all
-        self._num_movement_actions = self._env.num_movement_actions  # 통상 5
+        self._num_movement_actions = self._env.num_movement_actions  # Usually 5.
         if self.use_allowed_targets:
             if allowed_targets is not None:
                 self.allowed_targets = allowed_targets
@@ -1306,8 +1116,7 @@ class SMAXWrapper(MultiAgentEnv):
         print(f"[SMAXWrapper] obs_dim={self.obs_dim}, action_dim={self.action_dim}")
         print(f"[SMAXWrapper] {_num_allies} allies vs {_num_enemies} enemies (heuristic)")
 
-        # JAX JIT 컴파일 사전 수행 (warm-up)
-        # 학습 루프 진입 전에 미리 컴파일해야 첫 iteration에서 멈추지 않음
+        # Warm up JAX JIT before entering the training loop.
         self._warmup()
 
     def _warmup(self):
@@ -1430,7 +1239,7 @@ class SMAXWrapper(MultiAgentEnv):
         return float(enemy_health_decrease_reward + won_battle_bonus + lost_battle_bonus)
 
     def reset(self) -> Dict[int, np.ndarray]:
-        """환경을 리셋하고 초기 관찰을 반환합니다."""
+        """Reset the environment and return the initial observations."""
         self._rng, reset_key = self._jax.random.split(self._rng)
         obs_dict, self._state = self._env.reset(reset_key)
         self._coop_attack_memory = np.zeros((self.num_agents, self.num_enemies), dtype=np.int32)
@@ -1507,7 +1316,7 @@ class SMAXWrapper(MultiAgentEnv):
 
         dones = {i: all_done for i in range(self.num_agents)}
 
-        # battle_won 계산: 모든 enemy가 죽으면 승리
+        # Mark the battle as won when all enemies are dead.
         enemies_alive = self._state.state.unit_alive[self._env.num_allies:]
         battle_won = bool(np.array(~self._jnp.any(enemies_alive)).item())
 
@@ -1523,9 +1332,9 @@ class SMAXWrapper(MultiAgentEnv):
     def get_avail_actions(self) -> List[List[int]]:
         """
         Returns:
-            List[List[int]]: shape (num_agents, action_dim), 값은 0 또는 1
+            List[List[int]]: shape (num_agents, action_dim), values are 0 or 1.
         """
-        assert self._state is not None, "get_avail_actions() 전에 reset()을 호출하세요."
+        assert self._state is not None, "Call reset() before get_avail_actions()."
 
         avail_dict = self._env.get_avail_actions(self._state)
 
@@ -1603,7 +1412,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
             import jax.numpy as jnp
             from jaxmarl.environments.smax import HeuristicEnemySMAX
         except ImportError as e:
-            raise ImportError(f"jax/jaxmarl 설치 필요: {e}")
+            raise ImportError(f"jax/jaxmarl must be installed: {e}")
 
         self._jax = jax
         self._jnp = jnp
@@ -1731,7 +1540,7 @@ class SMAXBatchWrapper(MultiAgentEnv):
         _seed_val = seed if seed is not None else 0
         self._rng = jax.random.PRNGKey(_seed_val)
         self._warmup_episodes = max(0, int(warmup_episodes))
-        self._batch_states = None  # 배치 상태 (n_envs, ...)
+        self._batch_states = None  # Batched states with shape (n_envs, ...).
         self._coop_attack_memory_np = np.zeros((n_envs, _num_allies, _num_enemies), dtype=np.int32)
         self._coop_attack_memory_jax = jnp.zeros((n_envs, _num_allies, _num_enemies), dtype=jnp.int32)
 

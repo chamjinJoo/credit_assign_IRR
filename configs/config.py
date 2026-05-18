@@ -4,11 +4,6 @@ from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, asdict, field
 
 
-def _filter_dataclass_kwargs(dataclass_type, values: Dict[str, Any]) -> Dict[str, Any]:
-    valid_keys = dataclass_type.__dataclass_fields__.keys()
-    return {k: v for k, v in values.items() if k in valid_keys}
-
-
 @dataclass
 class NetworkConfig:
     """Neural network configuration."""
@@ -51,10 +46,13 @@ class AlgorithmConfig:
     bridge_epoch: int = 4  # Number of epochs for bridge network training
     bridge_update_interval: int = 1  # Update bridge network every N QMIX updates
     num_batches: int = 4  # Number of batches K for training
-    causal_mini_batch_size: int = 10000  # Chunk size for RKHS solver
+    causal_mini_batch_size: Optional[int] = None  # None/0: use the full causal batch for r_pci bridge training
+    use_causal_rff: bool = True  # Use Random Fourier Features instead of materializing the RBF Gram matrix in r_pci
+    causal_rff_features: int = 512  # Number of RFF features for the r_pci RKHS loss approximation
+    causal_rff_seed: int = 0  # Seed for deterministic RFF frequencies
     tikhonov_gamma: float = 1e-4  # Tikhonov regularization for RKHS solver
     stabilizer_lambda: float = 1.0  # Gram matrix scaling in RKHS loss
-    use_value_parameter_sharing: bool = False  # If True, use single shared value network for all agents
+    use_value_parameter_sharing: bool = True  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     train_naivepredictor: bool = False  # Train naive predictor for causal baseline
     print_bridge_predictions: bool = False  # Print console-only bridge predictions during training
@@ -70,9 +68,8 @@ class AlgorithmConfig:
     lse_temperature: float = 1.0  # Temperature for LSE-style bridge potential shaping
     normalize_returns: bool = True  # Normalize return targets when supported
 
-    # JAX RPCI scalability options
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
-    use_delta_critic: bool = False      # True: per-agent V^i_delta critic for TD-style PCI advantages
+    use_delta_critic: bool = True      # True: per-agent V^i_delta critic for TD-style PCI advantages
     anneal_lr: bool = False             # True: linear LR annealing (actor/critic) from init_value to 0
 
     # Agent ID feature
@@ -356,20 +353,17 @@ class Config:
         config = cls()
         
         if 'network' in config_dict:
-            network_dict = _filter_dataclass_kwargs(NetworkConfig, dict(config_dict['network']))
-            config.network = NetworkConfig(**network_dict)
+            config.network = NetworkConfig(**config_dict['network'])
         
         if 'algorithm' in config_dict:
             algorithm_dict = dict(config_dict['algorithm'])
             legacy_use_recurrent = algorithm_dict.pop('use_recurrent_policy', None)
-            algorithm_dict = _filter_dataclass_kwargs(AlgorithmConfig, algorithm_dict)
             config.algorithm = AlgorithmConfig(**algorithm_dict)
             if legacy_use_recurrent is not None and 'network' not in config_dict:
                 config.network.use_recurrent_policy = legacy_use_recurrent
         
         if 'training' in config_dict:
-            training_dict = _filter_dataclass_kwargs(TrainingConfig, dict(config_dict['training']))
-            config.training = TrainingConfig(**training_dict)
+            config.training = TrainingConfig(**config_dict['training'])
         
         # 'env' 또는 'environment' 키 지원
         env_config = config_dict.get('environment', config_dict.get('env', {}))
@@ -417,8 +411,7 @@ class Config:
             config.environment = env_conf_obj
         
         if 'wandb' in config_dict:
-            wandb_dict = _filter_dataclass_kwargs(WandbConfig, dict(config_dict['wandb']))
-            config.wandb = WandbConfig(**wandb_dict)
+            config.wandb = WandbConfig(**config_dict['wandb'])
         
         return config
     
@@ -494,6 +487,14 @@ def parse_args() -> argparse.Namespace:
                         help='Number of epochs for bridge network training')
     parser.add_argument('--bridge-update-interval', type=int, default=None,
                         help='Update bridge network every N QMIX updates')
+    parser.add_argument('--causal-mini-batch-size', type=int, default=None,
+                        help='Causal bridge mini-batch size; use 0 for full-batch r_pci training')
+    parser.add_argument('--use-causal-rff', type=str, default=None,
+                        help='Use Random Fourier Features for r_pci RKHS loss (true/false)')
+    parser.add_argument('--causal-rff-features', type=int, default=None,
+                        help='Number of Random Fourier Features for r_pci RKHS loss')
+    parser.add_argument('--causal-rff-seed', type=int, default=None,
+                        help='Seed for deterministic r_pci Random Fourier Features')
     parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
                         help='Use shared value network for all agents (true/false)')
     parser.add_argument('--use-centralized-critic', type=str, default=None,
@@ -642,6 +643,14 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.bridge_epoch = args.bridge_epoch
     if hasattr(args, 'bridge_update_interval') and args.bridge_update_interval is not None:
         config.algorithm.bridge_update_interval = args.bridge_update_interval
+    if hasattr(args, 'causal_mini_batch_size') and args.causal_mini_batch_size is not None:
+        config.algorithm.causal_mini_batch_size = None if args.causal_mini_batch_size <= 0 else args.causal_mini_batch_size
+    if hasattr(args, 'use_causal_rff') and args.use_causal_rff is not None:
+        config.algorithm.use_causal_rff = args.use_causal_rff.lower() in ('true', '1', 'yes', 'on')
+    if hasattr(args, 'causal_rff_features') and args.causal_rff_features is not None:
+        config.algorithm.causal_rff_features = args.causal_rff_features
+    if hasattr(args, 'causal_rff_seed') and args.causal_rff_seed is not None:
+        config.algorithm.causal_rff_seed = args.causal_rff_seed
     if hasattr(args, 'use_value_parameter_sharing') and args.use_value_parameter_sharing is not None:
         # Convert string to boolean
         use_sharing = args.use_value_parameter_sharing.lower() in ('true', '1', 'yes', 'on')
@@ -656,8 +665,6 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.causal_lambda_adaptive_per_agent = use_adaptive
     if hasattr(args, 'anneal_lr') and args.anneal_lr is not None:
         config.algorithm.anneal_lr = args.anneal_lr.lower() in ('true', '1', 'yes', 'on')
-    if hasattr(args, 'add_agent_id') and args.add_agent_id is not None:
-        config.algorithm.add_agent_id = args.add_agent_id
     if hasattr(args, 'lr_actor') and args.lr_actor:
         config.network.lr_actor = args.lr_actor
     if hasattr(args, 'lr_bridge') and args.lr_bridge:

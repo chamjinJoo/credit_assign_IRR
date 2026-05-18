@@ -2,6 +2,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import math
+import hashlib
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 from algorithms.agent_common import RecurrentActorCriticAgent
@@ -22,7 +24,10 @@ from algorithms.common import (
     split_action_and_log_probs,
 )
 from algorithms.networks.rnn import RNNValueNetwork
-from algorithms.networks import OutcomeBridgeNetwork
+from algorithms.networks import (
+    OutcomeBridgeNetwork,
+    NaivePredictor,
+)
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class RBFKernel(nn.Module):
@@ -55,6 +60,22 @@ class RBFKernel(nn.Module):
         dists_sq = torch.sum((x1 - x2)**2, dim=-1) 
         return torch.exp(-gamma * dists_sq)
 
+class ConditionalMeanNet(nn.Module):
+    def __init__(self, z_dim, x_dim, action_dim, emb_dim=8, hidden=64):
+        super().__init__()
+        self.action_dim = action_dim
+        self.net = nn.Sequential(
+            nn.Linear(z_dim + x_dim + action_dim, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, 1),
+        )
+    def forward(self, z, a, x):
+        ea = F.one_hot(a.long(), self.action_dim).float()  # (B, action_dim)
+        inp = torch.cat([z, x, ea], dim=-1)
+        return self.net(inp).squeeze(-1)  # (B,)
+
 class rPCIAgent(RecurrentActorCriticAgent):
     pass
 
@@ -70,7 +91,13 @@ class rPCIAlgorithm:
         lr_actor: float = 3e-4,
         lr_bridge: float = 3e-4,
         lr_critic: float = 3e-4,
+        clip_delta: float = 0.2, # for delta clipping
         causal_lambda: float = 1.0,
+        causal_lambda_schedule: bool = False,
+        causal_lambda_start: float = 0.0,
+        causal_lambda_final: float = 0.2,
+        causal_lambda_warmup_steps: int = 10000,
+        causal_lambda_startingpoint: int = 0,
         bridge_epoch: int = 4,
         gamma: float = 0.99,
         gae_lambda: float = 0.95,
@@ -85,7 +112,13 @@ class rPCIAlgorithm:
         rkhs_gamma: float = 1.0,
         env_required_agents: Optional[Dict[int, List[int]]] = None,
         # Optimization parameter
-        causal_mini_batch_size: int = 10000,
+        causal_mini_batch_size: Optional[int] = 10000,
+        use_causal_rff: bool = True,
+        causal_rff_features: int = 512,
+        causal_rff_seed: int = 0,
+        tikhonov_gamma: float = 1e-4,
+        stabilizer_lambda: float = 1.0,
+        train_naivepredictor: bool = False,
         # Value network parameter sharing
         use_value_parameter_sharing: bool = True,
         rnn_chunk_length: int = 16, # Chunk length for RNN training
@@ -116,17 +149,32 @@ class rPCIAlgorithm:
         self.env_required_agents = env_required_agents
         self.device = torch.device(device if torch.cuda.is_available() and device == "cuda" else "cpu")
         self.causal_mini_batch_size = causal_mini_batch_size
+        self.use_causal_rff = use_causal_rff
+        self.causal_rff_features = max(2, int(causal_rff_features))
+        if self.causal_rff_features % 2 != 0:
+            self.causal_rff_features += 1
+        self.causal_rff_seed = int(causal_rff_seed)
+        self._rff_omega = None
+        self._rff_signature = None
+        self.train_naivepredictor = train_naivepredictor
         self.use_value_parameter_sharing = use_value_parameter_sharing
         self.use_episode_buffer = use_episode_buffer
         self.use_centralized_critic = use_centralized_critic
         self.use_recurrent_policy = use_recurrent_policy
         self.use_delta_critic = use_delta_critic
         self.bridge_hidden_dim = hidden_dim * recurrent_N * (num_agents - 1) if use_recurrent_policy else 0
-        self.bridge_prev_action_dim = action_dim * (num_agents - 1)
+        self.prev_action_embedding_dim = min(8, max(4, math.ceil(math.log2(max(action_dim, 2)))))
+        self.bridge_prev_action_dim = self.prev_action_embedding_dim * (num_agents - 1)
         self.bridge_context_dim = self.bridge_hidden_dim + self.bridge_prev_action_dim
 
         # for causal intrinsic reward
+        self.clip_delta = clip_delta
         self.causal_lambda = causal_lambda
+        self.causal_lambda_schedule = causal_lambda_schedule
+        self.causal_lambda_start = causal_lambda_start
+        self.causal_lambda_final = causal_lambda_final
+        self.causal_lambda_warmup_steps = causal_lambda_warmup_steps
+        self.causal_lambda_startingpoint = causal_lambda_startingpoint
         self.bridge_epoch = bridge_epoch
 
         # training steps
@@ -161,7 +209,7 @@ class rPCIAlgorithm:
                 use_recurrent_policy=use_recurrent_policy,
             )
         
-        # Value network
+        # Value network 설정
         if self.use_centralized_critic:
             # MAPPO-style centralized critic
             self.value_net = RNNValueNetwork(
@@ -171,7 +219,7 @@ class rPCIAlgorithm:
                     out_dim=1 if global_reward else num_agents,
                     action_dim=action_dim,
                     num_agents=num_agents
-                )
+            )
             self.value_optimizer = optim.Adam(self.value_net.parameters(), lr=lr_critic)
             self.rnn_state_value = None  # 초기화는 reset_agents에서
             self.value_nets = {agent_id: self.value_net for agent_id in range(num_agents)}
@@ -181,15 +229,9 @@ class rPCIAlgorithm:
 
         elif self.use_value_parameter_sharing:
             # one shared value network (IPPO-style)
-            self.shared_value_net = RNNValueNetwork(
-                obs_dim=self.policy_obs_dim, 
-                hidden_dim=hidden_dim, 
-                recurrent_N=recurrent_N, 
-                out_dim=1,
-                action_dim=action_dim, 
-                num_agents=1
-                )
-                
+            self.shared_value_net = RNNValueNetwork(obs_dim=self.policy_obs_dim, hidden_dim=hidden_dim, recurrent_N=recurrent_N, 
+                                out_dim=1, action_dim=action_dim, num_agents=1)
+             
             self.shared_value_optimizer = optim.Adam(self.shared_value_net.parameters(), lr=lr_critic)
             
             # parameter sharing
@@ -228,7 +270,7 @@ class rPCIAlgorithm:
             else:
                 print(f'[R-PCI] Using shared per-agent delta critic (input_dim={delta_obs_dim}, out_dim={delta_out_dim})')
         
-        # Proxy setting:
+        # Current proxy setting:
         #   W^i_t = other agents' current observations
         #   Z^i_t = agent i's previous hidden state h^i_{t-1}
         #   X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
@@ -240,31 +282,29 @@ class rPCIAlgorithm:
             num_agents=num_agents,
             w_dim=self.policy_obs_dim * (num_agents-1), # W^i_t = others' observations
             outcome_dim=1 if global_reward else num_agents,
-            hidden_dim=hidden_dim,
+            hidden_dim=hidden_dim, # 128 for SMAC -> 64 is enough?
             action_embedding_dim=8,
             x_dim=x_dim
         )
         
-        # --- Feautre probjector for RBFKernel, NOTE: use with standardization and EMAGamma. ----- #
-        self.feature_projector = nn.Sequential(
-            nn.Linear(self.policy_obs_dim + action_dim + x_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim)
+        self.prev_action_embedding = nn.Embedding(action_dim, self.prev_action_embedding_dim)
+        nn.init.normal_(
+            self.prev_action_embedding.weight,
+            mean=0.0,
+            std=1.0 / math.sqrt(self.prev_action_embedding_dim),
         )
-        # freeze the feature_projector
-        for parmam in self.feature_projector.parameters():
-            parmam.requires_grad = False
+        for param in self.prev_action_embedding.parameters():
+            param.requires_grad = False
         # ---------------------------------------------------------------------------------------- #
 
         # --- Legacy single-kernel path (kept for compatibility / experimentation) ---
-        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
+        self.critic_kernel_w = RBFKernel(gamma=1.0).to(self.device) # default gamma=1.0
 
         # --- Block-wise product kernel over active bridge covariates ---
         # Current kernel factorization is over:
         #   Z^i_t = agent i's previous hidden state h^i_{t-1},
         #   A^i_t = my action,
         #   X^i_t = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1}).
-        self.critic_kernel_z = RBFKernel(gamma=1.0).to(self.device)    # kept for checkpoint compatibility
         self.kernel_z_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for Z^i_t
         self.kernel_a_block = RBFKernel(gamma=1.0).to(self.device)     # kernel for A^i_t one-hot
         
@@ -273,10 +313,21 @@ class rPCIAlgorithm:
         self.kernel_xhid_block = RBFKernel(gamma=1.0).to(self.device)  # kernel for hidden-state block in X^i_t
         self.kernel_xact_block = RBFKernel(gamma=1.0).to(self.device)  # reserved for action sub-block inside X
         
-        self.stabilizer_lambda = 1.0
-        self.tikhonov_gamma = 1e-4
+        self.stabilizer_lambda = stabilizer_lambda
+        self.tikhonov_gamma = tikhonov_gamma
 
         self.outcome_bridge_optimizer = optim.Adam(self.outcome_bridge_net.parameters(), lr=lr_bridge)
+        
+        if self.train_naivepredictor:
+            self.naive_predictor = NaivePredictor(
+                action_dim=action_dim,
+                num_agents=num_agents,
+                w_dim=self.w_dim,
+                x_dim=x_dim,
+                output_dim=1 if global_reward else num_agents,
+                hidden_dim=hidden_dim
+            )
+            self.naive_optimizer = optim.Adam(self.naive_predictor.parameters(), lr=lr_bridge)
         
         # Keep track of done status for masks
         self.last_dones = {i: False for i in range(num_agents)}
@@ -297,9 +348,11 @@ class rPCIAlgorithm:
         move_modules_to_device(
             self.device,
             self.outcome_bridge_net,
-            self.critic_kernel_z,
-            self.feature_projector,
+            self.critic_kernel_w,
+            self.prev_action_embedding,
         )
+        if getattr(self, "train_naivepredictor", False):
+            move_modules_to_device(self.device, self.naive_predictor)
         move_modules_to_device(
             self.device,
             self.kernel_z_block,
@@ -310,7 +363,16 @@ class rPCIAlgorithm:
         )
     
     def get_current_causal_lambda(self) -> float:
-        return self.causal_lambda
+        if not self.causal_lambda_schedule:
+            return self.causal_lambda
+        if self.training_steps < self.causal_lambda_startingpoint:
+            return self.causal_lambda_start
+        effective_steps = self.training_steps - self.causal_lambda_startingpoint
+        if effective_steps >= self.causal_lambda_warmup_steps:
+            return self.causal_lambda_final
+        else:
+            progress = effective_steps / self.causal_lambda_warmup_steps
+            return self.causal_lambda_start + progress * (self.causal_lambda_final - self.causal_lambda_start)
 
     def _global_reward_from_dict(self, rewards: Dict[int, float]) -> float:
         return sum(rewards.values())
@@ -327,6 +389,73 @@ class rPCIAlgorithm:
             dtype=torch.float32,
             device=self.device,
         )
+
+    @staticmethod
+    def _standardize_kernel_block(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+        if x.size(1) == 0:
+            return x
+        return (x - x.mean(0, keepdim=True)) / x.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+
+    def _normalize_z_kernel_block(self, z: torch.Tensor, joint_obs_dim: int, eps: float = 1e-6) -> torch.Tensor:
+        if z.size(1) == joint_obs_dim + self.num_agents:
+            z_obs_n = self._standardize_kernel_block(z[:, :joint_obs_dim], eps=eps)
+            z_rew_n = self._standardize_kernel_block(z[:, joint_obs_dim:], eps=eps)
+            return torch.cat([z_obs_n, z_rew_n], dim=1)
+        return self._standardize_kernel_block(z, eps=eps)
+
+    def _rff_features(self, features: torch.Tensor, gamma_by_dim: torch.Tensor) -> torch.Tensor:
+        if features.size(1) == 0:
+            raise ValueError("RFF kernel input must have at least one feature dimension")
+
+        num_freq = self.causal_rff_features // 2
+        gamma_signature = tuple(float(v) for v in gamma_by_dim.detach().cpu())
+        signature = (
+            features.size(1),
+            num_freq,
+            features.device.type,
+            features.device.index,
+            features.dtype,
+            gamma_signature,
+        )
+        if self._rff_omega is None or self._rff_signature != signature:
+            seed_key = repr((self.causal_rff_seed, features.size(1), num_freq, gamma_signature)).encode("utf-8")
+            seed = int.from_bytes(hashlib.sha256(seed_key).digest()[:8], "little") % (2**31)
+            generator = torch.Generator(device="cpu")
+            generator.manual_seed(seed)
+            omega = torch.randn(features.size(1), num_freq, generator=generator, dtype=torch.float32)
+            omega = omega.to(device=features.device, dtype=features.dtype)
+            omega = omega * torch.sqrt(2.0 * gamma_by_dim).unsqueeze(1)
+            self._rff_omega = omega
+            self._rff_signature = signature
+
+        projection = features @ self._rff_omega
+        scale = math.sqrt(1.0 / num_freq)
+        return scale * torch.cat([torch.cos(projection), torch.sin(projection)], dim=-1)
+
+    def _should_use_rff_for_block(self, block_size: int) -> bool:
+        return self.use_causal_rff and self.causal_rff_features < 0.75 * block_size
+
+    def _rff_kernel_weighted_residual(self, phi: torch.Tensor, residuals: torch.Tensor) -> torch.Tensor:
+        feature_dim = phi.size(1)
+        eye = torch.eye(feature_dim, device=phi.device, dtype=phi.dtype)
+        system = self.tikhonov_gamma * eye + self.stabilizer_lambda * (phi.T @ phi)
+        rhs = phi.T @ residuals
+        try:
+            coeff = torch.linalg.solve(system, rhs)
+        except RuntimeError:
+            jitter = max(float(self.tikhonov_gamma), 1e-6)
+            coeff = torch.linalg.solve(system + jitter * eye, rhs)
+        return phi @ coeff
+
+    def _sample_rff_offdiag_values(self, phi: torch.Tensor, max_pairs: int = 4096) -> Optional[torch.Tensor]:
+        n = phi.size(0)
+        if n < 2:
+            return None
+        pair_count = min(max_pairs, n * (n - 1))
+        row = torch.randint(n, (pair_count,), device=phi.device)
+        col = torch.randint(n - 1, (pair_count,), device=phi.device)
+        col = col + (col >= row).long()
+        return (phi[row] * phi[col]).sum(dim=-1)
     
     def update_causal_networks(self, batch_data: List[Dict]) -> Dict[str, float]:
         if self.get_current_causal_lambda() == 0.0:
@@ -348,6 +477,7 @@ class rPCIAlgorithm:
         reward_batch = self._build_reward_batch_tensor(batch_data)
         dones_batch = torch.tensor([[t['dones'][i] for i in range(num_agents)] for t in batch_data], dtype=torch.float32, device=device)
         prev_actions_onehot_batch = F.one_hot(prev_action_batch, self.action_dim).float()
+        prev_actions_emb_batch = self.prev_action_embedding(prev_action_batch)
 
         # Extract hidden states
         hidden_states_batch = {}    # h_{t-1}: for policy evaluation / bridge X construction
@@ -365,10 +495,11 @@ class rPCIAlgorithm:
         )
         obs_others_super = expanded_obs[mask].view(batch_size * num_agents, -1)
 
-        A_onehot = F.one_hot(action_batch, self.action_dim).float()
-        expanded_A = A_onehot.unsqueeze(1).expand(-1, num_agents, -1, -1)
-        mask_A = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(batch_size, -1, -1, self.action_dim)
-        A_others_super = expanded_A[mask_A].view(batch_size * num_agents, -1)
+        expanded_prev_actions = prev_actions_emb_batch.unsqueeze(1).expand(-1, num_agents, -1, -1)
+        mask_prev_actions = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
+            batch_size, -1, -1, self.prev_action_embedding_dim
+        )
+        prev_action_others_super = expanded_prev_actions[mask_prev_actions].view(batch_size * num_agents, -1)
 
         W_super = obs_others_super # Default W
         # W_super = torch.cat([obs_others_super, A_others_super], dim=1) # W = complements obs and action
@@ -385,6 +516,7 @@ class rPCIAlgorithm:
         H_all = torch.stack(h_list, dim=1)  # (B, N, RecN*H)
 
         obs_super = obs_batch.view(-1, self.policy_obs_dim)
+        
         # 2. Construct X_super = (o^i_t, h^{-i}_{t-1}, a^{-i}_{t-1})
         if self.use_recurrent_policy:
             H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)  # (B, N, N, RecN*H)
@@ -392,9 +524,9 @@ class rPCIAlgorithm:
                 batch_size, -1, -1, self.recurrent_N * self.hidden_dim
             )
             H_others_super = H_all_expanded[hid_mask].view(batch_size * num_agents, -1)  # (B*N, (N-1)*RecN*H)
-            X_super = torch.cat([obs_super, H_others_super, A_others_super], dim=1)
+            X_super = torch.cat([obs_super, H_others_super, prev_action_others_super], dim=1)
         else:
-            X_super = torch.cat([obs_super, A_others_super], dim=1)
+            X_super = torch.cat([obs_super, prev_action_others_super], dim=1)
 
         if self.use_recurrent_policy:
             Z_super = H_all.reshape(batch_size * num_agents, -1) # Z^i_t = h^i_{t-1}
@@ -468,11 +600,15 @@ class rPCIAlgorithm:
 
         avg_outcome_loss = 0.0
         avg_action_loss = 0.0
+        avg_naive_loss = 0.0
 
         sum_off_mean = 0.0
         sum_off_std = 0.0
         num_updates = 0
-        chunk_size = self.causal_mini_batch_size 
+        if self.causal_mini_batch_size is None or self.causal_mini_batch_size <= 0:
+            chunk_size = total_samples
+        else:
+            chunk_size = min(self.causal_mini_batch_size, total_samples)
 
         for i in range(0, total_samples, chunk_size):
             idx = indices[i:i + chunk_size]
@@ -510,23 +646,23 @@ class rPCIAlgorithm:
             a_splits    = a_s.split(agent_sizes)
             y_splits    = list(y_s.split(agent_sizes))
 
-            # Set kernel gamma once — feature dims are the same across agents.
-            # After per-agent standardization var ≈ 1, so gamma = 1/n_features.
+            gamma_z = 1.0 / max(z_s.shape[1], 1)
+            gamma_a = 1.0
+            gamma_xobs = 1.0 / max(self.policy_obs_dim, 1)
+            gamma_xact = 1.0 / max(x_act_raw_s.shape[1], 1)
+
             with torch.no_grad():
-                self.kernel_z_block.log_gamma.data.fill_(
-                    torch.log(torch.tensor(1.0 / max(z_s.shape[1], 1))))
-                self.kernel_a_block.log_gamma.data.fill_(
-                    torch.log(torch.tensor(1.0)))
+                self.kernel_z_block.log_gamma.data.fill_(math.log(gamma_z))
+                self.kernel_a_block.log_gamma.data.fill_(math.log(gamma_a))
                 if self.policy_obs_dim > 0:
-                    self.kernel_xobs_block.log_gamma.data.fill_(
-                        torch.log(torch.tensor(1.0 / self.policy_obs_dim)))
+                    self.kernel_xobs_block.log_gamma.data.fill_(math.log(gamma_xobs))
                 if x_act_raw_s.size(1) > 0:
-                    self.kernel_xact_block.log_gamma.data.fill_(
-                        torch.log(torch.tensor(1.0)))
+                    self.kernel_xact_block.log_gamma.data.fill_(math.log(gamma_xact))
 
             # --- Per-agent kernel and regularized kernel ---
             K_blocks     = []
             reg_K_blocks = []
+            rff_blocks   = []
             off_vals_list = []
 
             for ag_i in range(num_agents):
@@ -534,25 +670,14 @@ class rPCIAlgorithm:
                 if Bi == 0:
                     K_blocks.append(None)
                     reg_K_blocks.append(None)
+                    rff_blocks.append(None)
                     continue
 
-                z_i = z_splits[ag_i]
-                # Standardize z (per-agent block, so plain mean/std suffices).
-                # Legacy fallback: keep handling older z layouts if they appear in checkpoints/experiments.
-                if z_i.size(1) == joint_obs_dim + num_agents:
-                    z_obs_n = (z_i[:, :joint_obs_dim] - z_i[:, :joint_obs_dim].mean(0, keepdim=True)) \
-                              / z_i[:, :joint_obs_dim].std(0, keepdim=True, unbiased=False).clamp_min(eps)
-                    z_rew_n = (z_i[:, joint_obs_dim:] - z_i[:, joint_obs_dim:].mean(0, keepdim=True)) \
-                              / z_i[:, joint_obs_dim:].std(0, keepdim=True, unbiased=False).clamp_min(eps)
-                    z_norm_i = torch.cat([z_obs_n, z_rew_n], dim=1)
-                else:
-                    z_norm_i = (z_i - z_i.mean(0, keepdim=True)) / z_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                z_norm_i = self._normalize_z_kernel_block(z_splits[ag_i], joint_obs_dim, eps=eps)
 
                 xobs_cont_i = xobs_cont_splits[ag_i]
                 if xobs_cont_i.size(1) > 0:
-                    xobs_cont_norm_i = (
-                        xobs_cont_i - xobs_cont_i.mean(0, keepdim=True)
-                    ) / xobs_cont_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                    xobs_cont_norm_i = self._standardize_kernel_block(xobs_cont_i, eps=eps)
                 else:
                     xobs_cont_norm_i = xobs_cont_i
                 xobs_id_i = xobs_id_splits[ag_i]
@@ -560,28 +685,70 @@ class rPCIAlgorithm:
 
                 xhid_i = xhid_splits[ag_i]
                 if xhid_i.size(1) > 0:
-                    xhid_norm_i = (xhid_i - xhid_i.mean(0, keepdim=True)) / xhid_i.std(0, keepdim=True, unbiased=False).clamp_min(eps)
+                    xhid_norm_i = self._standardize_kernel_block(xhid_i, eps=eps)
                 else:
                     xhid_norm_i = xhid_i
 
                 xact_i = xact_splits[ag_i]
-
+                if xact_i.size(1) > 0:
+                    xact_norm_i = self._standardize_kernel_block(xact_i, eps=eps)
+                else:
+                    xact_norm_i = xact_i
                 a_oh_i = F.one_hot(a_splits[ag_i].long(), self.action_dim).float()
-
-                K_i = self.kernel_z_block(z_norm_i) * self.kernel_a_block(a_oh_i)
-                if xobs_norm_i.size(1) > 0:
-                    K_i = K_i * self.kernel_xobs_block(xobs_norm_i)
+                gamma_xhid_i = None
                 if xhid_norm_i.size(1) > 0:
                     effective_dim = torch.mean(
                         torch.sum(torch.abs(xhid_norm_i) > 1e-6, dim=-1).float()
                     ).clamp_min(1.0)
-                    with torch.no_grad():
-                        self.kernel_xhid_block.log_gamma.data.fill_(
-                            torch.log(torch.tensor(1.0 / max(effective_dim.item(), 1.0)))
+                    gamma_xhid_i = 1.0 / max(effective_dim.item(), 1.0)
+                else:
+                    effective_dim = None
+
+                if self._should_use_rff_for_block(Bi):
+                    rff_inputs = [z_norm_i, a_oh_i]
+                    rff_gammas = [
+                        torch.full((z_norm_i.size(1),), gamma_z, device=device, dtype=z_norm_i.dtype),
+                        torch.full((self.action_dim,), gamma_a, device=device, dtype=a_oh_i.dtype),
+                    ]
+                    if xobs_norm_i.size(1) > 0:
+                        rff_inputs.append(xobs_norm_i)
+                        rff_gammas.append(
+                            torch.full((xobs_norm_i.size(1),), gamma_xobs, device=device, dtype=xobs_norm_i.dtype)
                         )
+                    if xhid_norm_i.size(1) > 0 and gamma_xhid_i is not None:
+                        rff_inputs.append(xhid_norm_i)
+                        rff_gammas.append(
+                            torch.full((xhid_norm_i.size(1),), gamma_xhid_i, device=device, dtype=xhid_norm_i.dtype)
+                        )
+                    if xact_norm_i.size(1) > 0:
+                        rff_inputs.append(xact_norm_i)
+                        rff_gammas.append(
+                            torch.full((xact_norm_i.size(1),), gamma_xact, device=device, dtype=xact_norm_i.dtype)
+                        )
+
+                    rff_input_i = torch.cat(rff_inputs, dim=1)
+                    gamma_by_dim_i = torch.cat(rff_gammas).to(dtype=rff_input_i.dtype)
+                    phi_i = self._rff_features(rff_input_i, gamma_by_dim_i)
+
+                    with torch.no_grad():
+                        off_vals_i = self._sample_rff_offdiag_values(phi_i)
+                        if off_vals_i is not None:
+                            off_vals_list.append(off_vals_i.detach())
+
+                    K_blocks.append(None)
+                    reg_K_blocks.append(None)
+                    rff_blocks.append(phi_i)
+                    continue
+
+                K_i = self.kernel_z_block(z_norm_i) * self.kernel_a_block(a_oh_i)
+                if xobs_norm_i.size(1) > 0:
+                    K_i = K_i * self.kernel_xobs_block(xobs_norm_i)
+                if xhid_norm_i.size(1) > 0 and gamma_xhid_i is not None:
+                    with torch.no_grad():
+                        self.kernel_xhid_block.log_gamma.data.fill_(math.log(gamma_xhid_i))
                     K_i = K_i * self.kernel_xhid_block(xhid_norm_i)
-                if xact_i.size(1) > 0:
-                    K_i = K_i * self.kernel_xact_block(xact_i)
+                if xact_norm_i.size(1) > 0:
+                    K_i = K_i * self.kernel_xact_block(xact_norm_i)
 
                 # Monitor off-diagonal within this agent's block.
                 with torch.no_grad():
@@ -597,53 +764,13 @@ class rPCIAlgorithm:
 
                 K_blocks.append(K_i)
                 reg_K_blocks.append(reg_K_i)
+                rff_blocks.append(None)
 
             # Aggregate off-diagonal stats across all agent blocks.
             if off_vals_list:
                 all_off = torch.cat(off_vals_list)
                 sum_off_mean += all_off.mean().item()
                 sum_off_std  += all_off.std(unbiased=False).item()
-
-            # kernel_feat_z = torch.cat([z_mb_norm, action_onehot_mb, x_mb_norm], dim=1) # legacy single-kernel path with standardization
-            # kernel_feat_z = torch.cat([z_mb, action_onehot_mb, x_mb], dim=1)             # legacy single-kernel path without standardization
-
-            # Legacy optional feature projection before applying a single kernel.
-            # with torch.no_grad():
-            #    kernel_feat_z = self.feature_projector(kernel_feat_z)
-
-            # Legacy median-heuristic gamma update for the single-kernel path.
-            # with torch.no_grad():
-            #     Xg = kernel_feat_z
-            #     max_for_gamma = getattr(self, "max_points_for_kernel_gamma", 256)
-            #     if Xg.size(0) > max_for_gamma:
-            #         idx = torch.randperm(Xg.size(0), device=Xg.device)[:max_for_gamma]
-            #         Xg = Xg[idx]
-            #     if Xg.size(0) >= 2:
-            #         d2 = torch.pdist(Xg, p=2).pow(2)
-            #         med = d2.median().clamp_min(1e-8)
-            #         new_gamma = 1.0 / (2.0 * med)
-            #         new_log_gamma = torch.log(new_gamma)
-            #         ema = getattr(self, "kernel_gamma_ema", 0.95)
-            #         self.critic_kernel_z.log_gamma.data = ema * self.critic_kernel_z.log_gamma.data + (1.0 - ema) * new_log_gamma
-
-            # Legacy single-kernel Gram matrix.
-            # K_z = self.critic_kernel_z(kernel_feat_z)
-
-            # ------------------------------------------------------------------- #
-            # Legacy product-kernel path with a single unsplit X block.           #
-            # ------------------------------------------------------------------- #
-            # with torch.no_grad():
-            #     for feat, kernel in [
-            #         (z_mb_norm,        self.kernel_z_block),
-            #         (action_onehot_mb, self.kernel_a_block),
-            #         (x_mb_norm,        self.kernel_x_block),
-            #     ]:
-            #         n = feat.shape[1]
-            #         var = feat.var(dim=0).mean().clamp_min(1e-8)
-            #         kernel.log_gamma.data.fill_(torch.log(1.0 / (n * var)))
-            # K_z = (self.kernel_z_block(z_mb_norm)
-            #        * self.kernel_a_block(action_onehot_mb)
-            #        * self.kernel_x_block(x_mb_norm))
 
             # --- Update Outcome Bridge h_φ for bridge_epoch times ---
             # Forward pass runs on the full sorted batch; per-agent solve on B_i×B_i blocks.
@@ -655,19 +782,29 @@ class rPCIAlgorithm:
                 offset = 0
                 for ag_i in range(num_agents):
                     Bi = agent_sizes[ag_i]
-                    if K_blocks[ag_i] is None or Bi == 0:
+                    if Bi == 0:
                         offset += Bi
                         continue
-                    K_i     = K_blocks[ag_i]
-                    reg_K_i = reg_K_blocks[ag_i]
                     res_i   = y_splits[ag_i] - y_hat_s[offset:offset + Bi]
-                    solved_i = torch.linalg.solve(reg_K_i, res_i)
-                    per_sample_i = (res_i * (K_i @ solved_i)).sum(dim=1)  # [B_i]
+
+                    phi_i = rff_blocks[ag_i]
+                    if phi_i is not None:
+                        weighted_res_i = self._rff_kernel_weighted_residual(phi_i, res_i)
+                    else:
+                        K_i = K_blocks[ag_i]
+                        reg_K_i = reg_K_blocks[ag_i]
+                        if K_i is None or reg_K_i is None:
+                            offset += Bi
+                            continue
+                        solved_i = torch.linalg.solve(reg_K_i, res_i)
+                        weighted_res_i = K_i @ solved_i
+
+                    per_sample_i = (res_i * weighted_res_i).sum(dim=1)
                     per_agent_losses.append(per_sample_i.mean())           # 1/|B_i|
                     offset += Bi
 
                 # Per-agent averaging: (1/|N|) sum_i (1/|B_i|) r_i^T K_i (γI+λK_i)^{-1} r_i
-                loss_h = torch.stack(per_agent_losses).mean()
+                loss_h = torch.stack(per_agent_losses).mean() if per_agent_losses else torch.tensor(0.0, device=device)
 
                 # --- Update Action Bridge q_θ ---
                 loss_q = torch.tensor(0.0, device=device)
@@ -682,7 +819,17 @@ class rPCIAlgorithm:
                 epoch_outcome_loss += loss_h.item()
 
             avg_outcome_loss += epoch_outcome_loss / self.bridge_epoch
-            avg_action_loss += loss_q.item()                
+            avg_action_loss += loss_q.item()
+            
+            # --- Update Naive Predictor ---
+            if getattr(self, "train_naivepredictor", False):
+                naive_output = self.naive_predictor(a_mb, w_mb, x_mb) # (B, N)
+                naive_loss = F.mse_loss(naive_output, y_mb)
+                self.naive_optimizer.zero_grad()
+                naive_loss.backward()
+                self.naive_optimizer.step()
+                avg_naive_loss += naive_loss.item()
+                
             num_updates += 1
 
         return_dict = {
@@ -690,7 +837,10 @@ class rPCIAlgorithm:
             'Kz_offdiag_mean': sum_off_mean / num_updates, # close to 0: Kernel is close to Identity I, close to 1: Kenrel is close to 11^\top
             'Kz_offdiag_std': sum_off_std / num_updates,
         }
- 
+        
+        if getattr(self, "train_naivepredictor", False):
+            return_dict['naive_loss'] = avg_naive_loss / num_updates
+
         return return_dict
 
     def reset_agents(self):
@@ -1073,10 +1223,10 @@ class rPCIAlgorithm:
                 w_t_expanded = w_t_flat.repeat_interleave(action_dim, dim=0)
 
                 if prev_actions_batch is not None:
-                    prev_actions_onehot_b = F.one_hot(prev_actions_batch[i:end].long(), self.action_dim).float()
-                    expanded_prev_actions = prev_actions_onehot_b.unsqueeze(1).expand(-1, num_agents, -1, -1)
+                    prev_actions_emb_b = self.prev_action_embedding(prev_actions_batch[i:end].long())
+                    expanded_prev_actions = prev_actions_emb_b.unsqueeze(1).expand(-1, num_agents, -1, -1)
                     action_mask = ~torch.eye(num_agents, dtype=torch.bool, device=self.device).unsqueeze(0).unsqueeze(-1).expand(
-                        curr_bs, -1, -1, self.action_dim
+                        curr_bs, -1, -1, self.prev_action_embedding_dim
                     )
                     prev_actions_others_inf = expanded_prev_actions[action_mask].view(curr_bs * num_agents, -1)
                 else:
@@ -1286,6 +1436,8 @@ class rPCIAlgorithm:
         agent_pci_advantages = {}  # [Direction 2] pci-only advantages
         agent_delta_returns = {}
 
+        causal_lambda = self.get_current_causal_lambda()  # [Direction 2]
+
         for agent_id in range(self.num_agents):
             if agent_id not in batch_data[0]['bold_o_t']: continue
 
@@ -1333,13 +1485,14 @@ class rPCIAlgorithm:
                 agent_id=agent_id,
                 agent_obs=agent_obs,
                 my_actions=my_actions,
-                agent_advantage=agent_advantages[agent_id],
+                agent_advantage=agent_advantages[agent_id], # [Direction 1] combined (env_norm + λ*pci_norm); uncomment to revert
                 agent_return=agent_returns[agent_id],
                 agent_delta_return=agent_delta_returns.get(agent_id) if self.use_delta_critic else None,
                 masks_batch=masks_batch,
                 init_hidden_states=init_hidden_states,
                 available_actions_all=avail_actions_all,
             )
+            num_chunks = prepared['num_chunks']
             rnn_obs_batch = prepared['rnn_obs_batch']
             rnn_masks_batch = prepared['rnn_masks_batch']
             p_h0_batch = prepared['p_h0_batch']
@@ -1350,10 +1503,19 @@ class rPCIAlgorithm:
             delta_ret_batch = prepared.get('delta_ret_batch')
             active_masks_batch = prepared['active_masks_batch']
             prev_actions_batch = prepared['prev_actions_batch']
+            prev_actions_batch_merged = prepared['prev_actions_batch_merged']
             avail_actions_batch_merged = prepared['avail_actions_batch_merged']
             old_log_probs = prepared['old_log_probs']
             delta_v_h0_batch = prepared.get('delta_v_h0_batch')
 
+            # [Direction 2] Prepare PCI advantage batch with the same chunking as adv_batch
+            pci_adv_normalized = normalize_advantages(agent_pci_advantages[agent_id])
+            if num_chunks > 0:
+                pci_adv_batch = chunk_sequence(
+                    pci_adv_normalized[:num_chunks * self.rnn_chunk_length], self.rnn_chunk_length
+                ).reshape(-1)
+            else:
+                pci_adv_batch = pci_adv_normalized
 
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
@@ -1362,6 +1524,14 @@ class rPCIAlgorithm:
                 )
                 ratio = torch.exp(new_log_probs - old_log_probs)
 
+                # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
+                # surr1_env = ratio * adv_batch
+                # surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
+                # surr1_pci = ratio * pci_adv_batch
+                # surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
+                # policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
+                # policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
+                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
                 surr1 = ratio * adv_batch
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
                 policy_loss = -torch.min(surr1, surr2)
@@ -1531,7 +1701,7 @@ class rPCIAlgorithm:
         if not hasattr(self, '_update_call_count'):
             self._update_call_count = 0
         self._update_call_count += 1
-        _do_causal_debug = (self._update_call_count % 50 == 1)
+        # _do_causal_debug = (self._update_call_count % 50 == 1)
         current_causal_lambda = self.get_current_causal_lambda()
 
         # Compute GAE on full trajectories before chunking
@@ -1554,10 +1724,11 @@ class rPCIAlgorithm:
                     baseline_type='averaged', # weighted / averaged / max
                     available_actions_batch=available_actions_batch,
                     prev_actions_batch=prev_actions_batch_cr,
-                    debug=_do_causal_debug
                 )
             
                 delta = C_matrix.sum(dim=2)
+                # delta = torch.clamp(delta, min=0.0) # same as ReLU
+                delta[torch.abs(delta) < self.clip_delta] = 0.0
                 
                 # Store delta for later advantage-level PCI construction
                 for t_idx, t in enumerate(traj):

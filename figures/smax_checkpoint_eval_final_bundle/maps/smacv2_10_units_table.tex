@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\caption{Deterministic SMAX win rate on smacv2_10_units using final checkpoints. Rows are grouped by training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
+\label{tab:smax_smacv2_10_units_final}
+\begin{tabular}{lcccc}
+\toprule
+Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+\midrule
+vanilla & 38.5 \scriptsize $\pm$ 5.0 & 39.1 \scriptsize $\pm$ 6.2 & 45.3 \scriptsize $\pm$ 8.7 & 51.6 \scriptsize $\pm$ 8.3 \\
+tar_w=6 & 8.9 \scriptsize $\pm$ 5.0 & 9.4 \scriptsize $\pm$ 0.0 & 4.7 \scriptsize $\pm$ 0.0 & 19.8 \scriptsize $\pm$ 3.6 \\
+tar_w=8 & 9.4 \scriptsize $\pm$ 9.5 & 15.6 \scriptsize $\pm$ 5.6 & 22.9 \scriptsize $\pm$ 5.5 & 47.4 \scriptsize $\pm$ 8.6 \\
+\bottomrule
+\end{tabular}
+\end{table}

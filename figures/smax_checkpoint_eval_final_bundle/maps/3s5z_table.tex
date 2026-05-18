@@ -1,0 +1,13 @@
+\begin{table}[t]
+\centering
+\caption{Deterministic SMAX win rate on 3s5z using final checkpoints. Rows are grouped by training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
+\label{tab:smax_3s5z_final}
+\begin{tabular}{lcccc}
+\toprule
+Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+\midrule
+vanilla & 81.2 \scriptsize $\pm$ 27.2 & 70.8 \scriptsize $\pm$ 31.5 & 96.4 \scriptsize $\pm$ 2.4 & 97.4 \scriptsize $\pm$ 2.4 \\
+tar_w=6 & 0.0 \scriptsize $\pm$ 0.0 & 24.5 \scriptsize $\pm$ 25.0 & 64.1 \scriptsize $\pm$ 0.0 & 83.3 \scriptsize $\pm$ 7.0 \\
+\bottomrule
+\end{tabular}
+\end{table}

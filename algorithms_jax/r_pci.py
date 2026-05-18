@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 from functools import partial
 from typing import Any, Dict, Optional
@@ -7,6 +8,7 @@ from typing import Any, Dict, Optional
 import flax.serialization as serialization
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 
 from .common import (
@@ -57,6 +59,9 @@ class JAXRPCIAlgorithm:
         causal_lambda: float = 0.0,
         bridge_epoch: int = 4,
         causal_mini_batch_size: int = 10000,
+        use_causal_rff: bool = True,
+        causal_rff_features: int = 256,
+        causal_rff_seed: int = 0,
         tikhonov_gamma: float = 1.0e-4,
         stabilizer_lambda: float = 1.0,
         use_recurrent_policy: bool = True,
@@ -103,6 +108,13 @@ class JAXRPCIAlgorithm:
         self.causal_lambda = causal_lambda
         self.bridge_epoch = bridge_epoch
         self.causal_mini_batch_size = causal_mini_batch_size
+        self.use_causal_rff = bool(use_causal_rff)
+        self.causal_rff_features = max(2, int(causal_rff_features))
+        if self.causal_rff_features % 2 != 0:
+            self.causal_rff_features += 1
+        self.causal_rff_seed = int(causal_rff_seed)
+        self._rff_omega = None
+        self._rff_signature = None
         self.tikhonov_gamma = tikhonov_gamma
         self.stabilizer_lambda = stabilizer_lambda
         self.training_steps = 0
@@ -115,7 +127,8 @@ class JAXRPCIAlgorithm:
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
         self.delta_critic_state_dim = hidden_dim if use_delta_critic else 0
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
-        self.bridge_prev_action_dim = (num_agents - 1) * action_dim
+        self.prev_action_embedding_dim = min(8, max(4, math.ceil(math.log2(max(action_dim, 2)))))
+        self.bridge_prev_action_dim = (num_agents - 1) * self.prev_action_embedding_dim
         self.bridge_context_dim = self.bridge_hidden_dim + self.bridge_prev_action_dim
         self.use_delta_critic = use_delta_critic
         self.bridge_output_dim = 1 if global_reward else num_agents
@@ -125,6 +138,7 @@ class JAXRPCIAlgorithm:
         init_rng = jax.random.fold_in(base_rng, 0)
         self.rng = jax.random.fold_in(base_rng, 1)
         self.bridge_rng = jax.random.fold_in(base_rng, 2)
+        self.prev_action_embedding_table = self._build_prev_action_embedding_table(int(seed))
 
         self.actor_model = (
             RecurrentActor(hidden_dim=hidden_dim, action_dim=action_dim)
@@ -259,35 +273,21 @@ class JAXRPCIAlgorithm:
         return self.initialize_runner_state(n_envs)
 
     def get_current_causal_lambda(self) -> float:
-        if self.causal_lambda_schedule_type == "none" or not self.causal_lambda_schedule:
-            return float(self.causal_lambda)
-
-        if self.causal_lambda_schedule_type == "exponential":
-            # Delay until startingpoint, then exponential ramp-up toward causal_lambda
-            if self.training_steps < self.causal_lambda_startingpoint:
-                return float(self.causal_lambda_start)
-            effective_steps = self.training_steps - self.causal_lambda_startingpoint
-            tau = max(1.0, float(self.causal_lambda_warmup_tau))
-            progress = 1.0 - math.exp(-effective_steps / tau)
-            return float(
-                self.causal_lambda_start
-                + progress * (self.causal_lambda_final - self.causal_lambda_start)
-            )
-
-        # fallback: existing linear schedule
-        if self.training_steps < self.causal_lambda_startingpoint:
-            return float(self.causal_lambda_start)
-        effective_steps = self.training_steps - self.causal_lambda_startingpoint
-        if effective_steps >= self.causal_lambda_warmup_steps:
-            return float(self.causal_lambda_final)
-        progress = effective_steps / max(1, self.causal_lambda_warmup_steps)
-        return float(
-            self.causal_lambda_start
-            + progress * (self.causal_lambda_final - self.causal_lambda_start)
-        )
+        return float(self.causal_lambda)
 
     def _augment_obs(self, obs: jnp.ndarray) -> jnp.ndarray:
         return add_agent_id_features(obs) if self.add_agent_id else obs
+
+    def _build_prev_action_embedding_table(self, seed: int) -> jnp.ndarray:
+        seed_key = repr(("prev_action_embedding", seed, self.action_dim, self.prev_action_embedding_dim)).encode("utf-8")
+        derived_seed = int.from_bytes(hashlib.sha256(seed_key).digest()[:8], "little") % (2**31)
+        rng = np.random.default_rng(derived_seed)
+        table = rng.standard_normal((self.action_dim, self.prev_action_embedding_dim)).astype(np.float32)
+        table = table / math.sqrt(self.prev_action_embedding_dim)
+        return jnp.asarray(table)
+
+    def _embed_prev_actions(self, prev_actions: jnp.ndarray) -> jnp.ndarray:
+        return prev_actions @ self.prev_action_embedding_table
 
     def _infer_attack_action_threshold(self, action_dim: int) -> Optional[int]:
         env_name = self.env.__class__.__name__
@@ -941,7 +941,8 @@ class JAXRPCIAlgorithm:
             -1, (self.num_agents - 1) * self.policy_obs_dim
         )
         prev_actions_4d = rollout["prev_actions"].reshape(flat_batch, self.num_agents, self.action_dim)
-        prev_actions_others = gather_other_agent_obs(prev_actions_4d).reshape(
+        prev_actions_emb_4d = self._embed_prev_actions(prev_actions_4d)
+        prev_actions_others = gather_other_agent_obs(prev_actions_emb_4d).reshape(
             -1, self.bridge_prev_action_dim
         )
 
@@ -989,6 +990,77 @@ class JAXRPCIAlgorithm:
         probs = rollout["probs"].reshape(-1, self.action_dim)
         avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
         return local_obs, others_obs, bridge_context, actions, reward_targets, probs, avail_actions
+
+    def _rff_features(self, features: jnp.ndarray, gamma_by_dim: jnp.ndarray) -> jnp.ndarray:
+        if features.shape[1] == 0:
+            raise ValueError("RFF kernel input must have at least one feature dimension")
+
+        num_freq = self.causal_rff_features // 2
+        gamma_host = np.asarray(tree_to_host(gamma_by_dim), dtype=np.float32)
+        gamma_signature = tuple(float(v) for v in gamma_host.tolist())
+        signature = (features.shape[1], num_freq, str(features.dtype), gamma_signature)
+        if self._rff_omega is None or self._rff_signature != signature:
+            seed_key = repr((self.causal_rff_seed, features.shape[1], num_freq, gamma_signature)).encode("utf-8")
+            seed = int.from_bytes(hashlib.sha256(seed_key).digest()[:8], "little") % (2**31)
+            rng = np.random.default_rng(seed)
+            omega = rng.standard_normal((features.shape[1], num_freq)).astype(np.float32)
+            omega = omega * np.sqrt(2.0 * gamma_host)[:, None]
+            self._rff_omega = jnp.asarray(omega, dtype=features.dtype)
+            self._rff_signature = signature
+
+        projection = features @ self._rff_omega
+        scale = math.sqrt(1.0 / num_freq)
+        return scale * jnp.concatenate([jnp.cos(projection), jnp.sin(projection)], axis=-1)
+
+    def _should_use_rff_for_block(self, block_size: int) -> bool:
+        return self.use_causal_rff and self.causal_rff_features < 0.75 * block_size
+
+    def _rff_kernel_weighted_residual(self, phi: jnp.ndarray, residuals: jnp.ndarray) -> jnp.ndarray:
+        feature_dim = phi.shape[1]
+        eye = jnp.eye(feature_dim, dtype=phi.dtype)
+        system = self.tikhonov_gamma * eye + self.stabilizer_lambda * (phi.T @ phi)
+        rhs = phi.T @ residuals
+        return phi @ jnp.linalg.solve(system, rhs)
+
+    def _sample_rff_offdiag_values(
+        self,
+        phi_blocks: tuple[Optional[jnp.ndarray], ...],
+        max_pairs: int = 4096,
+    ) -> Optional[jnp.ndarray]:
+        values = []
+        for block_idx, phi in enumerate(phi_blocks):
+            if phi is None or phi.shape[0] < 2:
+                continue
+            n = phi.shape[0]
+            pair_count = min(max_pairs, n * (n - 1))
+            rng = np.random.default_rng(self.causal_rff_seed + 7919 * (block_idx + 1) + 31 * n + phi.shape[1])
+            row = rng.integers(0, n, size=pair_count)
+            col = rng.integers(0, n - 1, size=pair_count)
+            col = col + (col >= row)
+            values.append(jnp.sum(phi[row] * phi[col], axis=-1))
+        if not values:
+            return None
+        return jnp.concatenate(values, axis=0)
+
+    def _sort_causal_batch(
+        self,
+        batch: Dict[str, jnp.ndarray],
+    ) -> tuple[Dict[str, jnp.ndarray], tuple[int, ...]]:
+        agent_ids_host = np.asarray(tree_to_host(batch["agent_ids"]), dtype=np.int32)
+        order = np.argsort(agent_ids_host, kind="stable")
+        counts = np.bincount(agent_ids_host, minlength=self.num_agents)
+        order_jnp = jnp.asarray(order, dtype=jnp.int32)
+        sorted_batch = {key: value[order_jnp] for key, value in batch.items()}
+        return sorted_batch, tuple(int(v) for v in counts.tolist())
+
+    def _batch_should_use_rff(self, agent_ids: jnp.ndarray) -> bool:
+        if not self.use_causal_rff:
+            return False
+        agent_ids_host = np.asarray(tree_to_host(agent_ids), dtype=np.int32)
+        if agent_ids_host.size == 0:
+            return False
+        counts = np.bincount(agent_ids_host, minlength=self.num_agents)
+        return self._should_use_rff_for_block(int(counts.max(initial=0)))
 
     @partial(jax.jit, static_argnums=0)
     def _bridge_predictions_chunk(
@@ -1176,11 +1248,10 @@ class JAXRPCIAlgorithm:
         return new_critic_state, metrics
 
     @partial(jax.jit, static_argnums=0)
-    def _compute_gram(
+    def _compute_exact_gram(
         self,
         batch: Dict[str, jnp.ndarray],
     ) -> tuple[jnp.ndarray, jnp.ndarray, Dict[str, jnp.ndarray]]:
-        """Compute an agent-blocked Gram matrix and regularized Gram once per mini-batch."""
         agent_ids = batch["agent_ids"].astype(jnp.int32)
         agent_onehot = jax.nn.one_hot(agent_ids, self.num_agents, dtype=jnp.float32)
         agent_counts = jnp.sum(agent_onehot, axis=0)[:, None]
@@ -1205,7 +1276,7 @@ class JAXRPCIAlgorithm:
 
         z_norm = _standardize(batch["z"])
         x_obs_cont = batch["x_obs"][:, :self.obs_dim]
-        x_obs_id   = batch["x_obs"][:, self.obs_dim:]   # shape (B, num_agents); empty if add_agent_id=False
+        x_obs_id = batch["x_obs"][:, self.obs_dim:]
         x_obs_norm = jnp.concatenate([_standardize(x_obs_cont), x_obs_id], axis=-1)
         action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
 
@@ -1233,10 +1304,11 @@ class JAXRPCIAlgorithm:
                 gram = gram * _rbf_gram(x_hid_hidden_norm, gamma_xhid)
 
             if x_hid_prev_action.shape[-1] > 0:
-                gram = gram * _rbf_gram(x_hid_prev_action, 1.0)
+                x_hid_prev_action_norm = _standardize(x_hid_prev_action)
+                gamma_xact = 1.0 / max(1, x_hid_prev_action.shape[-1])
+                gram = gram * _rbf_gram(x_hid_prev_action_norm, gamma_xact)
 
         eye = jnp.eye(gram.shape[0], dtype=gram.dtype)
-        # 1.0e-6 is for torch.linalg.solve fallback in Torch rpci.
         reg_gram = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram
 
         offdiag_mask = same_agent_mask * (1.0 - eye)
@@ -1254,14 +1326,13 @@ class JAXRPCIAlgorithm:
         return gram, reg_gram, gram_metrics
 
     @partial(jax.jit, static_argnums=0)
-    def _bridge_update_step(
+    def _bridge_update_step_exact(
         self,
         bridge_state: Any,
         batch: Dict[str, jnp.ndarray],
         gram: jnp.ndarray,
         reg_gram: jnp.ndarray,
     ):
-        """Update bridge parameters using a precomputed Gram matrix (matches Torch: gram computed once per mini-batch)."""
         def loss_fn(params):
             preds = bridge_state.apply_fn(
                 {"params": params},
@@ -1273,13 +1344,216 @@ class JAXRPCIAlgorithm:
             residuals = batch["targets"] - preds
             solved = jnp.linalg.solve(reg_gram, residuals)
             per_sample_loss = jnp.sum(residuals * (gram @ solved), axis=-1)
-            agent_onehot = jax.nn.one_hot(batch["agent_ids"].astype(jnp.int32), self.num_agents, dtype=per_sample_loss.dtype)
+            agent_onehot = jax.nn.one_hot(
+                batch["agent_ids"].astype(jnp.int32),
+                self.num_agents,
+                dtype=per_sample_loss.dtype,
+            )
             agent_counts = jnp.sum(agent_onehot, axis=0)
             valid_agents = agent_counts > 0
             loss_sum_per_agent = agent_onehot.T @ per_sample_loss
             loss_per_agent = loss_sum_per_agent / jnp.clip(agent_counts, a_min=1.0)
             valid_count = jnp.maximum(jnp.sum(valid_agents), 1.0)
             outcome_bridge_loss = jnp.sum(loss_per_agent * valid_agents) / valid_count
+            action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
+            metrics = {
+                "outcome_bridge_loss": outcome_bridge_loss,
+                "action_bridge_loss": action_bridge_loss,
+            }
+            for agent_id in range(self.num_agents):
+                metrics[f"agent_{agent_id}_outcome_bridge_loss"] = loss_per_agent[agent_id]
+            return outcome_bridge_loss + action_bridge_loss, metrics
+
+        grads, metrics = jax.grad(loss_fn, has_aux=True)(bridge_state.params)
+        new_bridge_state = bridge_state.apply_gradients(grads=grads)
+        metrics["bridge_grad_norm"] = global_norm(grads)
+        return new_bridge_state, metrics
+
+    def _compute_block_kernel_data(
+        self,
+        batch: Dict[str, jnp.ndarray],
+        agent_sizes: tuple[int, ...],
+    ) -> tuple[Dict[str, Any], Dict[str, jnp.ndarray]]:
+        agent_ids = batch["agent_ids"].astype(jnp.int32)
+        agent_onehot = jax.nn.one_hot(agent_ids, self.num_agents, dtype=jnp.float32)
+        agent_counts = jnp.sum(agent_onehot, axis=0)[:, None]
+
+        def _standardize(x: jnp.ndarray) -> jnp.ndarray:
+            if x.shape[-1] == 0:
+                return x
+            counts = jnp.clip(agent_counts, a_min=1.0)
+            means = (agent_onehot.T @ x) / counts
+            centered = x[:, None, :] - means[None, :, :]
+            var = jnp.sum(agent_onehot[:, :, None] * jnp.square(centered), axis=0) / counts
+            std = jnp.sqrt(jnp.clip(var, a_min=1.0e-6))
+            x_norm = centered / std[None, :, :]
+            return jnp.sum(agent_onehot[:, :, None] * x_norm, axis=1)
+
+        def _rbf_gram(x: jnp.ndarray, gamma: float) -> jnp.ndarray:
+            x_norm = jnp.sum(jnp.square(x), axis=-1, keepdims=True)
+            dists_sq = x_norm - 2.0 * (x @ x.T) + x_norm.T
+            dists_sq = jnp.clip(dists_sq, a_min=0.0)
+            return jnp.exp(-gamma * dists_sq)
+
+        z_norm = _standardize(batch["z"])
+        x_obs_cont = batch["x_obs"][:, :self.obs_dim]
+        x_obs_id = batch["x_obs"][:, self.obs_dim:]
+        x_obs_norm = jnp.concatenate([_standardize(x_obs_cont), x_obs_id], axis=-1)
+        action_onehot = jax.nn.one_hot(batch["actions"], self.action_dim, dtype=jnp.float32)
+
+        gamma_z = 1.0 / max(1, batch["z"].shape[-1])
+        gamma_a = 1.0
+        gamma_xobs = 1.0 / max(1, batch["x_obs"].shape[-1])
+        x_hid_hidden_norm = None
+        gamma_xhid = None
+        x_hid_prev_action = None
+        x_hid_prev_action_norm = None
+        gamma_xact = 1.0 / max(1, batch["x_hid"][:, self.bridge_hidden_dim:].shape[-1]) if batch["x_hid"].shape[-1] > 0 else 1.0
+
+        if batch["x_hid"].shape[-1] > 0:
+            x_hid_hidden = batch["x_hid"][:, :self.bridge_hidden_dim]
+            x_hid_prev_action = batch["x_hid"][:, self.bridge_hidden_dim:]
+
+            if x_hid_hidden.shape[-1] > 0:
+                x_hid_hidden_norm = _standardize(x_hid_hidden)
+                effective_dim = jnp.mean(
+                    jnp.sum(jnp.abs(x_hid_hidden_norm) > 1.0e-6, axis=-1).astype(jnp.float32)
+                )
+                gamma_xhid = 1.0 / jnp.maximum(effective_dim, 1.0)
+            if x_hid_prev_action.shape[-1] > 0:
+                x_hid_prev_action_norm = _standardize(x_hid_prev_action)
+
+        max_block_size = max(agent_sizes) if agent_sizes else 0
+        off_vals = []
+
+        if self._should_use_rff_for_block(max_block_size):
+            rff_inputs = [z_norm, action_onehot, x_obs_norm]
+            rff_gammas = [
+                jnp.full((z_norm.shape[-1],), gamma_z, dtype=z_norm.dtype),
+                jnp.full((action_onehot.shape[-1],), gamma_a, dtype=action_onehot.dtype),
+                jnp.full((x_obs_norm.shape[-1],), gamma_xobs, dtype=x_obs_norm.dtype),
+            ]
+            if x_hid_hidden_norm is not None and x_hid_hidden_norm.shape[-1] > 0:
+                rff_inputs.append(x_hid_hidden_norm)
+                rff_gammas.append(jnp.full((x_hid_hidden_norm.shape[-1],), gamma_xhid, dtype=x_hid_hidden_norm.dtype))
+            if x_hid_prev_action_norm is not None and x_hid_prev_action_norm.shape[-1] > 0:
+                rff_inputs.append(x_hid_prev_action_norm)
+                rff_gammas.append(jnp.full((x_hid_prev_action_norm.shape[-1],), gamma_xact, dtype=x_hid_prev_action_norm.dtype))
+
+            rff_input = jnp.concatenate(rff_inputs, axis=-1)
+            gamma_by_dim = jnp.concatenate(rff_gammas, axis=0).astype(rff_input.dtype)
+            phi = self._rff_features(rff_input, gamma_by_dim)
+
+            phi_blocks = []
+            offset = 0
+            for block_size in agent_sizes:
+                if block_size == 0:
+                    phi_blocks.append(None)
+                else:
+                    phi_blocks.append(phi[offset:offset + block_size])
+                offset += block_size
+            phi_blocks = tuple(phi_blocks)
+
+            off_vals_rff = self._sample_rff_offdiag_values(phi_blocks)
+            if off_vals_rff is not None:
+                off_vals.append(off_vals_rff)
+
+            kernel_data = {
+                "phi_blocks": phi_blocks,
+                "gram_blocks": tuple(None for _ in agent_sizes),
+                "reg_gram_blocks": tuple(None for _ in agent_sizes),
+            }
+        else:
+            gram_blocks = []
+            reg_gram_blocks = []
+            offset = 0
+            for block_size in agent_sizes:
+                if block_size == 0:
+                    gram_blocks.append(None)
+                    reg_gram_blocks.append(None)
+                    continue
+
+                sl = slice(offset, offset + block_size)
+                gram_i = (
+                    _rbf_gram(z_norm[sl], gamma_z)
+                    * _rbf_gram(action_onehot[sl], gamma_a)
+                    * _rbf_gram(x_obs_norm[sl], gamma_xobs)
+                )
+                if x_hid_hidden_norm is not None and x_hid_hidden_norm.shape[-1] > 0:
+                    gram_i = gram_i * _rbf_gram(x_hid_hidden_norm[sl], gamma_xhid)
+                if x_hid_prev_action_norm is not None and x_hid_prev_action_norm.shape[-1] > 0:
+                    gram_i = gram_i * _rbf_gram(x_hid_prev_action_norm[sl], gamma_xact)
+
+                if block_size >= 2:
+                    off_mask = ~jnp.eye(block_size, dtype=bool)
+                    off_vals.append(gram_i[off_mask])
+
+                eye = jnp.eye(block_size, dtype=gram_i.dtype)
+                reg_gram_i = (self.tikhonov_gamma + 1.0e-6) * eye + self.stabilizer_lambda * gram_i
+                gram_blocks.append(gram_i)
+                reg_gram_blocks.append(reg_gram_i)
+                offset += block_size
+
+            kernel_data = {
+                "phi_blocks": tuple(None for _ in agent_sizes),
+                "gram_blocks": tuple(gram_blocks),
+                "reg_gram_blocks": tuple(reg_gram_blocks),
+            }
+
+        if off_vals:
+            all_off = jnp.concatenate(off_vals, axis=0)
+            kz_offdiag_mean = jnp.mean(all_off)
+            kz_offdiag_std = jnp.std(all_off)
+        else:
+            kz_offdiag_mean = jnp.array(0.0, dtype=jnp.float32)
+            kz_offdiag_std = jnp.array(0.0, dtype=jnp.float32)
+
+        gram_metrics = {
+            "Kz_offdiag_mean": kz_offdiag_mean,
+            "Kz_offdiag_std": kz_offdiag_std,
+        }
+        return kernel_data, gram_metrics
+
+    def _bridge_update_step_blockwise(
+        self,
+        bridge_state: Any,
+        batch: Dict[str, jnp.ndarray],
+        kernel_data: Dict[str, Any],
+        agent_sizes: tuple[int, ...],
+    ):
+        def loss_fn(params):
+            preds = bridge_state.apply_fn(
+                {"params": params},
+                batch["x_obs"],
+                batch["w"],
+                batch["x_hid"],
+                batch["actions"],
+            )
+            residuals = batch["targets"] - preds
+            loss_per_agent = jnp.zeros((self.num_agents,), dtype=residuals.dtype)
+            per_agent_losses = []
+            offset = 0
+            for agent_id, block_size in enumerate(agent_sizes):
+                if block_size == 0:
+                    continue
+                res_i = residuals[offset:offset + block_size]
+                phi_i = kernel_data["phi_blocks"][agent_id]
+                if phi_i is not None:
+                    weighted_res_i = self._rff_kernel_weighted_residual(phi_i, res_i)
+                else:
+                    gram_i = kernel_data["gram_blocks"][agent_id]
+                    reg_gram_i = kernel_data["reg_gram_blocks"][agent_id]
+                    weighted_res_i = gram_i @ jnp.linalg.solve(reg_gram_i, res_i)
+                per_sample_i = jnp.sum(res_i * weighted_res_i, axis=-1)
+                agent_loss = jnp.mean(per_sample_i)
+                loss_per_agent = loss_per_agent.at[agent_id].set(agent_loss)
+                per_agent_losses.append(agent_loss)
+                offset += block_size
+
+            if per_agent_losses:
+                outcome_bridge_loss = jnp.mean(jnp.stack(per_agent_losses))
+            else:
+                outcome_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
             action_bridge_loss = jnp.array(0.0, dtype=jnp.float32)
             metrics = {
                 "outcome_bridge_loss": outcome_bridge_loss,
@@ -1336,15 +1610,35 @@ class JAXRPCIAlgorithm:
         _KEYS = ("z", "w", "x_obs", "x_hid", "actions", "targets", "agent_ids")
 
         metrics = []
-        for _ in range(self.bridge_epoch):
-            for idx in self._iterate_causal_minibatches(alive_idx):
-                batch = {k: causal_batch[k][idx] for k in _KEYS}
-                gram, reg_gram, gram_metrics = self._compute_gram(batch)
-                gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
-                self.bridge_state, batch_metrics = self._bridge_update_step(self.bridge_state, batch, gram, reg_gram)
-                combined = {key: float(value) for key, value in tree_to_host(batch_metrics).items()}
-                combined.update(gram_metrics_host)
-                metrics.append(combined)
+        for idx in self._iterate_causal_minibatches(alive_idx):
+            batch = {k: causal_batch[k][idx] for k in _KEYS}
+            if self._batch_should_use_rff(batch["agent_ids"]):
+                batch, agent_sizes = self._sort_causal_batch(batch)
+                kernel_data, gram_metrics = self._compute_block_kernel_data(batch, agent_sizes)
+                for _ in range(self.bridge_epoch):
+                    gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
+                    self.bridge_state, batch_metrics = self._bridge_update_step_blockwise(
+                        self.bridge_state,
+                        batch,
+                        kernel_data,
+                        agent_sizes,
+                    )
+                    combined = {key: float(value) for key, value in tree_to_host(batch_metrics).items()}
+                    combined.update(gram_metrics_host)
+                    metrics.append(combined)
+            else:
+                gram, reg_gram, gram_metrics = self._compute_exact_gram(batch)
+                for _ in range(self.bridge_epoch):
+                    gram_metrics_host = {key: float(value) for key, value in tree_to_host(gram_metrics).items()}
+                    self.bridge_state, batch_metrics = self._bridge_update_step_exact(
+                        self.bridge_state,
+                        batch,
+                        gram,
+                        reg_gram,
+                    )
+                    combined = {key: float(value) for key, value in tree_to_host(batch_metrics).items()}
+                    combined.update(gram_metrics_host)
+                    metrics.append(combined)
         stacked = stack_metrics(metrics)
         stacked.setdefault("outcome_bridge_loss", 0.0)
         stacked.setdefault("action_bridge_loss", 0.0)
@@ -1437,9 +1731,9 @@ class JAXRPCIAlgorithm:
             "delta_mean": float(jnp.mean(delta)),
             "delta_std": float(jnp.std(delta)),
             "no_valid_cf_rate": float(no_valid_cf_rate),
-            "no_valid_cf_rate_alive": no_valid_cf_rate_alive,   # policy entropy 지표
-            "no_valid_cf_rate_dead": no_valid_cf_rate_dead,     # 항상 ≈1.0 (sanity check)
-            "dead_agent_fraction": dead_fraction,               # 팀 생존율 지표
+            "no_valid_cf_rate_alive": no_valid_cf_rate_alive,   # Policy entropy metric.
+            "no_valid_cf_rate_dead": no_valid_cf_rate_dead,     # Usually ~= 1.0 as a sanity check.
+            "dead_agent_fraction": dead_fraction,               # Team survival metric.
         }
         return c_matrix, info
 
@@ -1596,6 +1890,7 @@ class JAXRPCIAlgorithm:
             "delta_critic_state": serialization.to_state_dict(self.delta_critic_state) if self.delta_critic_state is not None else None,
             "rng": tree_to_host(self.rng),
             "bridge_rng": tree_to_host(self.bridge_rng),
+            "prev_action_embedding_table": tree_to_host(self.prev_action_embedding_table),
             "training_steps": self.training_steps,
         }
 
@@ -1609,6 +1904,8 @@ class JAXRPCIAlgorithm:
         self.rng = jnp.asarray(state_dict["rng"])
         if "bridge_rng" in state_dict:
             self.bridge_rng = jnp.asarray(state_dict["bridge_rng"])
+        if "prev_action_embedding_table" in state_dict:
+            self.prev_action_embedding_table = jnp.asarray(state_dict["prev_action_embedding_table"], dtype=jnp.float32)
         self.training_steps = int(state_dict.get("training_steps", 0))
 
     def load_actor_state_dict(self, state_dict: Dict[str, Any]):

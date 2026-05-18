@@ -1,0 +1,13 @@
+\begin{table}[t]
+\centering
+\caption{Deterministic SMAX win rate on 3m using final checkpoints. Rows are grouped by training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
+\label{tab:smax_3m_final}
+\begin{tabular}{lcccc}
+\toprule
+Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+\midrule
+vanilla & 94.8 \scriptsize $\pm$ 6.3 & 97.4 \scriptsize $\pm$ 4.5 & 89.1 \scriptsize $\pm$ 1.6 & 96.9 \scriptsize $\pm$ 3.1 \\
+tar_w=2 & 44.3 \scriptsize $\pm$ 7.0 & 89.6 \scriptsize $\pm$ 3.3 & 45.3 \scriptsize $\pm$ 11.8 & 91.1 \scriptsize $\pm$ 0.9 \\
+\bottomrule
+\end{tabular}
+\end{table}

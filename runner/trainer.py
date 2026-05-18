@@ -7,8 +7,6 @@ from typing import Dict, List, Optional, Any
 from collections import defaultdict, deque
 from tqdm import tqdm
 from datetime import datetime
-import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 
 from algorithms import rMAPPOAlgorithm, rIPPOAlgorithm, rPCIAlgorithm
 from algorithms.common import resolve_step_episode_done
@@ -61,7 +59,7 @@ class Trainer:
                 self.eval_env = self._build_eval_env(env)
             else:
                 raise ValueError(
-                    "n_rollout_threads > 1 시 env_fn 또는 SMAXBatchWrapper가 필요합니다."
+                    "n_rollout_threads > 1 requires env_fn or SMAXBatchWrapper."
                 )
         else:
             # Use single environment
@@ -139,9 +137,10 @@ class Trainer:
             wandb.summary.update({
                 "causal_effect_description": "Delta values for different reward scenarios in StagHunt environment",
                 "reward_scenarios": {
-                    "no_reward": "Other agent receives no reward (0.0)",
-                    "forage_reward": "Other agent receives forage reward (3.0)", 
-                    "stag_reward": "Other agent receives stag reward (5.0)"
+                    "no_reward": "No hare hunt occurred and the focal agent did not participate in its assigned stag hunt",
+                    "focal_forage_reward": "The focal agent successfully hunted a hare",
+                    "forage_reward": "Another agent successfully hunted a hare",
+                    "stag_reward": "The focal agent participated in its assigned stag hunt"
                 },
                 "reproducibility": {
                     "seed": getattr(self, 'seed', 'unknown'),
@@ -619,12 +618,6 @@ class Trainer:
                 # Success if all objects (stags and hares) are hunted (not alive)
                 if not any(stag_alive.values()) and not any(hare_alive.values()):
                     is_success = 1.0
-            elif "SMAC" in str(self.env):
-                if info.get('battle_won', False):
-                    is_success = 1.0
-            elif "LBForaging" in str(self.env):
-                if sum(episode_reward.values()) >= 0.99:
-                    is_success = 1.0
             episode_successes.append(is_success)
             
             # Track recent rewards for logging
@@ -882,9 +875,6 @@ class Trainer:
         eval_successes = []
         episode_limit = self._get_eval_episode_limit()
 
-        # SMAXBatchWrapper는 reset()이 (obs_list, avail_list) 튜플을 반환하고
-        # step()은 (obs, rew, done, info, avail) 5-튜플을 반환함.
-        # 평가 시에는 첫 번째 환경만 사용하여 단일 에피소드 평가.
         is_batch_env = hasattr(self.eval_env, 'n_envs') and getattr(self.eval_env, 'n_envs', 1) > 1
 
         for episode in range(num_episodes):
@@ -892,7 +882,6 @@ class Trainer:
             observations = self.eval_env.reset()
 
             if is_batch_env:
-                # SMAXBatchWrapper: (obs_list, avail_list) → 첫 번째 env만 사용
                 obs_list, avail_list_reset = observations
                 observations = obs_list[0]           # Dict[int, np.ndarray]
                 _eval_avail_cache = avail_list_reset[0]  # Dict[int, List[int]]
@@ -913,7 +902,7 @@ class Trainer:
                 # Get availability of actions
                 available_actions = None
                 if is_batch_env:
-                    # SMAXBatchWrapper: 캐시된 avail 사용 (첫 env)
+                    # SMAXBatchWrapper: use cached availability from the first env.
                     if _eval_avail_cache is not None:
                         available_actions = _eval_avail_cache
                 elif hasattr(self.eval_env, "get_avail_actions"):
@@ -945,7 +934,7 @@ class Trainer:
                 
                 # Take step
                 if is_batch_env:
-                    # SMAXBatchWrapper: 첫 번째 env에 액션 전달
+                    # SMAXBatchWrapper: send actions to the first env.
                     actions_batch = [actions] + [
                         {i: 0 for i in range(self.eval_env.num_agents)}
                         for _ in range(self.eval_env.n_envs - 1)
@@ -1107,7 +1096,7 @@ class Trainer:
             
             # Add delta statistics for causal reward shaping
             # Group by agent and scenario for better visualization
-            delta_scenarios = ['no_reward', 'forage_reward', 'stag_reward']
+            delta_scenarios = ['no_reward', 'forage_reward', 'focal_forage_reward', 'stag_reward']
             num_agents = getattr(self.algorithm, 'num_agents', 0)
             
             for agent_id in range(num_agents):
@@ -1261,6 +1250,19 @@ class Trainer:
             'agents': {},
             'algorithm_type': type(self.algorithm).__name__
         }
+
+        if hasattr(self.algorithm, 'agents'):
+            for agent_id, agent in self.algorithm.agents.items():
+                agent_state = {}
+                if hasattr(agent, 'policy_net'):
+                    agent_state['policy_net'] = agent.policy_net.state_dict()
+                if hasattr(agent, 'optimizer'):
+                    agent_state['optimizer'] = agent.optimizer.state_dict()
+                if hasattr(agent, 'value_net'):
+                    agent_state['value_net'] = agent.value_net.state_dict()
+                if hasattr(agent, 'value_optimizer'):
+                    agent_state['value_optimizer'] = agent.value_optimizer.state_dict()
+                state['agents'][agent_id] = agent_state
         
         # Save algorithm-specific states
         if isinstance(self.algorithm, rPCIAlgorithm):
@@ -1269,6 +1271,8 @@ class Trainer:
             state['outcome_bridge_optimizer'] = self.algorithm.outcome_bridge_optimizer.state_dict()
             if hasattr(self.algorithm, 'critic_kernel_w'):
                 state['critic_kernel_w'] = self.algorithm.critic_kernel_w.state_dict()
+            if hasattr(self.algorithm, 'prev_action_embedding'):
+                state['prev_action_embedding'] = self.algorithm.prev_action_embedding.state_dict()
             if hasattr(self.algorithm, 'action_embedding_for_kernel'):
                 state['action_embedding_for_kernel'] = self.algorithm.action_embedding_for_kernel.state_dict()
             if hasattr(self.algorithm, 'kernel_action_embed_optimizer'):
@@ -1316,6 +1320,21 @@ class Trainer:
         # Load algorithm state
         algorithm_state = checkpoint['algorithm_state']
 
+        agent_states = algorithm_state.get('agents', {})
+        if hasattr(self.algorithm, 'agents'):
+            for agent_id, agent in self.algorithm.agents.items():
+                saved_agent_state = agent_states.get(agent_id, agent_states.get(str(agent_id)))
+                if not saved_agent_state:
+                    continue
+                if 'policy_net' in saved_agent_state and hasattr(agent, 'policy_net'):
+                    agent.policy_net.load_state_dict(saved_agent_state['policy_net'])
+                if 'optimizer' in saved_agent_state and hasattr(agent, 'optimizer'):
+                    agent.optimizer.load_state_dict(saved_agent_state['optimizer'])
+                if 'value_net' in saved_agent_state and hasattr(agent, 'value_net'):
+                    agent.value_net.load_state_dict(saved_agent_state['value_net'])
+                if 'value_optimizer' in saved_agent_state and hasattr(agent, 'value_optimizer'):
+                    agent.value_optimizer.load_state_dict(saved_agent_state['value_optimizer'])
+
         # Load algorithm-specific states
         if isinstance(self.algorithm, rPCIAlgorithm):
             # PCI-MAPPO specific states
@@ -1327,6 +1346,8 @@ class Trainer:
                 self.algorithm.critic_kernel_z.load_state_dict(algorithm_state['critic_kernel_z'])
             if 'critic_kernel_w' in algorithm_state:
                 self.algorithm.critic_kernel_w.load_state_dict(algorithm_state['critic_kernel_w'])
+            if 'prev_action_embedding' in algorithm_state and hasattr(self.algorithm, 'prev_action_embedding'):
+                self.algorithm.prev_action_embedding.load_state_dict(algorithm_state['prev_action_embedding'])
             if 'action_embedding_for_kernel' in algorithm_state and hasattr(self.algorithm, 'action_embedding_for_kernel'):
                 self.algorithm.action_embedding_for_kernel.load_state_dict(algorithm_state['action_embedding_for_kernel'])
             if 'outcome_bridge_optimizer' in algorithm_state:

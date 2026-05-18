@@ -1,0 +1,13 @@
+\begin{table}[t]
+\centering
+\caption{Deterministic SMAX win rate on 6h_vs_8z using final checkpoints. Rows are grouped by training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
+\label{tab:smax_6h_vs_8z_final}
+\begin{tabular}{lcccc}
+\toprule
+Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+\midrule
+vanilla & 66.1 \scriptsize $\pm$ 40.8 & 98.4 \scriptsize $\pm$ 1.6 & 93.2 \scriptsize $\pm$ 4.5 & 100.0 \scriptsize $\pm$ 0.0 \\
+tar_w=6 & 45.3 \scriptsize $\pm$ 29.2 & 87.0 \scriptsize $\pm$ 21.2 & 83.9 \scriptsize $\pm$ 25.3 & 80.7 \scriptsize $\pm$ 16.9 \\
+\bottomrule
+\end{tabular}
+\end{table}

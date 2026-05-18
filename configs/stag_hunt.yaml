@@ -14,33 +14,48 @@ network:
 # Algorithm Configuration
 algorithm:
   gamma: 0.99
-  rnn_chunk_length: 50
+  rnn_chunk_length: 16
   gae_lambda: 0.95
-  global_reward: true  # false: use individual reward targets when available
+  global_reward: true
   clip_epsilon: 0.2
   entropy_coef: 0.01
   value_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 4
   bridge_epoch: 4
-  num_batches: 1
-  use_value_parameter_sharing: false
+  use_value_parameter_sharing: true
   use_delta_critic: true
   add_agent_id: false
-  clip_delta: 0.0
+
   causal_lambda: 1.0
-  causal_mini_batch_size: 50  # Chunk size for RKHS solver
   num_batches: 2  # Number of batches K for training
+  causal_mini_batch_size: null  # Use full causal batch; RFF handles kernel scaling
+  use_causal_rff: false
+  causal_rff_features: 256
+  causal_rff_seed: 0
+  train_naivepredictor: false
+
   # Buffer size limits for FIFO queue behavior
   max_buffer_size: 10000
+
+  # QMIX-specific parameters
+  target_update_interval: 200  # Update target network every N iterations
+  epsilon_start: 1.0           # Initial exploration rate
+  epsilon_finish: 0.05         # Final exploration rate
+  epsilon_anneal_time: 100000 # Steps to anneal epsilon 
+  mixing_embed_dim: 32         # Mixing network embedding dimension
+  hypernet_layers: 2           # Number of hypernetwork layers
+  hypernet_embed: 64           # Hypernetwork embedding dimension
+  replay_buffer_size: 5000     # Maximum number of episodes in replay buffer
+  train_batch_size: 32         # Number of episodes to sample for training
 
 # Training Configuration
 training:
   max_iterations: 4000
   max_steps_per_iteration: 2000
-  episodes_per_iteration: null
+  episodes_per_iteration: null  # For QMIX, set this to a positive integer (e.g., 8) to collect episodes per iteration
   log_interval: 2
-  save_interval: 1000
+  save_interval: 500
   eval_interval: 50
   eval_episodes: 10
   save_dir: "./save_checkpoints"
@@ -60,11 +75,11 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
   grid_observation: true
-  obs_noise_std: 0.0
+  obs_noise_std: 0.1
   
 # Weights & Biases Configuration
 wandb:
   use_wandb: false
-  project: "pci-marl-stag-hunt"
+  project: "pci-marl-staghunt-noise"
   run_name: "stag-hunt"
   tags: ["pci", "marl", "multi-agent", "stag-hunt"]

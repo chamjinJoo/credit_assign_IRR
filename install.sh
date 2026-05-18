@@ -30,13 +30,13 @@ set -Eeuo pipefail
 # Optional environment variables:
 #   ENV_NAME=pcimarl
 #   PYTHON_VERSION=3.10.18
-#   REQUIREMENTS_FILE=requirements-core.txt
+#   REQUIREMENTS_FILE=requirements.txt
 #   CONDA_ROOT=$HOME/miniconda3
 ###############################################################################
 
 ENV_NAME="${ENV_NAME:-pcimarl}"
 PYTHON_VERSION="${PYTHON_VERSION:-3.10.18}"
-REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-requirements-core.txt}"
+REQUIREMENTS_FILE="${REQUIREMENTS_FILE:-requirements.txt}"
 CONDA_ROOT="${CONDA_ROOT:-$HOME/miniconda3}"
 MINICONDA_INSTALLER="Miniconda3-latest-Linux-x86_64.sh"
 
@@ -107,6 +107,25 @@ activate_conda() {
   fi
 }
 
+run_conda_relaxed_nounset() {
+  local had_nounset=0
+  case $- in
+    *u*)
+      had_nounset=1
+      set +u
+      ;;
+  esac
+
+  "$@"
+  local status=$?
+
+  if [[ $had_nounset -eq 1 ]]; then
+    set -u
+  fi
+
+  return $status
+}
+
 create_env() {
   activate_conda
 
@@ -114,10 +133,10 @@ create_env() {
     warn "Conda env '$ENV_NAME' already exists. It will be reused."
   else
     log "Creating conda env '$ENV_NAME' with Python $PYTHON_VERSION"
-    conda create -n "$ENV_NAME" "python=$PYTHON_VERSION" -y
+    run_conda_relaxed_nounset conda create -n "$ENV_NAME" "python=$PYTHON_VERSION" -y
   fi
 
-  conda activate "$ENV_NAME"
+  run_conda_relaxed_nounset conda activate "$ENV_NAME"
   python -m pip install --upgrade pip setuptools wheel
 }
 
@@ -252,10 +271,10 @@ maybe_install_conda_cuda_nvcc() {
   warn "nvlink is still not visible."
   warn "Trying conda-forge/NVIDIA channel compiler package for better JAX compatibility."
   activate_conda
-  conda activate "$ENV_NAME"
+  run_conda_relaxed_nounset conda activate "$ENV_NAME"
 
   # Prefer compiler-only package first; if unavailable or insufficient, user can install full toolkit.
-  if conda install -c nvidia cuda-nvcc=12.9 -y; then
+  if run_conda_relaxed_nounset conda install -c nvidia cuda-nvcc=12.9 -y; then
     true
   else
     warn "conda install -c nvidia cuda-nvcc=12.9 failed. You may need:"
@@ -266,11 +285,12 @@ maybe_install_conda_cuda_nvcc() {
 verify_versions() {
   log "Verifying key package versions"
   python - <<'PY'
+import importlib
 import sys
 
 def safe_import(name):
     try:
-        mod = __import__(name)
+        mod = importlib.import_module(name)
         return mod
     except Exception as e:
         print(f"{name}: IMPORT FAILED -> {e}")
@@ -316,7 +336,7 @@ final_notes() {
 INSTALL COMPLETE
 
 Recommended next checks:
-  conda activate pcimarl
+  conda activate <env-name>
   which ptxas
   which nvlink
   python -c "import wandb; print(wandb.__version__)"

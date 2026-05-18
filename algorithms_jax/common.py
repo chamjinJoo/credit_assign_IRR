@@ -187,8 +187,8 @@ class CausalBridgeNetwork(nn.Module):
         x = nn.LayerNorm()(x)
         return nn.Dense(
             self.num_agents,
-            kernel_init=nn.initializers.orthogonal(1e-2),  # 또는 normal(stddev=1e-3)
-            bias_init=nn.initializers.zeros,               # 명시적으로 0 (default 이지만 명시)
+            kernel_init=nn.initializers.orthogonal(1e-2),  # Alternative: normal(stddev=1e-3)
+            bias_init=nn.initializers.zeros,               # Explicit zero init.
         )(x)
         # return nn.Dense(self.num_agents, kernel_init=_ORTH_UNIT)(x)
 

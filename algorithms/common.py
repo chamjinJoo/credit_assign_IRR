@@ -117,25 +117,34 @@ def classify_staghunt_delta_scenario(
     hare_hunts = info.get('hare_hunts')
     hare_hunts_available = isinstance(hare_hunts, (list, tuple, set))
     hare_hunt_ids = {int(hunter_id) for hunter_id in hare_hunts} if hare_hunts_available else set()
-    other_stag = False
+    focal_forage = False
     other_forage = False
 
-    for other_id in range(num_agents):
-        if other_id == agent_id:
-            continue
-        if transition['bold_r_t'][other_id] == 5.0:
-            other_stag = True
-        if hare_hunts_available:
-            if other_id in hare_hunt_ids:
-                other_forage = True
-        elif transition['bold_r_t'][other_id] == 3.0:
-            other_forage = True
+    for stag_id, participants in stag_hunts.items():
+        participants_set = {int(participant_id) for participant_id in participants}
+        required = (
+            env_required_agents.get(int(stag_id), [])
+            if env_required_agents is not None
+            else participants_set
+        )
+        if agent_id in required and agent_id in participants_set:
+            return 'stag_reward'
 
-    if other_stag and env_required_agents is not None:
-        for stag_id, participants in stag_hunts.items():
-            required = env_required_agents.get(stag_id, [])
-            if agent_id in required and agent_id in participants:
-                return 'stag_reward'
+    if hare_hunts_available:
+        focal_forage = agent_id in hare_hunt_ids
+        for other_id in range(num_agents):
+            if other_id != agent_id and other_id in hare_hunt_ids:
+                other_forage = True
+                break
+    else:
+        focal_forage = transition['bold_r_t'][agent_id] == 3.0
+        for other_id in range(num_agents):
+            if other_id != agent_id and transition['bold_r_t'][other_id] == 3.0:
+                other_forage = True
+                break
+
+    if focal_forage:
+        return 'focal_forage_reward'
 
     if other_forage:
         return 'forage_reward'

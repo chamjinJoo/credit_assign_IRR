@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 from configs.config import Config
-from figures.tab2_smax_checkpoint_eval_utils import evaluate_run
+from not_for_submit.figures.tab2_smax_checkpoint_eval_utils import evaluate_run
 
 
 def main() -> None:

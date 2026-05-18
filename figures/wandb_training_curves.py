@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 
-DEFAULT_ENTITY = "chamjin-korea-advanced-institute-of-science-and-technology"
+DEFAULT_ENTITY = "" # empty for Anonymity
 DEFAULT_METRIC = "rollout/mean_success_rate"
 DEFAULT_STEP = "total_steps"
 SH_NOISE_TOKEN = "noise0.1"
@@ -142,6 +142,26 @@ def _config_get(config, *keys):
     return cur
 
 
+def _project_candidates(project: str | None, preset_config: dict) -> tuple[str, ...]:
+    if project:
+        return (project,)
+    candidates = tuple(
+        str(name).strip()
+        for name in preset_config.get("project_candidates", ())
+        if str(name).strip()
+    )
+    if candidates:
+        return candidates
+    default_project = str(preset_config["project"]).strip()
+    return (default_project,)
+
+
+def _project_path(entity: str, project: str) -> str:
+    entity = str(entity).strip()
+    project = str(project).strip()
+    return f"{entity}/{project}" if entity else project
+
+
 def _as_bool(value) -> bool:
     if isinstance(value, bool):
         return value
@@ -229,7 +249,7 @@ def fetch_wandb_training_curves(
 
     preset_config = PRESETS[preset]
     specs = preset_config["models"]
-    project = project or preset_config["project"]
+    projects = _project_candidates(project, preset_config)
     name_contains = tuple(preset_config.get("name_contains", ())) + tuple(name_contains)
     exclude_name_contains = tuple(preset_config.get("exclude_name_contains", ())) + tuple(exclude_name_contains)
     exclude_group_contains = tuple(exclude_group_contains)
@@ -253,38 +273,57 @@ def fetch_wandb_training_curves(
 
     filters = None if state == "all" else {"state": state}
     api = wandb.Api()
-    runs = api.runs(f"{entity}/{project}", filters=filters)
     grouped: dict[str, list[tuple[object, pd.DataFrame]]] = {spec.key: [] for spec in specs}
     skipped = []
+    matched_projects = []
 
-    for run in runs:
+    for project_name in projects:
+        try:
+            runs = api.runs(_project_path(entity, project_name), filters=filters)
+        except ValueError:
+            if verbose:
+                print(f"[skip project] {project_name}")
+            continue
+
+        matched_projects.append(project_name)
+        if verbose:
+            print(f"[project] {project_name}")
+
+        for run in runs:
+            if max_runs is not None and sum(len(v) for v in grouped.values()) >= max_runs:
+                break
+            if not _matches_filters(
+                run,
+                contains,
+                exclude_contains,
+                name_contains,
+                exclude_name_contains,
+                exclude_group_contains,
+                name_suffixes,
+                exclude_name_suffixes,
+            ):
+                continue
+
+            model_key = _match_model_from_run(run, preset, specs)
+            if model_key is None:
+                skipped.append(f"[model unmatched] {run.name}")
+                continue
+
+            history = _scan_metric_history(run, metric_key, step_key, page_size)
+            if history.empty:
+                skipped.append(f"[metric missing] {run.name}")
+                continue
+
+            grouped[model_key].append((run, history))
+            if verbose:
+                print(f"[collect] {model_key:<10} {run.name} ({len(history)} points)")
+
         if max_runs is not None and sum(len(v) for v in grouped.values()) >= max_runs:
             break
-        if not _matches_filters(
-            run,
-            contains,
-            exclude_contains,
-            name_contains,
-            exclude_name_contains,
-            exclude_group_contains,
-            name_suffixes,
-            exclude_name_suffixes,
-        ):
-            continue
 
-        model_key = _match_model_from_run(run, preset, specs)
-        if model_key is None:
-            skipped.append(f"[model unmatched] {run.name}")
-            continue
-
-        history = _scan_metric_history(run, metric_key, step_key, page_size)
-        if history.empty:
-            skipped.append(f"[metric missing] {run.name}")
-            continue
-
-        grouped[model_key].append((run, history))
-        if verbose:
-            print(f"[collect] {model_key:<10} {run.name} ({len(history)} points)")
+    if not matched_projects:
+        joined = ", ".join(projects)
+        raise ValueError(f"Could not find any project among: {joined}")
 
     csv_paths: dict[str, Path] = {}
     for spec in specs:

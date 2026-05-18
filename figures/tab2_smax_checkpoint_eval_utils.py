@@ -21,11 +21,11 @@ import torch.nn.functional as F
 
 from configs.config import Config
 
-PROJECT_FILTER = "pci-marl-smax-jax-v3"
+PROJECT_FILTER = "pci-marl-smax-jax"
 
-MAP_ORDER = ["3m", "2s3z", "3s5z", "smacv2_5_units", "smacv2_10_units", "6h_vs_8z"]
+MAP_ORDER = ["3m", "2s3z", "3s5z", "smacv2_5_units", "smacv2_10_units", ]
 CONSTRAINT_ORDER = ["vanilla", "tar_w=2", "tar_w=3", "tar_w=4", "tar_w=5", "tar_w=6", "tar_w=8", "cb"]
-MODEL_ORDER = ["pci-ippo", "ippo", "pci-mappo", "mappo"]
+MODEL_ORDER = ["ippo", "pci-ippo", "mappo", "pci-mappo"]
 
 MODEL_PRETTY_NAMES = {
     "jax_pci_mappo": "pci-mappo",
@@ -43,6 +43,7 @@ MAP_PRETTY_NAMES = {
     "2s3z": "2s3z",
     "3s5z": "3s5z",
     "smacv2_5_units": "SMACv2-5U",
+    "smacv2_10_units": "SMACv2-10U",
 }
 
 CONSTRAINT_PRETTY_NAMES = {
@@ -62,11 +63,12 @@ _RUN_EVAL_CACHE: Dict[tuple[Any, ...], Dict[str, Any]] = {}
 _RUN_EVAL_DISK_CACHE: Dict[Path, Dict[str, Any]] = {}
 _DUPLICATE_POLICIES = {"error", "latest", "best_metric", "all"}
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
 _MODEL_TEMPLATE_PATHS = {
-    "pci_mappo": _REPO_ROOT / "configs_jax/smax_pci_mappo.yaml",
-    "pci_ippo": _REPO_ROOT / "configs_jax/smax_pci_ippo.yaml",
-    "mappo": _REPO_ROOT / "configs_jax/smax_mappo.yaml",
-    "ippo": _REPO_ROOT / "configs_jax/smax_ippo.yaml",
+    "pci_mappo": _REPO_ROOT / "configs/smax_configs/smax_pci_mappo.yaml",
+    "pci_ippo": _REPO_ROOT / "configs/smax_configs/smax_pci_ippo.yaml",
+    "mappo": _REPO_ROOT / "configs/smax_configs/smax_mappo.yaml",
+    "ippo": _REPO_ROOT / "configs/smax_configs/smax_ippo.yaml",
 }
 _MODEL_ALGORITHM_TYPES = {
     "pci_mappo": "jax_pci_mappo",
@@ -74,6 +76,12 @@ _MODEL_ALGORITHM_TYPES = {
     "mappo": "jax_mappo",
     "ippo": "jax_ippo",
 }
+
+
+def clear_runtime_caches() -> None:
+    _ENV_CACHE.clear()
+    _RUN_EVAL_CACHE.clear()
+    _RUN_EVAL_DISK_CACHE.clear()
 
 
 def normalize_algorithm_type(algorithm_type: str) -> str:
@@ -401,7 +409,7 @@ def discover_runs(root: Path, project_filter: Optional[str] = PROJECT_FILTER) ->
         algorithm_type = normalize_algorithm_type(cfg.algorithm.type)
         model_key = model_key_from_algorithm_type(cfg.algorithm.type)
         model = model_label_from_algorithm_type(cfg.algorithm.type)
-        map_name = getattr(cfg.environment, "map_name", "unknown")
+        map_name = _cfg_extra(cfg.environment, "map_name", "unknown")
         constraint_key = constraint_key_from_run_name(wandb_run_name, map_name=map_name)
         seed = int(getattr(cfg.training, "seed", 0))
 
@@ -449,24 +457,8 @@ def discover_runs(root: Path, project_filter: Optional[str] = PROJECT_FILTER) ->
 def _build_smax_env(cfg: Config, *, n_envs: int, batch: bool) -> Any:
     factories = bootstrap_project(cfg.training.device)
     env_cfg = cfg.environment
-    env_signature = json.dumps(
-        {
-            "device": str(cfg.training.device).lower(),
-            "batch": batch,
-            "n_envs": int(n_envs),
-            "warmup_episodes": 0 if batch else None,
-            "algorithm_type": normalize_algorithm_type(cfg.algorithm.type),
-            "env": env_cfg.get_relevant_config(),
-            "seed": int(_cfg_extra(env_cfg, "seed", 0)),
-        },
-        sort_keys=True,
-        default=str,
-    )
-    if env_signature in _ENV_CACHE:
-        return _ENV_CACHE[env_signature]
-
     common_kwargs = {
-        "map_name": getattr(env_cfg, "map_name", None),
+        "map_name": _cfg_extra(env_cfg, "map_name", None),
         "num_allies": int(_cfg_extra(env_cfg, "num_allies", 5)),
         "num_enemies": int(_cfg_extra(env_cfg, "num_enemies", 5)),
         "seed": int(_cfg_extra(env_cfg, "seed", 0)),
@@ -495,6 +487,20 @@ def _build_smax_env(cfg: Config, *, n_envs: int, batch: bool) -> Any:
         "cooperative_kill_bonus": float(_cfg_extra(env_cfg, "cooperative_kill_bonus", 2.0)),
         "cooperative_kill_owner_ratio": float(_cfg_extra(env_cfg, "cooperative_kill_owner_ratio", 0.7)),
     }
+    env_signature = json.dumps(
+        {
+            "device": str(cfg.training.device).lower(),
+            "batch": batch,
+            "n_envs": int(n_envs),
+            "warmup_episodes": 0 if batch else None,
+            "algorithm_type": normalize_algorithm_type(cfg.algorithm.type),
+            "env_kwargs": common_kwargs,
+        },
+        sort_keys=True,
+        default=str,
+    )
+    if env_signature in _ENV_CACHE:
+        return _ENV_CACHE[env_signature]
 
     if batch:
         env = factories["SMAXBatchWrapper"](n_envs=n_envs, warmup_episodes=0, **common_kwargs)
@@ -527,6 +533,42 @@ def _evaluation_cache_key(
         str(checkpoint_path),
         checkpoint_mtime,
     )
+
+
+def _selected_checkpoint_path(run_row: pd.Series | Dict[str, Any], checkpoint_choice: str) -> Path:
+    if isinstance(run_row, pd.Series):
+        run_row = run_row.to_dict()
+    return Path(run_row[f"{checkpoint_choice}_checkpoint"])
+
+
+def _checkpoint_validation_error(
+    run_row: pd.Series | Dict[str, Any],
+    *,
+    checkpoint_choice: str,
+) -> Optional[str]:
+    checkpoint_path = _selected_checkpoint_path(run_row, checkpoint_choice)
+    if not checkpoint_path.exists():
+        return f"checkpoint file does not exist: {checkpoint_path}"
+    try:
+        size = checkpoint_path.stat().st_size
+    except OSError as exc:
+        return f"failed to stat checkpoint file {checkpoint_path}: {exc}"
+    if size <= 0:
+        return f"checkpoint file is empty: {checkpoint_path}"
+    return None
+
+
+def _is_checkpoint_load_error(exc: BaseException) -> bool:
+    if isinstance(exc, (EOFError, pickle.UnpicklingError)):
+        return True
+    text = str(exc).lower()
+    keywords = [
+        "ran out of input",
+        "pickle data was truncated",
+        "invalid load key",
+        "checkpoint file is empty",
+    ]
+    return any(keyword in text for keyword in keywords)
 
 
 def _evaluation_cache_key_str(cache_key: tuple[Any, ...]) -> str:
@@ -921,6 +963,11 @@ def _jax_actor_eval_checkpoint_path(checkpoint_path: Path) -> Path:
 
 def _prepare_jax_actor_eval_checkpoint(checkpoint_path: Path) -> Path:
     checkpoint_path = Path(checkpoint_path)
+    if not checkpoint_path.exists():
+        raise FileNotFoundError(f"Checkpoint file does not exist: {checkpoint_path}")
+    if checkpoint_path.stat().st_size <= 0:
+        raise EOFError(f"Checkpoint file is empty: {checkpoint_path}")
+
     actor_checkpoint_path = _jax_actor_eval_checkpoint_path(checkpoint_path)
     source_mtime = checkpoint_path.stat().st_mtime_ns
 
@@ -2099,6 +2146,93 @@ def format_cross_map_latex(
     )
 
 
+def format_seedwise_cross_map_latex(
+    seed_summary: pd.DataFrame,
+    *,
+    checkpoint_choice: str,
+    map_order: Optional[list[str]] = None,
+    model_order: Optional[list[str]] = None,
+    seed_order: Optional[list[int]] = None,
+    caption: Optional[str] = None,
+    label: str = "tab:smax_seedwise",
+) -> str:
+    if map_order is None:
+        map_order = ordered_map_names(seed_summary["map_name"].dropna().unique().tolist())
+    if model_order is None:
+        model_order = ordered_model_labels(seed_summary["model_label"].dropna().unique().tolist())
+    if seed_order is None:
+        seed_order = sorted(int(seed) for seed in seed_summary["seed"].dropna().unique().tolist())
+
+    summary_lookup = {
+        (row["map_name"], row["constraint_key"], int(row["seed"]), row["model_label"]): row
+        for _, row in seed_summary.iterrows()
+    }
+    constraints_by_map = {}
+    for map_name in map_order:
+        map_constraints = seed_summary.loc[
+            seed_summary["map_name"] == map_name, "constraint_key"
+        ].dropna().unique().tolist()
+        constraints_by_map[map_name] = _ordered_constraint_keys(map_constraints)
+
+    def fmt(map_name: str, constraint: str, seed: int, model: str) -> str:
+        row = summary_lookup.get((map_name, constraint, int(seed), model))
+        if row is None:
+            return "--"
+        win_rate = float(row["eval_success_rate"]) * 100.0
+        return f"{win_rate:.1f}"
+
+    if caption is None:
+        caption = (
+            "Seed-wise deterministic SMAX test win rates (\\%) using "
+            f"{checkpoint_choice} checkpoints. Each entry is the mean over the shared evaluation-seed set "
+            f"({seed_summary['n_eval_seeds'].iloc[0]} eval seeds where available). "
+            "Missing entries indicate that the corresponding training seed was unavailable."
+        )
+
+    rows = []
+    n_cols = 3 + len(model_order)
+    for map_idx, map_name in enumerate(map_order):
+        constraints = constraints_by_map.get(map_name, [])
+        if map_idx > 0:
+            rows.append("\\midrule")
+        for constraint_idx, constraint in enumerate(constraints):
+            available_seeds = sorted({
+                int(seed)
+                for seed in seed_summary.loc[
+                    (seed_summary["map_name"] == map_name)
+                    & (seed_summary["constraint_key"] == constraint),
+                    "seed",
+                ].dropna().tolist()
+            })
+            row_seeds = [seed for seed in seed_order if seed in available_seeds]
+            if not row_seeds:
+                row_seeds = seed_order
+            for seed_idx, seed in enumerate(row_seeds):
+                map_cell = map_label(map_name) if constraint_idx == 0 and seed_idx == 0 else ""
+                constraint_cell = constraint_label(constraint) if seed_idx == 0 else ""
+                values = " & ".join(fmt(map_name, constraint, seed, model) for model in model_order)
+                rows.append(f"{map_cell} & {constraint_cell} & {seed} & {values} \\\\")
+
+    header_cols = "Map & Constraint & Seed & " + " & ".join(name.upper() for name in model_order)
+    body = "\n".join(rows)
+    return (
+        "\\begin{table*}[t]\n"
+        "\\centering\n"
+        "\\small\n"
+        "\\setlength{\\tabcolsep}{4pt}\n"
+        f"\\caption{{{caption}}}\n"
+        f"\\label{{{label}}}\n"
+        "\\begin{tabular}{llc" + "c" * len(model_order) + "}\n"
+        "\\toprule\n"
+        f"{header_cols} \\\\\n"
+        "\\midrule\n"
+        f"{body}\n"
+        "\\bottomrule\n"
+        "\\end{tabular}\n"
+        "\\end{table*}"
+    )
+
+
 def save_summary_tables(
     model_summary: pd.DataFrame,
     output_dir: Path,
@@ -2123,3 +2257,158 @@ def save_summary_tables(
         )
     )
     return {"csv": csv_path, "tex": tex_path}
+
+
+def _bundle_safe_name(name: str) -> str:
+    text = str(name).strip().lower()
+    text = re.sub(r"[^a-z0-9]+", "_", text)
+    return text.strip("_") or "unknown"
+
+
+def save_full_evaluation_bundle(
+    map_results: Dict[str, Dict[str, Any]],
+    output_dir: Path,
+    *,
+    checkpoint_choice: str,
+    eval_episodes: Optional[int] = None,
+    eval_seeds: Optional[Iterable[int]] = None,
+    map_order: Optional[list[str]] = None,
+    model_order: Optional[list[str]] = None,
+    prefix: str = "smax_checkpoint_eval",
+) -> Dict[str, Path]:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    maps_dir = output_dir / "maps"
+    maps_dir.mkdir(parents=True, exist_ok=True)
+
+    all_run_results = []
+    all_seed_summary = []
+    all_model_summary = []
+    manifest_maps = {}
+
+    ordered_maps = map_order or ordered_map_names(map_results.keys())
+    for map_name in ordered_maps:
+        if map_name not in map_results:
+            continue
+        result = map_results[map_name]
+        safe_map_name = _bundle_safe_name(map_name)
+
+        run_df = result.get("run_results", pd.DataFrame()).copy()
+        seed_df = result.get("seed_summary", pd.DataFrame()).copy()
+        model_df = result.get("model_summary", pd.DataFrame()).copy()
+
+        if not run_df.empty:
+            all_run_results.append(run_df)
+        if not seed_df.empty:
+            all_seed_summary.append(seed_df)
+        if not model_df.empty:
+            all_model_summary.append(model_df)
+
+        run_path = maps_dir / f"{safe_map_name}_run_results.csv"
+        seed_path = maps_dir / f"{safe_map_name}_seed_summary.csv"
+        model_path = maps_dir / f"{safe_map_name}_model_summary.csv"
+        latex_path = maps_dir / f"{safe_map_name}_table.tex"
+
+        run_df.to_csv(run_path, index=False)
+        seed_df.to_csv(seed_path, index=False)
+        model_df.to_csv(model_path, index=False)
+        latex_path.write_text(str(result.get("latex", "")))
+
+        manifest_maps[map_name] = {
+            "run_results": str(run_path.relative_to(output_dir)),
+            "seed_summary": str(seed_path.relative_to(output_dir)),
+            "model_summary": str(model_path.relative_to(output_dir)),
+            "latex": str(latex_path.relative_to(output_dir)),
+            "n_run_rows": int(len(run_df)),
+            "n_seed_rows": int(len(seed_df)),
+            "n_model_rows": int(len(model_df)),
+        }
+
+    combined_run_df = pd.concat(all_run_results, ignore_index=True) if all_run_results else pd.DataFrame()
+    combined_seed_df = pd.concat(all_seed_summary, ignore_index=True) if all_seed_summary else pd.DataFrame()
+    combined_model_df = pd.concat(all_model_summary, ignore_index=True) if all_model_summary else pd.DataFrame()
+
+    if not combined_model_df.empty:
+        constraint_rank = {
+            name: idx for idx, name in enumerate(_ordered_constraint_keys(combined_model_df["constraint_key"].unique().tolist()))
+        }
+        model_rank = {name: idx for idx, name in enumerate(model_order or ordered_model_labels(combined_model_df["model_label"].unique().tolist()))}
+        combined_model_df["_constraint_rank"] = combined_model_df["constraint_key"].map(constraint_rank)
+        combined_model_df["_model_rank"] = combined_model_df["model_label"].map(model_rank)
+        combined_model_df = (
+            combined_model_df.sort_values(["map_name", "_constraint_rank", "_model_rank"])
+            .drop(columns=["_constraint_rank", "_model_rank"])
+            .reset_index(drop=True)
+        )
+
+    if not combined_seed_df.empty:
+        constraint_rank = {
+            name: idx for idx, name in enumerate(_ordered_constraint_keys(combined_seed_df["constraint_key"].unique().tolist()))
+        }
+        model_rank = {name: idx for idx, name in enumerate(model_order or ordered_model_labels(combined_seed_df["model_label"].unique().tolist()))}
+        combined_seed_df["_constraint_rank"] = combined_seed_df["constraint_key"].map(constraint_rank)
+        combined_seed_df["_model_rank"] = combined_seed_df["model_label"].map(model_rank)
+        combined_seed_df = (
+            combined_seed_df.sort_values(["map_name", "_constraint_rank", "_model_rank", "seed"])
+            .drop(columns=["_constraint_rank", "_model_rank"])
+            .reset_index(drop=True)
+        )
+
+    if not combined_run_df.empty:
+        constraint_rank = {
+            name: idx for idx, name in enumerate(_ordered_constraint_keys(combined_run_df["constraint_key"].unique().tolist()))
+        }
+        model_rank = {name: idx for idx, name in enumerate(model_order or ordered_model_labels(combined_run_df["model_label"].unique().tolist()))}
+        combined_run_df["_constraint_rank"] = combined_run_df["constraint_key"].map(constraint_rank)
+        combined_run_df["_model_rank"] = combined_run_df["model_label"].map(model_rank)
+        combined_run_df = (
+            combined_run_df.sort_values(["map_name", "_constraint_rank", "_model_rank", "train_seed", "eval_seed"])
+            .drop(columns=["_constraint_rank", "_model_rank"])
+            .reset_index(drop=True)
+        )
+
+    combined_run_path = output_dir / f"{prefix}_{checkpoint_choice}_run_results.csv"
+    combined_seed_path = output_dir / f"{prefix}_{checkpoint_choice}_seed_summary.csv"
+    combined_model_path = output_dir / f"{prefix}_{checkpoint_choice}_model_summary.csv"
+    combined_tex_path = output_dir / f"{prefix}_{checkpoint_choice}_table.tex"
+    manifest_path = output_dir / f"{prefix}_{checkpoint_choice}_manifest.json"
+
+    combined_run_df.to_csv(combined_run_path, index=False)
+    combined_seed_df.to_csv(combined_seed_path, index=False)
+    combined_model_df.to_csv(combined_model_path, index=False)
+    combined_tex_path.write_text(
+        format_cross_map_latex(
+            combined_model_df,
+            checkpoint_choice=checkpoint_choice,
+            map_order=map_order,
+            model_order=model_order,
+        )
+        if not combined_model_df.empty
+        else ""
+    )
+
+    manifest = {
+        "checkpoint_choice": checkpoint_choice,
+        "eval_episodes": None if eval_episodes is None else int(eval_episodes),
+        "eval_seeds": None if eval_seeds is None else [int(seed) for seed in eval_seeds],
+        "map_order": list(map_order or ordered_maps),
+        "model_order": list(model_order or ordered_model_labels(combined_model_df["model_label"].unique().tolist() if not combined_model_df.empty else [])),
+        "files": {
+            "run_results": combined_run_path.name,
+            "seed_summary": combined_seed_path.name,
+            "model_summary": combined_model_path.name,
+            "latex": combined_tex_path.name,
+        },
+        "maps": manifest_maps,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True))
+
+    return {
+        "dir": output_dir,
+        "run_results": combined_run_path,
+        "seed_summary": combined_seed_path,
+        "model_summary": combined_model_path,
+        "tex": combined_tex_path,
+        "manifest": manifest_path,
+    }

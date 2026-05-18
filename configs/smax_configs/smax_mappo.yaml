@@ -20,11 +20,12 @@ algorithm:
   batch_size: 0 # unused
   use_centralized_critic: true
   add_agent_id: true
+  anneal_lr: true
 
 training:
   max_iterations: 1600
   max_steps_per_iteration: 6400
-  log_interval: 1
+  log_interval: 2
   save_interval: 500
   eval_interval: 25
   eval_episodes: 16
@@ -67,6 +68,6 @@ environment:
   cooperative_size: 2
 
 wandb:
-  use_wandb: true
-  project: "pci-marl-smax-jax"
+  use_wandb: false
+  project: "YourProjectName"
   tags: ["jax", "smax", "mappo", "jaxmarl"]

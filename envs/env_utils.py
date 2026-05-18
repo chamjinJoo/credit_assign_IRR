@@ -29,22 +29,7 @@ def create_environment(env_config) -> MultiAgentEnv:
             grid_observation=config_dict.get('grid_observation', False),
             obs_noise_std=config_dict.get('obs_noise_std', 0.0)
         )
-        
-    elif env_name == 'LBForaging' or env_name == 'LBF' or env_name == 'lbforaging':
-        from .multi_agent_env import LBForagingWrapper
-        return LBForagingWrapper(
-            field_size=config_dict.get('field_size', 7),
-            num_agents=config_dict.get('num_agents', 2),
-            max_food=config_dict.get('max_food', 1),
-            player_level=config_dict.get('player_level', (3, 3)),
-            food_level=config_dict.get('food_level', (3, 3)),
-            sight=config_dict.get('sight', 2),
-            max_episode_steps=config_dict.get('max_episode_steps', 50),
-            force_coop=config_dict.get('force_coop', False),
-            seed=config_dict.get('seed', None),
-            grid_observation=config_dict.get('grid_observation', True)
-        )
-    
+
     elif env_name == 'SMAX':
         from .multi_agent_env import SMAXWrapper
         return SMAXWrapper(
@@ -84,7 +69,6 @@ def get_available_environments() -> Dict[str, str]:
     return {
         'StagHuntEnv': 'Stag-Hunt',
         'SMAX': 'JaxMARL SMAX',
-        'LBF': 'LBForaging',
     }
 
 

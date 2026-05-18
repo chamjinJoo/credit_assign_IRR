@@ -9,12 +9,6 @@ plots/
 # logs
 logs/
 
-# Notes
-Notes.md
-
-# tensorboard
-tensorboard/
-
 # wandb
 wandb/
 
@@ -29,6 +23,7 @@ __pycache__/
 
 # backup
 archieve/
+not_for_submit/
 
 # vscode
 .vscode/

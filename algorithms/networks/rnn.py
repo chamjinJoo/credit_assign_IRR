@@ -1,6 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 ###########################################################################
 # From https://github.com/marlbenchmark/on-policy, edited for our usage.

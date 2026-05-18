@@ -12,101 +12,45 @@ causal_lambda=1.0
 model="jax-pci-ippo"
 
 # env settings
-map_name="3s5z"  # empty string keeps the YAML value; set to override the SMAX map
+map_name="6h_vs_8z"  # empty string keeps the YAML value; set to override the SMAX map
 # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
-allowed_target_windows=(6)
+allowed_target_windows=(6 8)
 
 # training settings
-seeds=(1)
-lr_actor=0.004
-lr_critic=0.004
-wandb_run_name_postfix="lr4e-3_proxyX_GD4"
+seeds=(42 1 2)
+lr_actor=0.001
+lr_critic=0.001
 
 device="cuda"
 n_rollout_threads=8
-max_iterations=1600
-max_steps_per_iteration=6400 # follow the smax paper: 128 env * 64 steps
-log_interval=2
 run_in_background=false
-anneal_lr=true
-
-#checkpoint="save_checkpoints/20260412_134339_seed42/smaxbatchwrapper/checkpoints/jax_checkpoint_iter_162.pkl"
-
-# conda activation (optional)
-if command -v conda >/dev/null 2>&1; then
-  eval "$(conda shell.bash hook)"
-  conda activate pcimarl
-fi
-
-# reproducibility settings for JAX
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
-# export KMP_DUPLICATE_LIB_OK=TRUE # for Window
-
-pids=()
 
 # main training loop over config variants and seeds
 for allowed_target_window in "${allowed_target_windows[@]}"; do
-  echo "[allowed_target_window=${allowed_target_window}] start"
-  for seed in "${seeds[@]}"; do
-      wandb_group="${map_name:-default}"
-      wandb_args=(
-        --use-wandb
-        --wandb-project pci-marl-smax-jax
-        --wandb-group "${wandb_group}"
-      )
-      if [[ -n "${wandb_run_name_postfix}" ]]; then
-        wandb_args+=(--wandb-run-name-postfix "${wandb_run_name_postfix}")
-      fi
-      echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
-      if ${run_in_background}; then
+    echo "[allowed_target_window=${allowed_target_window}] start"
+    for seed in "${seeds[@]}"; do
+        wandb_group="${map_name:-default}"
+        wandb_args=(
+            --use-wandb
+            --wandb-group "${wandb_group}"
+        )
+        echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
+        
         python main.py \
-        --env SMAX \
-        --config ${config} \
-        --model ${model} \
-        --map-name "${map_name}" \
-        --causal-lambda ${causal_lambda} \
-        --lr-actor ${lr_actor} \
-        --lr-critic ${lr_critic} \
-        --allowed-target-window ${allowed_target_window} \
-        --n-rollout-threads ${n_rollout_threads} \
-        --max-iterations ${max_iterations} \
-        --max-steps ${max_steps_per_iteration} \
-        --log-interval ${log_interval} \
-        --device ${device} \
-        --seed ${seed} \
-        --anneal-lr ${anneal_lr} \
-        "${wandb_args[@]}" &
-        pid=$!
-        pids+=("${pid}")
-        echo "[allowed_target_window=${allowed_target_window} seed=${seed}] PID: ${pid}"
-      else
-        python main.py \
-        --env SMAX \
-        --config ${config} \
-        --model ${model} \
-        --map-name "${map_name}" \
-        --causal-lambda ${causal_lambda} \
-        --lr-actor ${lr_actor} \
-        --lr-critic ${lr_critic} \
-        --allowed-target-window ${allowed_target_window} \
-        --n-rollout-threads ${n_rollout_threads} \
-        --max-iterations ${max_iterations} \
-        --max-steps ${max_steps_per_iteration} \
-        --log-interval ${log_interval} \
-        --device ${device} \
-        --seed ${seed} \
-        --anneal-lr ${anneal_lr} \
-        "${wandb_args[@]}"
-    fi
-  done
+            --env SMAX \
+            --config ${config} \
+            --model ${model} \
+            --map-name "${map_name}" \
+            --causal-lambda ${causal_lambda} \
+            --allowed-target-window ${allowed_target_window} \
+            --lr-actor ${lr_actor} \
+            --lr-critic ${lr_critic} \
+            --n-rollout-threads ${n_rollout_threads} \
+            --device ${device} \
+            --seed ${seed} \
+            "${wandb_args[@]}"
+    done
 done
 
-if ${run_in_background}; then
-  echo "all seed launched. waiting for completion..."
-  for pid in "${pids[@]}"; do
-    wait "${pid}"
-  done
-  echo "all config/seed training completed!"
-else
-  echo "all config/seed training completed sequentially!"
+echo "all config/seed training completed sequentially!"
 fi
