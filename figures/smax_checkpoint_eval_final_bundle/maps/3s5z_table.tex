@@ -1,13 +1,16 @@
-\begin{table}[t]
+\begin{table}[htbp]
+\vspace{-1em}
+\caption{Test win rates (\%) on SMAX maps. $\pm$ denotes one standard deviation over available training seeds. The best results are highlighted in bold. The sign of \(\Delta\) and colored values indicate performance improvements (blue) or degradations (red) over their respective baselines.}
+\label{tab:smax}
 \centering
-\caption{Deterministic SMAX win rate on 3s5z using final checkpoints. Rows are grouped by training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
-\label{tab:smax_3s5z_final}
-\begin{tabular}{lcccc}
+\resizebox{0.9\textwidth}{!}{%
+
+\begin{tabular}{c c c c c c c c}
 \toprule
-Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+Map & Target Constraint & IPPO & PCI-IPPO* & \(\Delta\) & MAPPO & PCI-MAPPO* & \(\Delta\)\\
 \midrule
-vanilla & 81.2 \scriptsize $\pm$ 27.2 & 70.8 \scriptsize $\pm$ 31.5 & 96.4 \scriptsize $\pm$ 2.4 & 97.4 \scriptsize $\pm$ 2.4 \\
-tar_w=6 & 0.0 \scriptsize $\pm$ 0.0 & 24.5 \scriptsize $\pm$ 25.0 & 64.1 \scriptsize $\pm$ 0.0 & 83.3 \scriptsize $\pm$ 7.0 \\
+    3s5z & Vanilla & 70.9 \scriptsize$\pm$ 40.9 & 73.4 \scriptsize$\pm$ 42.7 & \textbf{\textcolor{blue}{2.5}} & 98.4 \scriptsize$\pm$ 1.1 & \textbf{99.4} \scriptsize$\pm$ 0.9 & \textbf{\textcolor{blue}{0.9}} \\
+     & Hard & 29.4 \scriptsize$\pm$ 39.3 & 35.9 \scriptsize$\pm$ 44.1 & \textbf{\textcolor{blue}{6.6}} & 66.6 \scriptsize$\pm$ 9.5 & \textbf{97.2} \scriptsize$\pm$ 2.0 & \textbf{\textcolor{blue}{30.6}} \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}

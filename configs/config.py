@@ -11,6 +11,7 @@ class NetworkConfig:
     lr_actor: float = 3e-4
     lr_bridge: float = 3e-4
     lr_critic: float = 3e-4
+    lr_delta_critic: Optional[float] = None  # None: follow lr_critic
     lr: float = 5e-4  # General learning rate (used by QMIX)
     rkhs_gamma: float = 1.0  # Gamma parameter for RBF kernel
     recurrent_N: int = 1  # Number of recurrent layers
@@ -47,9 +48,6 @@ class AlgorithmConfig:
     bridge_update_interval: int = 1  # Update bridge network every N QMIX updates
     num_batches: int = 4  # Number of batches K for training
     causal_mini_batch_size: Optional[int] = None  # None/0: use the full causal batch for r_pci bridge training
-    use_causal_rff: bool = True  # Use Random Fourier Features instead of materializing the RBF Gram matrix in r_pci
-    causal_rff_features: int = 512  # Number of RFF features for the r_pci RKHS loss approximation
-    causal_rff_seed: int = 0  # Seed for deterministic RFF frequencies
     tikhonov_gamma: float = 1e-4  # Tikhonov regularization for RKHS solver
     stabilizer_lambda: float = 1.0  # Gram matrix scaling in RKHS loss
     use_value_parameter_sharing: bool = True  # If True, use single shared value network for all agents
@@ -69,8 +67,8 @@ class AlgorithmConfig:
     normalize_returns: bool = True  # Normalize return targets when supported
 
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
-    use_delta_critic: bool = True      # True: per-agent V^i_delta critic for TD-style PCI advantages
-    anneal_lr: bool = False             # True: linear LR annealing (actor/critic) from init_value to 0
+    use_delta_critic: bool = False     # True: per-agent V^i_delta critic for TD-style PCI advantages
+    anneal_lr: bool = False             # True: iteration-based linear LR annealing from init_value to 0
 
     # Agent ID feature
     add_agent_id: bool = False  # If True, concatenate agent_id one-hot vector to observations
@@ -96,7 +94,7 @@ class TrainingConfig:
     save_interval: int = 100
     eval_interval: int = 50
     eval_episodes: int = 10
-    save_dir: str = "./save_checkpoints"
+    save_dir: str = "./runs/checkpoints"
     checkpoint_keep_last: int = 1  # Keep only the most recent iteration checkpoint on disk
     device: str = "cpu"
     n_rollout_threads: int = 1  # [ADDED] Number of parallel environments for rollout collection
@@ -240,6 +238,8 @@ class EnvironmentConfig:
             return 'smac'
         if compact_env == 'smax':
             return 'smax'
+        if 'foraging' in compact_env or compact_env in ('lbf', 'jaxlbf', 'jumanjilbf', 'jax_lbf', 'jumanji_lbf'):
+            return 'lbforaging'
 
         return current_env
 
@@ -273,7 +273,8 @@ class EnvironmentConfig:
             'vmas_dispersion': {'num_agents', 'max_steps', 'continuous_actions'},
             'lbforaging': {
                 'num_agents', 'env_id', 'field_size', 'max_food', 'player_level', 'food_level',
-                'sight', 'max_episode_steps', 'force_coop', 'grid_observation'
+                'sight', 'max_episode_steps', 'force_coop', 'grid_observation',
+                'normalize_reward', 'penalty'
             },
             'simple_stag_hunt': {
                 'cooperation_reward', 'defect_alone_reward', 'defect_together_reward',
@@ -489,12 +490,6 @@ def parse_args() -> argparse.Namespace:
                         help='Update bridge network every N QMIX updates')
     parser.add_argument('--causal-mini-batch-size', type=int, default=None,
                         help='Causal bridge mini-batch size; use 0 for full-batch r_pci training')
-    parser.add_argument('--use-causal-rff', type=str, default=None,
-                        help='Use Random Fourier Features for r_pci RKHS loss (true/false)')
-    parser.add_argument('--causal-rff-features', type=int, default=None,
-                        help='Number of Random Fourier Features for r_pci RKHS loss')
-    parser.add_argument('--causal-rff-seed', type=int, default=None,
-                        help='Seed for deterministic r_pci Random Fourier Features')
     parser.add_argument('--use-value-parameter-sharing', type=str, default=None,
                         help='Use shared value network for all agents (true/false)')
     parser.add_argument('--use-centralized-critic', type=str, default=None,
@@ -505,6 +500,8 @@ def parse_args() -> argparse.Namespace:
                         help='Learning rate for bridge networks')
     parser.add_argument('--lr-critic', type=float, default=None,
                         help='Learning rate for critic')
+    parser.add_argument('--lr-delta-critic', type=float, default=None,
+                        help='Learning rate for delta critic; defaults to lr_critic when unset')
     parser.add_argument('--max-grad-norm', type=float, default=None,
                         help='Maximum gradient norm for clipping')
     parser.add_argument('--recurrent-N', type=int, default=1,
@@ -645,12 +642,6 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.bridge_update_interval = args.bridge_update_interval
     if hasattr(args, 'causal_mini_batch_size') and args.causal_mini_batch_size is not None:
         config.algorithm.causal_mini_batch_size = None if args.causal_mini_batch_size <= 0 else args.causal_mini_batch_size
-    if hasattr(args, 'use_causal_rff') and args.use_causal_rff is not None:
-        config.algorithm.use_causal_rff = args.use_causal_rff.lower() in ('true', '1', 'yes', 'on')
-    if hasattr(args, 'causal_rff_features') and args.causal_rff_features is not None:
-        config.algorithm.causal_rff_features = args.causal_rff_features
-    if hasattr(args, 'causal_rff_seed') and args.causal_rff_seed is not None:
-        config.algorithm.causal_rff_seed = args.causal_rff_seed
     if hasattr(args, 'use_value_parameter_sharing') and args.use_value_parameter_sharing is not None:
         # Convert string to boolean
         use_sharing = args.use_value_parameter_sharing.lower() in ('true', '1', 'yes', 'on')
@@ -671,6 +662,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.network.lr_bridge = args.lr_bridge
     if hasattr(args, 'lr_critic') and args.lr_critic:
         config.network.lr_critic = args.lr_critic
+    if hasattr(args, 'lr_delta_critic') and args.lr_delta_critic is not None:
+        config.network.lr_delta_critic = args.lr_delta_critic
     if hasattr(args, 'recurrent_N') and args.recurrent_N is not None:
         config.network.recurrent_N = args.recurrent_N
     if hasattr(args, 'use_recurrent_policy') and args.use_recurrent_policy is not None:

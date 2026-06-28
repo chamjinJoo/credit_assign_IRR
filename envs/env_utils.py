@@ -1,8 +1,8 @@
 import numpy as np
 import torch
 from typing import Dict, Union
-from .multi_agent_env import MultiAgentEnv
-
+import gymnasium as gym
+from .base import MultiAgentEnv
 
 def create_environment(env_config) -> MultiAgentEnv:
     if hasattr(env_config, '__dict__'):
@@ -12,9 +12,10 @@ def create_environment(env_config) -> MultiAgentEnv:
         config_dict = env_config
     
     env_name = config_dict.get('env_name', 'null')
+    normalized_env_name = str(env_name).lower().replace('-', '').replace('_', '')
     
     if env_name == 'StagHunt' or env_name == 'StagHuntEnv':
-        from .multi_agent_env import StagHuntEnv
+        from .stag_hunt import StagHuntEnv
         return StagHuntEnv(
             num_agents=config_dict.get('num_agents', 2),
             max_steps=config_dict.get('max_steps', 50),
@@ -27,11 +28,13 @@ def create_environment(env_config) -> MultiAgentEnv:
             coop_bonus=config_dict.get('coop_bonus', 1.0),
             seed=config_dict.get('seed', 0),
             grid_observation=config_dict.get('grid_observation', False),
-            obs_noise_std=config_dict.get('obs_noise_std', 0.0)
+            vision=config_dict.get('vision', 2),
+            obs_noise_std=config_dict.get('obs_noise_std', 0.0),
+            global_reward=config_dict.get('global_reward', False),
         )
 
     elif env_name == 'SMAX':
-        from .multi_agent_env import SMAXWrapper
+        from .smax import SMAXWrapper
         return SMAXWrapper(
             map_name=config_dict.get('map_name', None),
             seed=config_dict.get('seed', None),
@@ -60,7 +63,39 @@ def create_environment(env_config) -> MultiAgentEnv:
             cooperative_kill_bonus=config_dict.get('cooperative_kill_bonus', 2.0),
             cooperative_kill_owner_ratio=config_dict.get('cooperative_kill_owner_ratio', 0.7),
         )
-    
+
+    elif env_name == 'LBForaging' or env_name == 'LBF' or env_name == 'lbforaging':
+        from .lbf import LBForagingWrapper
+        return LBForagingWrapper(
+            field_size=config_dict.get('field_size', 7),
+            num_agents=config_dict.get('num_agents', 2),
+            max_food=config_dict.get('max_food', 1),
+            player_level=config_dict.get('player_level', (3, 3)),
+            food_level=config_dict.get('food_level', (3, 3)),
+            sight=config_dict.get('sight', 2),
+            max_episode_steps=config_dict.get('max_episode_steps', 50),
+            force_coop=config_dict.get('force_coop', False),
+            seed=config_dict.get('seed', None),
+            grid_observation=config_dict.get('grid_observation', True)
+        )
+
+    elif env_name in ('JumanjiLBF', 'JaxLBF', 'JAXLBF', 'jumanji_lbf', 'jax_lbf'):
+        from .lbf import JumanjiLBFBatchWrapper
+        return JumanjiLBFBatchWrapper(
+            n_envs=config_dict.get('n_envs', 1),
+            field_size=config_dict.get('field_size', 10),
+            num_agents=config_dict.get('num_agents', 3),
+            max_food=config_dict.get('max_food', 3),
+            player_level=config_dict.get('player_level', (1, 2)),
+            sight=config_dict.get('sight', 2),
+            max_episode_steps=config_dict.get('max_episode_steps', 100),
+            force_coop=config_dict.get('force_coop', False),
+            seed=config_dict.get('seed', None),
+            grid_observation=config_dict.get('grid_observation', True),
+            normalize_reward=config_dict.get('normalize_reward', True),
+            penalty=config_dict.get('penalty', 0.0),
+        )
+
     else:
         raise ValueError(f"Unknown environment: {env_name}")
 

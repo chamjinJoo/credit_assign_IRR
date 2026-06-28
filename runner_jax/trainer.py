@@ -59,9 +59,52 @@ class JAXTrainer(Trainer):
         self._running_episode_rewards = np.zeros((self.rollout_envs, self.env.num_agents), dtype=np.float32)
         self._running_episode_lengths = np.zeros((self.rollout_envs,), dtype=np.int32)
         self._last_eval_is_best = False
+        self._latest_rollout_for_update_metrics = None
+        self._latest_rollout_start_env_rng = None
+        self._latest_rollout_start_env_state = None
+        self._latest_causal_delta_for_update_metrics = None
+        self._latest_causal_delta_rollout = None
+        self._latest_eval_diagnostic_rollout = None
+        self._wrap_causal_reward_cache()
 
-    def _run_jax_policy_evaluation(self, num_episodes: int, deterministic: bool = True) -> Dict[str, Any]:
-        """Run SMAX/JAX evaluation using the native pure JAX environment API."""
+    def _wrap_causal_reward_cache(self):
+        compute_causal_rewards = getattr(self.algorithm, "compute_causal_rewards", None)
+        if not callable(compute_causal_rewards):
+            return
+        if getattr(self.algorithm, "_jax_trainer_delta_cache_wrapped", False):
+            return
+
+        original_compute_causal_rewards = compute_causal_rewards
+
+        def cached_compute_causal_rewards(rollout, *args, **kwargs):
+            c_matrix, info = original_compute_causal_rewards(rollout, *args, **kwargs)
+            try:
+                self._latest_causal_delta_for_update_metrics = c_matrix.sum(axis=-1)
+                self._latest_causal_delta_rollout = rollout
+            except Exception:
+                self._latest_causal_delta_for_update_metrics = None
+                self._latest_causal_delta_rollout = None
+            return c_matrix, info
+
+        self.algorithm.compute_causal_rewards = cached_compute_causal_rewards
+        self.algorithm._jax_trainer_delta_cache_wrapped = True
+
+    def _can_collect_eval_diagnostics(self) -> bool:
+        return all(
+            hasattr(self.algorithm, name)
+            for name in ("_augment_obs", "_policy_step", "_value_step")
+        ) and (
+            hasattr(self.algorithm, "compute_causal_rewards")
+            or hasattr(self.algorithm, "compute_gram_spectrum_metrics")
+        )
+
+    def _run_jax_policy_evaluation(
+        self,
+        num_episodes: int,
+        deterministic: bool = True,
+        capture_diagnostics: bool = False,
+    ) -> Dict[str, Any]:
+        """Run JAX evaluation using the native pure JAX environment API."""
         eval_rng = jax.random.fold_in(self._eval_rng, self.iteration)
         eval_envs = getattr(self.eval_env, "n_envs", self.rollout_envs)
         episode_limit = self._get_eval_episode_limit()
@@ -71,6 +114,14 @@ class JAXTrainer(Trainer):
         )
         runner_state = self.algorithm.initialize_runner_state(eval_envs)
         eval_rng, batch_states, obs, avail = self.eval_env.reset_jax_pure(eval_rng)
+
+        collect_diagnostics = bool(capture_diagnostics and deterministic and self._can_collect_eval_diagnostics())
+        diagnostic_rollout_lists = defaultdict(list)
+        diagnostic_episode_ids = []
+        diagnostic_counted_episode_ids = set()
+        diagnostic_episode_id_by_env = np.arange(eval_envs, dtype=np.int64)
+        diagnostic_next_episode_id = int(eval_envs)
+        self._latest_eval_diagnostic_rollout = None
 
         running_rewards = np.zeros((eval_envs, self.eval_env.num_agents), dtype=np.float32)
         running_lengths = np.zeros((eval_envs,), dtype=np.int32)
@@ -82,18 +133,88 @@ class JAXTrainer(Trainer):
 
         while collected < num_episodes and eval_steps < max_eval_steps:
             if not deterministic:
-                raise NotImplementedError("JAX SMAX evaluation currently supports deterministic greedy rollouts only.")
-            actions, runner_state = self.algorithm.greedy_actions(obs, avail, runner_state)
+                raise NotImplementedError("JAX evaluation currently supports deterministic greedy rollouts only.")
+
+            if collect_diagnostics:
+                policy_rng = jax.random.fold_in(eval_rng, eval_steps)
+                obs_aug = self.algorithm._augment_obs(obs)
+                actor_hidden_prev = runner_state["actor_hidden"]
+                critic_hidden_prev = runner_state["critic_hidden"]
+                delta_critic_hidden_prev = runner_state["delta_critic_hidden"]
+                raw_prev_actions_prev = runner_state["prev_actions"]
+                prev_obs_prev = runner_state["prev_obs"]
+                done_prev = runner_state["done_prev"]
+                agent_done_prev = runner_state["agent_done_prev"]
+                actor_reset_masks = agent_done_prev
+                use_centralized_critic = bool(getattr(self.algorithm, "use_centralized_critic", False))
+                critic_reset_masks = done_prev if use_centralized_critic else agent_done_prev
+
+                actor_hidden_next, actions, log_probs, probs = self.algorithm._policy_step(
+                    self.algorithm.actor_state.params,
+                    obs_aug,
+                    avail,
+                    actor_hidden_prev,
+                    raw_prev_actions_prev,
+                    actor_reset_masks,
+                    policy_rng,
+                    True,
+                )
+                critic_hidden_next, values = self.algorithm._value_step(
+                    self.algorithm.critic_state.params,
+                    obs_aug,
+                    critic_hidden_prev,
+                    raw_prev_actions_prev,
+                    critic_reset_masks,
+                )
+                delta_critic_state = getattr(self.algorithm, "delta_critic_state", None)
+                if (
+                    getattr(self.algorithm, "use_delta_critic", False)
+                    and delta_critic_state is not None
+                    and hasattr(self.algorithm, "_delta_value_step")
+                ):
+                    delta_critic_hidden_next, delta_values = self.algorithm._delta_value_step(
+                        delta_critic_state.params,
+                        obs_aug,
+                        delta_critic_hidden_prev,
+                        raw_prev_actions_prev,
+                        critic_reset_masks,
+                    )
+                else:
+                    delta_critic_hidden_next = delta_critic_hidden_prev
+                    delta_values = jnp.zeros((obs_aug.shape[0], self.algorithm.num_agents), dtype=jnp.float32)
+            else:
+                actions, runner_state = self.algorithm.greedy_actions(obs, avail, runner_state)
+
             (
                 eval_rng,
                 batch_states,
-                obs,
-                avail,
+                next_obs,
+                next_avail,
                 rewards,
                 agent_dones,
                 dones_all,
                 battle_won,
             ) = self.eval_env.step_jax_pure(eval_rng, batch_states, actions)
+
+            if collect_diagnostics:
+                diagnostic_rollout_lists["prev_obs"].append(prev_obs_prev.astype(jnp.float32))
+                diagnostic_rollout_lists["obs"].append(obs_aug.astype(jnp.float32))
+                diagnostic_rollout_lists["avail_actions"].append(avail.astype(jnp.float32))
+                diagnostic_rollout_lists["agent_dones"].append(agent_done_prev.astype(jnp.float32))
+                diagnostic_rollout_lists["actions"].append(actions.astype(jnp.int32))
+                diagnostic_rollout_lists["log_probs"].append(log_probs.astype(jnp.float32))
+                diagnostic_rollout_lists["probs"].append(probs.astype(jnp.float32))
+                diagnostic_rollout_lists["rewards"].append(rewards.astype(jnp.float32))
+                diagnostic_rollout_lists["dones"].append(dones_all.astype(jnp.float32))
+                diagnostic_rollout_lists["masks"].append((1.0 - done_prev).astype(jnp.float32))
+                diagnostic_rollout_lists["values"].append(values.astype(jnp.float32))
+                diagnostic_rollout_lists["delta_values"].append(delta_values.astype(jnp.float32))
+                diagnostic_rollout_lists["actor_hidden"].append(actor_hidden_prev.astype(jnp.float32))
+                diagnostic_rollout_lists["critic_hidden"].append(critic_hidden_prev.astype(jnp.float32))
+                diagnostic_rollout_lists["delta_critic_hidden"].append(delta_critic_hidden_prev.astype(jnp.float32))
+                diagnostic_rollout_lists["prev_actions"].append(raw_prev_actions_prev.astype(jnp.float32))
+                diagnostic_rollout_lists["battle_won"].append(battle_won.astype(jnp.float32))
+                diagnostic_episode_ids.append(diagnostic_episode_id_by_env.copy())
 
             rewards_np = np.asarray(jax.device_get(rewards))
             dones_np = np.asarray(jax.device_get(dones_all)).astype(bool)
@@ -112,15 +233,25 @@ class JAXTrainer(Trainer):
                 jnp.asarray(agent_dones, dtype=jnp.float32),
                 jnp.asarray(dones_all, dtype=jnp.float32)[:, None],
             )
-            next_prev_actions = next_prev_actions * (
-                1.0 - agent_done_prev[..., None]
-            )
+            next_prev_actions = next_prev_actions * (1.0 - agent_done_prev[..., None])
+
+            if collect_diagnostics:
+                runner_state["actor_hidden"] = actor_hidden_next
+                runner_state["critic_hidden"] = critic_hidden_next
+                runner_state["delta_critic_hidden"] = delta_critic_hidden_next
             runner_state["prev_actions"] = next_prev_actions
+            if collect_diagnostics:
+                runner_state["prev_obs"] = self.algorithm._augment_obs(next_obs)
             runner_state["done_prev"] = jnp.asarray(dones_all, dtype=jnp.float32)
             runner_state["agent_done_prev"] = agent_done_prev
 
+            obs = next_obs
+            avail = next_avail
+
             for env_idx in range(eval_envs):
                 if dones_np[env_idx] and collected < num_episodes:
+                    if collect_diagnostics:
+                        diagnostic_counted_episode_ids.add(int(diagnostic_episode_id_by_env[env_idx]))
                     total_reward = running_rewards[env_idx].copy()
                     for agent_id, reward in enumerate(total_reward):
                         episode_rewards[agent_id].append(float(reward))
@@ -129,6 +260,26 @@ class JAXTrainer(Trainer):
                     collected += 1
                     running_rewards[env_idx] = 0.0
                     running_lengths[env_idx] = 0
+                    if collect_diagnostics:
+                        diagnostic_episode_id_by_env[env_idx] = diagnostic_next_episode_id
+                        diagnostic_next_episode_id += 1
+                elif dones_np[env_idx] and collect_diagnostics:
+                    diagnostic_episode_id_by_env[env_idx] = diagnostic_next_episode_id
+                    diagnostic_next_episode_id += 1
+
+        if collect_diagnostics and diagnostic_rollout_lists and diagnostic_counted_episode_ids:
+            diagnostic_rollout = {
+                key: jnp.stack(values, axis=0)
+                for key, values in diagnostic_rollout_lists.items()
+            }
+            episode_ids = np.stack(diagnostic_episode_ids, axis=0)
+            counted_mask = np.isin(
+                episode_ids,
+                np.asarray(sorted(diagnostic_counted_episode_ids), dtype=np.int64),
+            ).astype(np.float32)
+            diagnostic_rollout["masks"] = diagnostic_rollout["masks"] * jnp.asarray(counted_mask, dtype=jnp.float32)
+
+            self._latest_eval_diagnostic_rollout = diagnostic_rollout
 
         return {
             "episode_rewards": dict(episode_rewards),
@@ -232,6 +383,10 @@ class JAXTrainer(Trainer):
         }
 
     def collect_rollouts(self) -> Dict[str, Any]:
+        self._latest_causal_delta_for_update_metrics = None
+        self._latest_causal_delta_rollout = None
+        rollout_start_env_rng = self._env_rng
+        rollout_start_env_state = self._batch_env_state
         (
             self._env_rng,
             self._action_rng,
@@ -255,6 +410,9 @@ class JAXTrainer(Trainer):
         rollout = dict(rollout)
         rollout["last_value"] = last_value
         self.algorithm.latest_rollout = rollout
+        self._latest_rollout_for_update_metrics = rollout
+        self._latest_rollout_start_env_rng = rollout_start_env_rng
+        self._latest_rollout_start_env_state = rollout_start_env_state
 
         rewards = np.asarray(jax.device_get(rollout["rewards"]))
         dones = np.asarray(jax.device_get(rollout["dones"])).astype(bool)
@@ -296,8 +454,29 @@ class JAXTrainer(Trainer):
         }
         return rollout_data
 
+    def log_training_metrics(self, rollout_data: Dict[str, Any], update_info: Dict[str, float]):
+        super().log_training_metrics(rollout_data, update_info)
+
+    def log_evaluation_metrics(
+        self,
+        eval_info: Dict[str, float],
+        update_info: Dict[str, float] | None = None,
+        title: str = "Evaluation Results:",
+    ):
+        old_latest_rollout = getattr(self.algorithm, "latest_rollout", None)
+        if self._latest_eval_diagnostic_rollout is not None:
+            self.algorithm.latest_rollout = self._latest_eval_diagnostic_rollout
+        try:
+            super().log_evaluation_metrics(eval_info, update_info=update_info, title=title)
+        finally:
+            self.algorithm.latest_rollout = old_latest_rollout
+
     def evaluate_policy(self, num_episodes: int = 10, deterministic: bool = True) -> Dict[str, float]:
-        eval_data = self._run_jax_policy_evaluation(num_episodes, deterministic=deterministic)
+        eval_data = self._run_jax_policy_evaluation(
+            num_episodes,
+            deterministic=deterministic,
+            capture_diagnostics=True,
+        )
         episode_rewards = eval_data["episode_rewards"]
         episode_lengths = eval_data["episode_lengths"]
         episode_successes = eval_data["episode_successes"]

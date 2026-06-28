@@ -1,14 +1,17 @@
-\begin{table}[t]
+\begin{table}[htbp]
+\vspace{-1em}
+\caption{Test win rates (\%) on SMAX maps. $\pm$ denotes one standard deviation over available training seeds. The best results are highlighted in bold. The sign of \(\Delta\) and colored values indicate performance improvements (blue) or degradations (red) over their respective baselines.}
+\label{tab:smax}
 \centering
-\caption{Deterministic SMAX win rate on SMACv2-5U using final checkpoints. Rows are grouped by training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
-\label{tab:smax_smacv2_5_units_final}
-\begin{tabular}{lcccc}
+\resizebox{0.9\textwidth}{!}{%
+
+\begin{tabular}{c c c c c c c c}
 \toprule
-Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+Map & Target Constraint & IPPO & PCI-IPPO* & \(\Delta\) & MAPPO & PCI-MAPPO* & \(\Delta\)\\
 \midrule
-vanilla & 64.6 \scriptsize $\pm$ 3.6 & 66.7 \scriptsize $\pm$ 0.9 & 70.3 \scriptsize $\pm$ 1.6 & 72.9 \scriptsize $\pm$ 3.3 \\
-tar_w=3 & 15.6 \scriptsize $\pm$ 6.2 & 27.6 \scriptsize $\pm$ 4.8 & 25.0 \scriptsize $\pm$ 3.1 & 31.2 \scriptsize $\pm$ 4.1 \\
-tar_w=4 & 41.1 \scriptsize $\pm$ 7.9 & 54.7 \scriptsize $\pm$ 7.2 & 52.1 \scriptsize $\pm$ 1.8 & 54.7 \scriptsize $\pm$ 2.7 \\
+    smacv2\_5\_units & Vanilla & 67.2 \scriptsize$\pm$ 2.5 & 77.8 \scriptsize$\pm$ 3.9 & \textbf{\textcolor{blue}{10.6}} & 73.8 \scriptsize$\pm$ 3.7 & \textbf{80.9} \scriptsize$\pm$ 2.3 & \textbf{\textcolor{blue}{7.2}} \\
+     & Medium & 46.9 \scriptsize$\pm$ 2.2 & 65.9 \scriptsize$\pm$ 5.8 & \textbf{\textcolor{blue}{19.1}} & 57.2 \scriptsize$\pm$ 4.5 & \textbf{67.8} \scriptsize$\pm$ 4.1 & \textbf{\textcolor{blue}{10.6}} \\
+     & Hard & 23.8 \scriptsize$\pm$ 3.0 & 40.6 \scriptsize$\pm$ 5.8 & \textbf{\textcolor{blue}{16.9}} & 31.9 \scriptsize$\pm$ 6.0 & \textbf{43.8} \scriptsize$\pm$ 4.0 & \textbf{\textcolor{blue}{11.9}} \\
 \bottomrule
-\end{tabular}
+\end{tabular}}
 \end{table}

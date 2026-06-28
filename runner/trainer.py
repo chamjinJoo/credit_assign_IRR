@@ -31,7 +31,7 @@ class Trainer:
         save_interval: int = 100,
         eval_interval: int = 50,
         eval_episodes: int = 32,
-        save_dir: str = "./save_checkpoints",
+        save_dir: str = "./runs/checkpoints",
         use_wandb: bool = False,
         wandb_project: str = "pci-mappo",
         wandb_run_name: Optional[str] = None,
@@ -449,7 +449,7 @@ class Trainer:
         
         # Final evaluation and save
         self.logger.info("Running final evaluation...")
-        final_eval = self.evaluate_policy(num_episodes=32)  # Run more episodes for final evaluation
+        final_eval = self.evaluate_policy(num_episodes=self.eval_episodes)
         self.log_evaluation_metrics(final_eval, title="Final Evaluation Results")
         self.save_checkpoint(is_final=True)
         
@@ -1137,6 +1137,18 @@ class Trainer:
             self.logger.info("  PCI Advantage Snapshot:")
             for key, value in eval_only_adv_metrics.items():
                 self._log_update_metric_line(key, value, eval_only_adv_metrics, indent="    ")
+
+        gram_spectrum_metrics = {}
+        if hasattr(self.algorithm, 'compute_gram_spectrum_metrics'):
+            try:
+                gram_spectrum_metrics = self.algorithm.compute_gram_spectrum_metrics()
+            except Exception as exc:
+                self.logger.warning(f"Failed to compute eval Gram spectrum metrics: {exc}")
+
+        if gram_spectrum_metrics:
+            self.logger.info("  Gram Spectrum Snapshot:")
+            for key, value in gram_spectrum_metrics.items():
+                self.logger.info(f"    {key}: {value:.6f}")
         
         if self.use_wandb:
             wandb_data = {
@@ -1152,6 +1164,8 @@ class Trainer:
             }
 
             for key, value in eval_only_adv_metrics.items():
+                wandb_data[f'eval/{key}'] = value
+            for key, value in gram_spectrum_metrics.items():
                 wandb_data[f'eval/{key}'] = value
             
             # Add causal effect metrics to wandb (only for PCI-MAPPO)

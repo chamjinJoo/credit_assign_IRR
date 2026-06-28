@@ -74,17 +74,67 @@
     "seed_summary": "smax_checkpoint_eval_final_seed_summary.csv"
   },
   "map_order": [
-    "6h_vs_8z"
+    "3m",
+    "2s3z",
+    "6h_vs_8z",
+    "3s5z",
+    "smacv2_5_units",
+    "smacv2_10_units"
   ],
   "maps": {
+    "2s3z": {
+      "latex": "maps/2s3z_table.tex",
+      "model_summary": "maps/2s3z_model_summary.csv",
+      "n_model_rows": 12,
+      "n_run_rows": 3840,
+      "n_seed_rows": 60,
+      "run_results": "maps/2s3z_run_results.csv",
+      "seed_summary": "maps/2s3z_seed_summary.csv"
+    },
+    "3m": {
+      "latex": "maps/3m_table.tex",
+      "model_summary": "maps/3m_model_summary.csv",
+      "n_model_rows": 8,
+      "n_run_rows": 2560,
+      "n_seed_rows": 40,
+      "run_results": "maps/3m_run_results.csv",
+      "seed_summary": "maps/3m_seed_summary.csv"
+    },
+    "3s5z": {
+      "latex": "maps/3s5z_table.tex",
+      "model_summary": "maps/3s5z_model_summary.csv",
+      "n_model_rows": 8,
+      "n_run_rows": 2560,
+      "n_seed_rows": 40,
+      "run_results": "maps/3s5z_run_results.csv",
+      "seed_summary": "maps/3s5z_seed_summary.csv"
+    },
     "6h_vs_8z": {
       "latex": "maps/6h_vs_8z_table.tex",
       "model_summary": "maps/6h_vs_8z_model_summary.csv",
       "n_model_rows": 8,
-      "n_run_rows": 1536,
-      "n_seed_rows": 24,
+      "n_run_rows": 2560,
+      "n_seed_rows": 40,
       "run_results": "maps/6h_vs_8z_run_results.csv",
       "seed_summary": "maps/6h_vs_8z_seed_summary.csv"
+    },
+    "smacv2_10_units": {
+      "latex": "maps/smacv2_10_units_table.tex",
+      "model_summary": "maps/smacv2_10_units_model_summary.csv",
+      "n_model_rows": 12,
+      "n_run_rows": 3840,
+      "n_seed_rows": 60,
+      "run_results": "maps/smacv2_10_units_run_results.csv",
+      "seed_summary": "maps/smacv2_10_units_seed_summary.csv"
+    },
+    "smacv2_5_units": {
+      "latex": "maps/smacv2_5_units_table.tex",
+      "model_summary": "maps/smacv2_5_units_model_summary.csv",
+      "n_model_rows": 12,
+      "n_run_rows": 3840,
+      "n_seed_rows": 60,
+      "run_results": "maps/smacv2_5_units_run_results.csv",
+      "seed_summary": "maps/smacv2_5_units_seed_summary.csv"
     }
   },
   "model_order": [

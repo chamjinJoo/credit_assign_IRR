@@ -14,8 +14,9 @@ causal_lambda=1.0
 
 # training and logging
 n_rollout_threads=8
-device="cpu"
+device="cuda"
 seeds=(42 1 2 31 32)
+run_name_postfix=""
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -31,5 +32,6 @@ for seed in ${seeds[@]}; do
         --train-naivepredictor ${train_naivepredictor} \
         --device ${device} \
         --seed ${seed} \
-        --use-wandb
+        --use-wandb \
+        --wandb-run-name-postfix "${run_name_postfix}"
 done

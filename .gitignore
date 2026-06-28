@@ -1,7 +1,12 @@
-# checkpoints
+# checkpoints (root-level fallback: active jobs submitted before the runs/ migration
+# will recreate these at root on exit; safe to delete once merged into runs/)
 save_checkpoints/
 save_animations/
 checkpoints_for_eval/
+gs1_checkpoints/
+
+# runs (consolidated checkpoints/wandb/logs)
+runs/
 
 # plots
 plots/
@@ -9,20 +14,24 @@ plots/
 # logs
 logs/
 
-# wandb
-wandb/
-
 # __pycache__
 __pycache__/
+.agents/
 
 # figures
 *.png
 *.jpg
 *.pdf
 
+# slurm
+slurms/
+.rsync_exclude
+*.sbatch
+
+# third-party binaries
+third_party/StarCraftII/
 
 # backup
-archieve/
 not_for_submit/
 
 # vscode

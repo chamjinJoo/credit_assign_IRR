@@ -4,7 +4,8 @@ network:
   hidden_dim: 128
   lr_actor: 2.0e-3  # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
   lr_critic: 2.0e-3 # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
-  lr_bridge: 2.0e-3
+  lr_bridge: 2.0e-3 # default: 2e-3
+  lr_delta_critic: null
   recurrent_N: 1
   use_recurrent_policy: true
 
@@ -12,30 +13,28 @@ algorithm:
   type: "jax_rpci"
   gamma: 0.99
   gae_lambda: 0.95
-  clip_epsilon: 0.2
-  entropy_coef: 0.01
+  clip_epsilon: 0.2 # Hypermarl settings: rIPPO and rMAPPO in SMAX Table 23 [IPPO:0.05, MAPPO:0.2]
+  entropy_coef: 0.01 # default 0.01
   value_coef: 0.5
   max_grad_norm: 0.25
   ppo_epochs: 2
-  bridge_epoch: 2
   num_batches: 2
-  causal_mini_batch_size: 10000
-  use_causal_rff: true
-  causal_rff_features: 256
-  causal_rff_seed: 0
   batch_size: 0 # unused
-  global_reward: true
   use_centralized_critic: true
+  global_reward: true
   add_agent_id: true
-  anneal_lr: true
+  anneal_lr: true # a liitle degradation if false in smax
+  
+  bridge_epoch: 2
+  causal_mini_batch_size: 3200
   causal_lambda: 1.0
   clip_delta: 0.0
 
   # Scalability options (false = original behavior)
   normalize_pci_signal: false  # true: per-agent normalize PCI before combining with env_adv
   use_delta_critic: true       # true: per-agent V^i_delta critic for TD-style PCI advantages
-
-  tikhonov_gamma: 1.0e-4
+  
+  tikhonov_gamma: 1.0e-4 # default: 1.0e-4 
   print_bridge_predictions: false # debugging flag to print bridge predictions.
   bridge_prediction_print_samples: 10
   bridge_prediction_print_interval: 50
@@ -48,7 +47,7 @@ training:
   save_interval: 500
   eval_interval: 25
   eval_episodes: 16
-  save_dir: "./save_checkpoints"
+  save_dir: "./runs/checkpoints"
   device: "cuda"
   seed: 42
   deterministic: true
@@ -88,5 +87,5 @@ environment:
 
 wandb:
   use_wandb: false
-  project: "YourProjectName"
+  project: "pci-marl-smax-jax-v2"
   tags: ["jax", "smax", "rpci", "jaxmarl"]

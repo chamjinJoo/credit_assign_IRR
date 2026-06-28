@@ -1,15 +1,34 @@
-\begin{table*}[t]
+\begin{table}[htbp]
+\vspace{-1em}
+\caption{Test win rates (\%) on SMAX maps. $\pm$ denotes one standard deviation over available training seeds. The best results are highlighted in bold. The sign of \(\Delta\) and colored values indicate performance improvements (blue) or degradations (red) over their respective baselines.}
+\label{tab:smax}
 \centering
-\caption{Deterministic SMAX win rate using final checkpoints. Rows are grouped by map and training constraint. Mean $\pm$ std are computed over seeds, not episodes.}}
-\label{tab:smax_cross_map_final}
-\resizebox{\linewidth}{!}{%
-\begin{tabular}{llcccc}
+\resizebox{0.9\textwidth}{!}{%
+
+\begin{tabular}{c c c c c c c c}
 \toprule
-Map & Constraint & ippo & pci-ippo & mappo & pci-mappo \\
+Map & Target Constraint & IPPO & PCI-IPPO* & \(\Delta\) & MAPPO & PCI-MAPPO* & \(\Delta\)\\
 \midrule
-6h_vs_8z & vanilla & 66.1 \scriptsize$\pm$ 40.8 & 98.4 \scriptsize$\pm$ 1.6 & 93.2 \scriptsize$\pm$ 4.5 & 100.0 \scriptsize$\pm$ 0.0 \\
-6h_vs_8z & tar_w=6 & 45.3 \scriptsize$\pm$ 29.2 & 87.0 \scriptsize$\pm$ 21.2 & 83.9 \scriptsize$\pm$ 25.3 & 80.7 \scriptsize$\pm$ 16.9 \\
+    3m & Vanilla & 90.3 \scriptsize$\pm$ 7.0 & \textbf{95.3} \scriptsize$\pm$ 1.1 & \textbf{\textcolor{blue}{5.0}} & 87.5 \scriptsize$\pm$ 5.3 & 95.0 \scriptsize$\pm$ 2.3 & \textbf{\textcolor{blue}{7.5}} \\
+     & Hard & 40.9 \scriptsize$\pm$ 6.8 & 72.5 \scriptsize$\pm$ 23.1 & \textbf{\textcolor{blue}{31.6}} & 55.6 \scriptsize$\pm$ 24.6 & \textbf{81.6} \scriptsize$\pm$ 2.6 & \textbf{\textcolor{blue}{25.9}} \\
+    \midrule
+    2s3z & Vanilla & 98.4 \scriptsize$\pm$ 3.5 & 98.8 \scriptsize$\pm$ 2.0 & \textbf{\textcolor{blue}{0.3}} & 99.7 \scriptsize$\pm$ 0.7 & \textbf{100.0} \scriptsize$\pm$ 0.0 & \textbf{\textcolor{blue}{0.3}} \\
+     & Medium & 79.1 \scriptsize$\pm$ 13.1 & 95.3 \scriptsize$\pm$ 4.8 & \textbf{\textcolor{blue}{16.2}} & 98.1 \scriptsize$\pm$ 2.0 & \textbf{99.7} \scriptsize$\pm$ 0.7 & \textbf{\textcolor{blue}{1.6}} \\
+     & Hard & 73.4 \scriptsize$\pm$ 22.8 & 78.1 \scriptsize$\pm$ 43.7 & \textbf{\textcolor{blue}{4.7}} & 72.8 \scriptsize$\pm$ 5.7 & \textbf{99.4} \scriptsize$\pm$ 0.9 & \textbf{\textcolor{blue}{26.6}} \\
+    \midrule
+    6h\_vs\_8z & Vanilla & 78.8 \scriptsize$\pm$ 44.0 & 80.0 \scriptsize$\pm$ 44.7 & \textbf{\textcolor{blue}{1.2}} & \textbf{100.0} \scriptsize$\pm$ 0.0 & \textbf{100.0} \scriptsize$\pm$ 0.0 & 0.0 \\
+     & Hard & 98.1 \scriptsize$\pm$ 2.6 & 98.8 \scriptsize$\pm$ 1.3 & \textbf{\textcolor{blue}{0.6}} & 98.8 \scriptsize$\pm$ 1.3 & \textbf{100.0} \scriptsize$\pm$ 0.0 & \textbf{\textcolor{blue}{1.2}} \\
+    \midrule
+    3s5z & Vanilla & 70.9 \scriptsize$\pm$ 40.9 & 73.4 \scriptsize$\pm$ 42.7 & \textbf{\textcolor{blue}{2.5}} & 98.4 \scriptsize$\pm$ 1.1 & \textbf{99.4} \scriptsize$\pm$ 0.9 & \textbf{\textcolor{blue}{0.9}} \\
+     & Hard & 29.4 \scriptsize$\pm$ 39.3 & 35.9 \scriptsize$\pm$ 44.1 & \textbf{\textcolor{blue}{6.6}} & 66.6 \scriptsize$\pm$ 9.5 & \textbf{97.2} \scriptsize$\pm$ 2.0 & \textbf{\textcolor{blue}{30.6}} \\
+    \midrule
+    smacv2\_5\_units & Vanilla & 67.2 \scriptsize$\pm$ 2.5 & 77.8 \scriptsize$\pm$ 3.9 & \textbf{\textcolor{blue}{10.6}} & 73.8 \scriptsize$\pm$ 3.7 & \textbf{80.9} \scriptsize$\pm$ 2.3 & \textbf{\textcolor{blue}{7.2}} \\
+     & Medium & 46.9 \scriptsize$\pm$ 2.2 & 65.9 \scriptsize$\pm$ 5.8 & \textbf{\textcolor{blue}{19.1}} & 57.2 \scriptsize$\pm$ 4.5 & \textbf{67.8} \scriptsize$\pm$ 4.1 & \textbf{\textcolor{blue}{10.6}} \\
+     & Hard & 23.8 \scriptsize$\pm$ 3.0 & 40.6 \scriptsize$\pm$ 5.8 & \textbf{\textcolor{blue}{16.9}} & 31.9 \scriptsize$\pm$ 6.0 & \textbf{43.8} \scriptsize$\pm$ 4.0 & \textbf{\textcolor{blue}{11.9}} \\
+    \midrule
+    smacv2\_10\_units & Vanilla & 36.6 \scriptsize$\pm$ 7.5 & 46.6 \scriptsize$\pm$ 3.4 & \textbf{\textcolor{blue}{10.0}} & 52.5 \scriptsize$\pm$ 4.8 & \textbf{62.8} \scriptsize$\pm$ 2.0 & \textbf{\textcolor{blue}{10.3}} \\
+     & Medium & 4.1 \scriptsize$\pm$ 2.8 & 14.1 \scriptsize$\pm$ 5.3 & \textbf{\textcolor{blue}{10.0}} & 36.9 \scriptsize$\pm$ 6.5 & \textbf{60.3} \scriptsize$\pm$ 3.2 & \textbf{\textcolor{blue}{23.4}} \\
+     & Hard & 8.4 \scriptsize$\pm$ 8.9 & 11.2 \scriptsize$\pm$ 9.0 & \textbf{\textcolor{blue}{2.8}} & 18.1 \scriptsize$\pm$ 4.5 & \textbf{29.4} \scriptsize$\pm$ 8.7 & \textbf{\textcolor{blue}{11.2}} \\
 \bottomrule
-\end{tabular}%
-}
-\end{table*}
+\end{tabular}}
+\end{table}

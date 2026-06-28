@@ -144,7 +144,7 @@ def create_algorithm(env, config):
             lr_bridge=network_config.lr_bridge,
             lr_critic=network_config.lr_critic,
             causal_lambda=algorithm_config.causal_lambda,
-            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2), # [ADDED]
+            clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
             causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
             causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.2),
@@ -163,9 +163,6 @@ def create_algorithm(env, config):
             rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
             env_required_agents=env_required_agents,
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None),
-            use_causal_rff=getattr(algorithm_config, 'use_causal_rff', True),
-            causal_rff_features=getattr(algorithm_config, 'causal_rff_features', 512),
-            causal_rff_seed=getattr(algorithm_config, 'causal_rff_seed', 0),
             tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
             stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
@@ -176,77 +173,6 @@ def create_algorithm(env, config):
             global_reward=getattr(algorithm_config, 'global_reward', True),
             use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
         )
-    elif algorithm_type in ['q_pci', 'qpci']:
-        algorithm = qPCIAlgorithm(
-            env=env,
-            num_agents=env.num_agents,
-            obs_dim=effective_obs_dim,
-            action_dim=env.get_action_dim(),
-            hidden_dim=network_config.hidden_dim,
-            recurrent_N=getattr(network_config, 'recurrent_N', 1),
-            rnn_chunk_length=getattr(algorithm_config, 'rnn_chunk_length', 16),
-            lr_actor=network_config.lr_actor,
-            lr_bridge=network_config.lr_bridge,
-            causal_lambda=algorithm_config.causal_lambda,
-            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2),
-            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
-            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
-            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.2),
-            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
-            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
-            gamma=algorithm_config.gamma,
-            gae_lambda=algorithm_config.gae_lambda,
-            clip_epsilon=algorithm_config.clip_epsilon,
-            entropy_coef=algorithm_config.entropy_coef,
-            max_grad_norm=algorithm_config.max_grad_norm,
-            ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
-            num_batches=algorithm_config.num_batches,
-            max_buffer_size=getattr(algorithm_config, 'max_buffer_size', 10000),
-            device=config.training.device,
-            rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
-            env_required_agents=env_required_agents,
-            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 256,
-            use_episode_buffer=getattr(algorithm_config, 'use_episode_buffer', False),
-        )
-    elif algorithm_type == 'x_pci':
-        algorithm = X_PCIAlgorithm(
-            num_agents=env.num_agents,
-            obs_dim=effective_obs_dim,
-            action_dim=env.get_action_dim(),
-            w_dim=base_obs_dim, 
-            hidden_dim=network_config.hidden_dim,
-            lr_actor=network_config.lr_actor,
-            lr_bridge=network_config.lr_bridge,
-            lr_critic=network_config.lr_critic,
-            causal_lambda=algorithm_config.causal_lambda,
-            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
-            causal_lambda_adaptive_per_agent=getattr(algorithm_config, 'causal_lambda_adaptive_per_agent', False),
-            causal_lambda_adaptive_alpha=getattr(algorithm_config, 'causal_lambda_adaptive_alpha', 0.9),
-            causal_lambda_adaptive_min=getattr(algorithm_config, 'causal_lambda_adaptive_min', 0.1),
-            causal_lambda_adaptive_max=getattr(algorithm_config, 'causal_lambda_adaptive_max', 1.0),
-            causal_lambda_adaptive_error_threshold=getattr(algorithm_config, 'causal_lambda_adaptive_error_threshold', 0.5),
-            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
-            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.2),
-            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
-            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
-            gamma=algorithm_config.gamma,
-            gae_lambda=algorithm_config.gae_lambda,
-            clip_epsilon=algorithm_config.clip_epsilon,
-            entropy_coef=algorithm_config.entropy_coef,
-            value_coef=algorithm_config.value_coef,
-            max_grad_norm=algorithm_config.max_grad_norm,
-            ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
-            num_batches=algorithm_config.num_batches,
-            max_buffer_size=getattr(algorithm_config, 'max_buffer_size', 10000),
-            device=config.training.device,
-            rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
-            env_required_agents=env_required_agents,
-            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 256,
-            use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
-        )
-    
     elif algorithm_type == 'mappo':
         algorithm = MAPPOAlgorithm(
             num_agents=env.num_agents,
@@ -311,44 +237,8 @@ def create_algorithm(env, config):
             use_centralized_critic=(algorithm_type == 'jax_mappo') or getattr(algorithm_config, 'use_centralized_critic', False),
             add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
-            seed=getattr(config.training, 'seed', 42),
-        )
-    
-    elif algorithm_type in ['jax_qpci', 'jax_q_pci']:
-        algorithm = JAXQPCIAlgorithm(
-            env=env,
-            num_agents=env.num_agents,
-            obs_dim=base_obs_dim,
-            action_dim=env.get_action_dim(),
-            hidden_dim=network_config.hidden_dim,
-            recurrent_N=getattr(network_config, 'recurrent_N', 1),
-            lr_actor=network_config.lr_actor,
-            lr_critic=network_config.lr_critic,
-            lr_bridge=getattr(network_config, 'lr_bridge', network_config.lr_critic),
-            gamma=algorithm_config.gamma,
-            gae_lambda=algorithm_config.gae_lambda,
-            clip_epsilon=algorithm_config.clip_epsilon,
-            entropy_coef=algorithm_config.entropy_coef,
-            value_coef=algorithm_config.value_coef,
-            max_grad_norm=algorithm_config.max_grad_norm,
-            ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
-            num_batches=algorithm_config.num_batches,
-            device=config.training.device,
-            global_reward=getattr(algorithm_config, 'global_reward', True),
-            add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
-            use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
-            use_centralized_critic=getattr(algorithm_config, 'use_centralized_critic', False),
-            causal_lambda=getattr(algorithm_config, 'causal_lambda', 0.1),
-            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
-            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
-            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', getattr(algorithm_config, 'causal_lambda', 0.1)),
-            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
-            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
-            bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
-            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 256,
-            lse_temperature=getattr(algorithm_config, 'lse_temperature', 1.0),
-            normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
+            anneal_lr=getattr(algorithm_config, 'anneal_lr', False),
+            total_iterations=getattr(config.training, 'max_iterations', 0),
             seed=getattr(config.training, 'seed', 42),
         )
     
@@ -363,6 +253,7 @@ def create_algorithm(env, config):
             lr_actor=network_config.lr_actor,
             lr_critic=network_config.lr_critic,
             lr_bridge=getattr(network_config, 'lr_bridge', network_config.lr_critic),
+            lr_delta_critic=getattr(network_config, 'lr_delta_critic', None),
             gamma=algorithm_config.gamma,
             gae_lambda=algorithm_config.gae_lambda,
             clip_epsilon=algorithm_config.clip_epsilon,
@@ -385,7 +276,7 @@ def create_algorithm(env, config):
             ) or (
                 algorithm_type not in ['jax_pci_ippo'] and getattr(algorithm_config, 'use_centralized_critic', False)
             ),
-            causal_lambda=(0.0 if algorithm_type in ['jax_rippo', 'jax_rmappo', 'jax_rppo'] else getattr(algorithm_config, 'causal_lambda', 0.1)),
+            causal_lambda=(0.0 if algorithm_type in ['jax_rippo', 'jax_rmappo', 'jax_rppo'] else getattr(algorithm_config, 'causal_lambda', 1.0)),
             causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
             causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
             causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', getattr(algorithm_config, 'causal_lambda', 0.1)),
@@ -393,9 +284,6 @@ def create_algorithm(env, config):
             causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
             bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 10000,
-            use_causal_rff=getattr(algorithm_config, 'use_causal_rff', True),
-            causal_rff_features=getattr(algorithm_config, 'causal_rff_features', 2048),
-            causal_rff_seed=getattr(algorithm_config, 'causal_rff_seed', 0),
             normalize_returns=getattr(algorithm_config, 'normalize_returns', True),
             clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
             tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
@@ -405,7 +293,11 @@ def create_algorithm(env, config):
             bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
             bridge_prediction_batch_size=getattr(algorithm_config, 'bridge_prediction_batch_size', 2048),
             normalize_pci_signal=getattr(algorithm_config, 'normalize_pci_signal', False),
-            use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
+            use_delta_critic=(
+                False
+                if algorithm_type in ['jax_rippo', 'jax_rmappo', 'jax_rppo']
+                else getattr(algorithm_config, 'use_delta_critic', False)
+            ),
             anneal_lr=getattr(algorithm_config, 'anneal_lr', False),
             total_iterations=getattr(config.training, 'max_iterations', 0),
             seed=getattr(config.training, 'seed', 42),
@@ -537,68 +429,6 @@ def create_algorithm(env, config):
             device=config.training.device,
             use_episode_buffer=True,
         )
-    elif algorithm_type in ['pci_qmix', 'pci-qmix']:
-        # Calculate epsilon anneal time (same as QMIX)
-        epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)
-
-        if epsilon_anneal_time_config is None:
-            # Calculate expected total environment steps.
-            # NOTE: total_env_steps is independent of n_rollout_threads (counts actual env interactions)
-            max_iterations = config.training.max_iterations
-            episodes_per_iteration = getattr(config.training, 'episodes_per_iteration', None)
-
-            if episodes_per_iteration is not None:
-                avg_episode_length = getattr(config.environment, 'max_steps', 50)
-                # Do NOT multiply by n_threads - total_env_steps counts actual steps, not parallelism
-                expected_steps_per_iter = episodes_per_iteration * avg_episode_length
-                total_expected_steps = expected_steps_per_iter * max_iterations
-            else:
-                max_steps_per_iteration = config.training.max_steps_per_iteration
-                # Do NOT multiply by n_threads
-                total_expected_steps = max_steps_per_iteration * max_iterations
-
-            epsilon_anneal_time = int(total_expected_steps * 0.25)
-            print(f"[PCI-QMIX] Auto-calculated epsilon_anneal_time: {epsilon_anneal_time:,} steps "
-                  f"(25% of ~{total_expected_steps:,} total env-steps)")
-        else:
-            epsilon_anneal_time = epsilon_anneal_time_config
-            print(f"[PCI-QMIX] Using configured epsilon_anneal_time: {epsilon_anneal_time} steps")
-
-        algorithm = PCIQMIXAlgorithm(
-            num_agents=env.num_agents,
-            obs_dim=effective_obs_dim,
-            action_dim=env.get_action_dim(),
-            hidden_dim=network_config.hidden_dim,
-            lr=getattr(network_config, 'lr', 5e-4),
-            lr_bridge=getattr(network_config, 'lr_bridge', 3e-4),
-            gamma=algorithm_config.gamma,
-            max_grad_norm=algorithm_config.max_grad_norm,
-            target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
-            epsilon_start=getattr(algorithm_config, 'epsilon_start', 1.0),
-            epsilon_finish=getattr(algorithm_config, 'epsilon_finish', 0.05),
-            epsilon_anneal_time=epsilon_anneal_time,
-            double_q=getattr(algorithm_config, 'double_q', True),
-            mixing_embed_dim=getattr(algorithm_config, 'mixing_embed_dim', 32),
-            hypernet_layers=getattr(algorithm_config, 'hypernet_layers', 2),
-            hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
-            replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
-            train_batch_size=getattr(algorithm_config, 'train_batch_size', 32),
-            device=config.training.device,
-            use_episode_buffer=True,
-            # PCI-specific parameters
-            w_dim=base_obs_dim * (env.num_agents - 1),
-            causal_lambda=getattr(algorithm_config, 'causal_lambda', 0.1),
-            causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
-            causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
-            causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 0.1),
-            causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
-            causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
-            bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
-            clip_delta=getattr(algorithm_config, 'clip_delta', 0.2),
-            causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 10000,
-            train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
-            bridge_update_interval=getattr(algorithm_config, 'bridge_update_interval', 1),
-        )
     else:
         raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_pci_ippo', 'jax_pci_mappo', 'jax_qpci', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'pci_qmix'")
     
@@ -704,6 +534,22 @@ def main():
                 cooperative_kill_bonus=getattr(env_config, 'cooperative_kill_bonus', 2.0),
                 cooperative_kill_owner_ratio=getattr(env_config, 'cooperative_kill_owner_ratio', 0.7),
             )
+        elif env_name in ['JUMANJILBF', 'JAXLBF', 'JAX_LBF', 'JUMANJI_LBF'] and (n_rollout_threads > 1 or algorithm_type.startswith('jax_')):
+            from envs import JumanjiLBFBatchWrapper
+            env = JumanjiLBFBatchWrapper(
+                n_envs=max(1, n_rollout_threads),
+                field_size=getattr(env_config, 'field_size', 10),
+                num_agents=getattr(env_config, 'num_agents', 3),
+                max_food=getattr(env_config, 'max_food', 3),
+                player_level=getattr(env_config, 'player_level', (1, 2)),
+                sight=getattr(env_config, 'sight', 2),
+                max_episode_steps=getattr(env_config, 'max_episode_steps', 100),
+                force_coop=getattr(env_config, 'force_coop', False),
+                seed=actual_seed,
+                grid_observation=getattr(env_config, 'grid_observation', True),
+                normalize_reward=getattr(env_config, 'normalize_reward', True),
+                penalty=getattr(env_config, 'penalty', 0.0),
+            )
         elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
             from envs import VMASNavigationEnv, VMASDispersionEnv
             wrapper_cls = VMASNavigationEnv if env_name == 'VMASNAVIGATION' else VMASDispersionEnv
@@ -768,6 +614,8 @@ def main():
                     n_allies = env.num_agents
                     n_enemies = env.num_enemies
                     config.wandb.run_name = f"smax_{n_allies}v{n_enemies}" + (f"_{post}" if post else "")
+            elif env_name in ['JUMANJILBF', 'JAXLBF', 'JAX_LBF', 'JUMANJI_LBF']:
+                config.wandb.run_name = getattr(env, 'env_id', env.__class__.__name__.lower())
             else:
                 # For other environments, use environment class name
                 env_name = env_class_name.lower()
@@ -832,6 +680,10 @@ def main():
         # Native batched envs (SMAX / VMAS) use in-environment vectorization instead of forked workers.
         if env_name == 'SMAX' and n_rollout_threads > 1:
             print(f"[INFO] SMAX + n_rollout_threads={n_rollout_threads}: SMAXBatchWrapper (vmap) 사용")
+            env_fn = None
+            _trainer_env = env
+        elif env_name in ['JUMANJILBF', 'JAXLBF', 'JAX_LBF', 'JUMANJI_LBF'] and n_rollout_threads > 1:
+            print(f"[INFO] {env_name} + n_rollout_threads={n_rollout_threads}: JumanjiLBFBatchWrapper native batching 사용")
             env_fn = None
             _trainer_env = env
         elif env_name in ['VMASNAVIGATION', 'VMASDISPERSION'] and n_rollout_threads > 1:
@@ -965,29 +817,6 @@ def main():
             trainer.train()
             logger.info("Training completed successfully!")
             
-            # Run causal effect evaluation after training completion
-            # 일단 주석처리 - 나중에 필요하면 활성화
-            '''
-            if causal_eval_enabled:
-                logger.info("Running causal effect evaluation after training...")
-                # Use the latest checkpoint for evaluation
-                latest_checkpoint = trainer.get_latest_checkpoint_path()
-                if latest_checkpoint:
-                    # Load checkpoint before evaluation
-                    logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
-                    trainer.load_checkpoint(latest_checkpoint)
-
-                    # Create a mock args object for causal evaluation
-                    class MockArgs:
-                        def __init__(self, checkpoint_path, eval_episodes=50):
-                            self.checkpoint = checkpoint_path
-                            self.eval_episodes = eval_episodes
-                    
-                    mock_args = MockArgs(latest_checkpoint, eval_episodes=50)
-                    run_causal_evaluation(env, algorithm, mock_args, logger)
-                else:
-                    logger.warning("No checkpoint found for causal effect evaluation")
-            '''
         except KeyboardInterrupt:
             logger.info("Training interrupted by user")
             trainer.save_checkpoint()

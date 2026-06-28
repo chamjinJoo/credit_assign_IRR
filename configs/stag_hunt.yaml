@@ -4,7 +4,7 @@
 network:
   hidden_dim: 64
   lr_actor: 3.0e-4
-  lr_bridge: 1.0e-3 # rqpci: 3.0e-4 , rpci: 1.0e-3
+  lr_bridge: 1.0e-3 # rpci: 1.0e-3
   lr_critic: 3.0e-4
   lr: 5.0e-4  # General learning rate (used by QMIX)
   # RKHS Kernel parameters for analytical loss
@@ -22,17 +22,15 @@ algorithm:
   value_coef: 0.5
   max_grad_norm: 0.5
   ppo_epochs: 4
-  bridge_epoch: 4
   use_value_parameter_sharing: true
   use_delta_critic: true
   add_agent_id: false
-
-  causal_lambda: 1.0
   num_batches: 2  # Number of batches K for training
-  causal_mini_batch_size: null  # Use full causal batch; RFF handles kernel scaling
-  use_causal_rff: false
-  causal_rff_features: 256
-  causal_rff_seed: 0
+  
+  bridge_epoch: 4
+  tikhonov_gamma: 1.0e-4
+  causal_lambda: 1.0
+  causal_mini_batch_size: 2000  # 2000 for full batch when updating outcome bridge
   train_naivepredictor: false
 
   # Buffer size limits for FIFO queue behavior
@@ -58,7 +56,7 @@ training:
   save_interval: 500
   eval_interval: 50
   eval_episodes: 10
-  save_dir: "./save_checkpoints"
+  save_dir: "./runs/checkpoints"
   device: "cpu"
   # Reproducibility settings
   seed: 42
@@ -75,11 +73,11 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0 # set as negative for activation
   grid_observation: true
-  obs_noise_std: 0.1
+  obs_noise_std: 0.0
   
 # Weights & Biases Configuration
 wandb:
   use_wandb: false
-  project: "pci-marl-staghunt-noise"
+  project: "pci-marl-staghunt-vanilla"
   run_name: "stag-hunt"
   tags: ["pci", "marl", "multi-agent", "stag-hunt"]

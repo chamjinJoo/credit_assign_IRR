@@ -30,10 +30,10 @@ class ModelSpec:
 
 
 SH_MODELS = (
-    ModelSpec("PCI_rippo", "PCI-IPPO", "PCI_rippo", "blue", ("PCI_rippo", "PCI_rIPPO", "pci-rippo")),
-    ModelSpec("r_ippo", "IPPO", "rippo", "#8ecae6", ("r_ippo", "rIPPO", "r-ippo"), linestyle="--"),
-    ModelSpec("PCI_rmappo", "PCI-MAPPO", "PCI_rmappo", "red", ("PCI_rmappo", "PCI_rMAPPO", "pci-rmappo")),
-    ModelSpec("r_mappo", "MAPPO", "rmappo", "#ff9896", ("r_mappo", "rMAPPO", "r-mappo"), linestyle="--"),
+    ModelSpec("ipci", "PCI-IPPO", "PCI_rippo", "blue", ("PCI_rippo", "PCI_rIPPO", "pci-rippo")),
+    ModelSpec("ippo", "IPPO", "rippo", "#8ecae6", ("r_ippo", "rIPPO", "r-ippo"), linestyle="--"),
+    ModelSpec("mpci", "PCI-MAPPO", "PCI_rmappo", "red", ("PCI_rmappo", "PCI_rMAPPO", "pci-rmappo")),
+    ModelSpec("mappo", "MAPPO", "rmappo", "#ff9896", ("r_mappo", "rMAPPO", "r-mappo"), linestyle="--"),
 )
 
 
@@ -41,6 +41,13 @@ SMAX_MODELS = (
     ModelSpec("pci_ippo", "PCI-IPPO", "pci_ippo", "blue", ("pci_ippo", "jax_pci_ippo", "jax-pci-ippo")),
     ModelSpec("ippo", "IPPO", "ippo", "#2a9fd6", ("ippo", "jax_ippo", "jax-ippo"), linestyle="--"),
     ModelSpec("pci_mappo", "PCI-MAPPO", "pci_mappo", "red", ("pci_mappo", "jax_pci_mappo", "jax-pci-mappo")),
+    ModelSpec("mappo", "MAPPO", "mappo", "#e15759", ("mappo", "jax_mappo", "jax-mappo"), linestyle="--"),
+)
+
+LBF_MODELS = (
+    ModelSpec("ipci", "PCI-IPPO", "pci_ippo", "blue", ("pci_ippo", "jax_pci_ippo", "jax-pci-ippo")),
+    ModelSpec("ippo", "IPPO", "ippo", "#2a9fd6", ("ippo", "jax_ippo", "jax-ippo"), linestyle="--"),
+    ModelSpec("mpci", "PCI-MAPPO", "pci_mappo", "red", ("pci_mappo", "jax_pci_mappo", "jax-pci-mappo")),
     ModelSpec("mappo", "MAPPO", "mappo", "#e15759", ("mappo", "jax_mappo", "jax-mappo"), linestyle="--"),
 )
 
@@ -72,6 +79,15 @@ PRESETS = {
         "name_suffixes": (),
         "exclude_name_suffixes": (),
         "xlim": (0.0, 1e7),
+    },
+    "lbf": {
+        "project": "pci-marl-lbf",
+        "models": LBF_MODELS,
+        "name_contains": ("JumanjiLBF",),
+        "exclude_name_contains": (),
+        "name_suffixes": (),
+        "exclude_name_suffixes": (),
+        "xlim": (0.0, 2.1e6),
     },
 }
 
@@ -177,9 +193,15 @@ def _match_model_from_run(run, preset: str, specs: Iterable[ModelSpec]) -> str |
     algorithm_type = _norm(_config_get(config, "algorithm", "type") or "")
     centralized = _as_bool(_config_get(config, "algorithm", "use_centralized_critic"))
 
-    if preset == "smax":
+    if preset in {"smax", "lbf"}:
         if algorithm_type in {"jaxrpci", "rpci"}:
+            if preset == "lbf":
+                return "mpci" if centralized else "ipci"
             return "pci_mappo" if centralized else "pci_ippo"
+        if algorithm_type in {"jaxpcimappo", "pcimappo"}:
+            return "mpci" if preset == "lbf" else "pci_mappo"
+        if algorithm_type in {"jaxpciippo", "pciippo"}:
+            return "ipci" if preset == "lbf" else "pci_ippo"
         if algorithm_type in {"jaxippo", "ippo"}:
             return "ippo"
         if algorithm_type in {"jaxmappo", "mappo"}:
@@ -426,7 +448,7 @@ def plot(
         keyword = entry.get("keyword", "success_rate")
         color = entry["color"]
         lsty = entry.get("linestyle", "-")
-        lw = entry.get("linewidth", 5)
+        lw = entry.get("linewidth", 3)
         exclude = entry.get("exclude", None)
 
         try:
@@ -506,6 +528,9 @@ def plot(
     ax.set_ylabel("Success Rate")
     if ylim is not None:
         ax.set_ylim(ylim)
+    else:
+        ax.set_ylim(bottom=0)
+        
     if xlim is not None:
         ax.set_xlim(xlim)
     ax.grid(True, linestyle="--", alpha=0.5)

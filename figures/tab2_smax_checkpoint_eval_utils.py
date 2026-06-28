@@ -23,7 +23,7 @@ from configs.config import Config
 
 PROJECT_FILTER = "pci-marl-smax-jax"
 
-MAP_ORDER = ["3m", "2s3z", "3s5z", "smacv2_5_units", "smacv2_10_units", ]
+MAP_ORDER = ["3m", "2s3z", "6h_vs_8z", "3s5z", "smacv2_5_units", "smacv2_10_units"]
 CONSTRAINT_ORDER = ["vanilla", "tar_w=2", "tar_w=3", "tar_w=4", "tar_w=5", "tar_w=6", "tar_w=8", "cb"]
 MODEL_ORDER = ["ippo", "pci-ippo", "mappo", "pci-mappo"]
 
@@ -63,6 +63,9 @@ _RUN_EVAL_CACHE: Dict[tuple[Any, ...], Dict[str, Any]] = {}
 _RUN_EVAL_DISK_CACHE: Dict[Path, Dict[str, Any]] = {}
 _DUPLICATE_POLICIES = {"error", "latest", "best_metric", "all"}
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+_MODEL_OVERRIDE_PATH = _REPO_ROOT / "scripts/smax_checkpoint_model_overrides.json"
+_MODEL_OVERRIDES_CACHE: Optional[Dict[str, Dict[str, Any]]] = None
+_WRAPPER_DIR_NAMES = {"smaxbatchwrapper", "smaxwrapper"}
 
 _MODEL_TEMPLATE_PATHS = {
     "pci_mappo": _REPO_ROOT / "configs/smax_configs/smax_pci_mappo.yaml",
@@ -76,6 +79,14 @@ _MODEL_ALGORITHM_TYPES = {
     "mappo": "jax_mappo",
     "ippo": "jax_ippo",
 }
+_MODEL_OVERRIDE_ALGORITHM_TYPES = {
+    "pci_mappo": "jax_pci_mappo",
+    "pci_ippo": "jax_pci_ippo",
+    "pci-ippo": "jax_pci_ippo",
+    "pci-mappo": "jax_pci_mappo",
+    "mappo": "jax_mappo",
+    "ippo": "jax_ippo",
+}
 
 
 def clear_runtime_caches() -> None:
@@ -86,6 +97,77 @@ def clear_runtime_caches() -> None:
 
 def normalize_algorithm_type(algorithm_type: str) -> str:
     return str(algorithm_type).lower().replace("-", "_")
+
+
+def _load_model_overrides() -> Dict[str, Dict[str, Any]]:
+    global _MODEL_OVERRIDES_CACHE
+    if _MODEL_OVERRIDES_CACHE is not None:
+        return _MODEL_OVERRIDES_CACHE
+
+    if not _MODEL_OVERRIDE_PATH.exists():
+        _MODEL_OVERRIDES_CACHE = {}
+        return _MODEL_OVERRIDES_CACHE
+
+    payload = json.loads(_MODEL_OVERRIDE_PATH.read_text())
+    if not isinstance(payload, dict):
+        raise ValueError(f"model override file must contain a JSON object: {_MODEL_OVERRIDE_PATH}")
+
+    overrides: Dict[str, Dict[str, Any]] = {}
+    for run_name, value in payload.items():
+        if isinstance(value, str):
+            overrides[str(run_name)] = {"model": value}
+        elif isinstance(value, dict):
+            overrides[str(run_name)] = dict(value)
+        else:
+            raise ValueError(
+                f"model override for {run_name!r} must be a string or object: {_MODEL_OVERRIDE_PATH}"
+            )
+    _MODEL_OVERRIDES_CACHE = overrides
+    return overrides
+
+
+def _model_override_for_run(run_name: str) -> Optional[Dict[str, Any]]:
+    override = _load_model_overrides().get(str(run_name))
+    return dict(override) if override is not None else None
+
+
+def _apply_model_override_to_config(cfg: Config, run_name: str) -> Optional[Dict[str, Any]]:
+    override = _model_override_for_run(run_name)
+    if override is None:
+        return None
+
+    algorithm_type = override.get("algorithm_type")
+    if not algorithm_type and override.get("model"):
+        model_key = normalize_algorithm_type(str(override["model"]))
+        algorithm_type = _MODEL_OVERRIDE_ALGORITHM_TYPES.get(model_key)
+    if algorithm_type:
+        cfg.algorithm.type = normalize_algorithm_type(str(algorithm_type))
+    if "use_centralized_critic" in override:
+        cfg.algorithm.use_centralized_critic = bool(override["use_centralized_critic"])
+    return override
+
+
+def _filter_dataclass_section(section: Any, dataclass_obj: Any) -> Any:
+    if not isinstance(section, dict):
+        return section
+    valid_keys = set(getattr(dataclass_obj, "__dataclass_fields__", {}).keys())
+    if not valid_keys:
+        return section
+    return {key: value for key, value in section.items() if key in valid_keys}
+
+
+def config_from_checkpoint_dict(config_dict: Dict[str, Any]) -> Config:
+    """Load historical checkpoint configs while ignoring stale non-env keys."""
+
+    normalized = copy.deepcopy(config_dict)
+    defaults = Config()
+    for section_name in ("network", "algorithm", "training", "wandb"):
+        if section_name in normalized:
+            normalized[section_name] = _filter_dataclass_section(
+                normalized[section_name],
+                getattr(defaults, section_name),
+            )
+    return Config.from_dict(normalized)
 
 
 def model_key_from_algorithm_type(algorithm_type: str) -> str:
@@ -272,6 +354,7 @@ def _discover_checkpoint_only_runs(root: Path, project_filter: Optional[str]) ->
                 "algorithm_type": algorithm_type,
                 "model_key": model_key,
                 "model_label": model_label,
+                "model_override": None,
                 "seed": seed,
                 "config": cfg,
                 "env_dir_name": env_dir.name,
@@ -312,6 +395,17 @@ def constraint_key_from_run_name(run_name: str, map_name: str | None = None) -> 
 
     if "cb" in name:
         return "cb"
+    return "vanilla"
+
+
+def constraint_key_from_config(cfg: Config, run_name: str, map_name: str | None = None) -> str:
+    env_cfg = cfg.environment
+    if bool(_cfg_extra(env_cfg, "use_cooperative_kill_bonus", False)):
+        return "cb"
+    if bool(_cfg_extra(env_cfg, "use_allowed_targets", False)):
+        window = _cfg_extra(env_cfg, "allowed_target_window", None)
+        if window is not None:
+            return f"tar_w={int(window)}"
     return "vanilla"
 
 
@@ -365,25 +459,47 @@ def load_run_config(run_dir: Path) -> Config:
         raise FileNotFoundError(f"simulation_config.json not found under {run_dir}")
     metadata_path = candidates[0]
     payload = json.loads(metadata_path.read_text())
-    return Config.from_dict(payload["config"])
+    cfg = config_from_checkpoint_dict(payload["config"])
+    _apply_model_override_to_config(cfg, run_dir.name)
+    return cfg
 
 
 def _checkpoint_paths(run_dir: Path, env_dir_name: str, algorithm_type: str) -> Dict[str, Path]:
     run_dir = Path(run_dir)
     env_dir_name = str(env_dir_name)
     key = normalize_algorithm_type(algorithm_type)
+    base_dir = run_dir / env_dir_name if env_dir_name else run_dir
     if key.startswith("jax_"):
-        ckpt_dir = run_dir / env_dir_name / "checkpoints"
+        ckpt_dir = base_dir / "checkpoints"
         return {
             "best": ckpt_dir / "jax_checkpoint_best.pkl",
             "final": ckpt_dir / "jax_checkpoint_final.pkl",
         }
 
-    ckpt_dir = run_dir / env_dir_name / "checkpoints"
+    ckpt_dir = base_dir / "checkpoints"
     return {
         "best": ckpt_dir / "best_model.pt",
         "final": ckpt_dir / "final_checkpoint.pt",
     }
+
+
+def _run_and_env_dir_from_metadata(metadata_path: Path) -> tuple[Path, str]:
+    """Return the logical run directory and optional environment subdirectory.
+
+    Older collected checkpoints use ``<run>/<env>/simulation_config.json``.
+    The curated ``runs/checkpoints_smax`` tree stores ``simulation_config.json`` directly
+    under each run directory next to ``checkpoints/``.  Keeping the logical run
+    directory at the timestamp/seed leaf avoids collapsing all seeds that share
+    the same model folder.
+    """
+
+    metadata_path = Path(metadata_path)
+    run_leaf = metadata_path.parent
+    if run_leaf.name in _WRAPPER_DIR_NAMES:
+        return metadata_path.parents[1], run_leaf.name
+    if (run_leaf / "checkpoints").is_dir():
+        return run_leaf, ""
+    return metadata_path.parents[1], metadata_path.parent.name
 
 
 def discover_runs(root: Path, project_filter: Optional[str] = PROJECT_FILTER) -> pd.DataFrame:
@@ -391,10 +507,10 @@ def discover_runs(root: Path, project_filter: Optional[str] = PROJECT_FILTER) ->
     rows = []
 
     for metadata_path in sorted(root.rglob("simulation_config.json")):
-        run_dir = metadata_path.parents[1]
-        env_dir_name = metadata_path.parent.name
+        run_dir, env_dir_name = _run_and_env_dir_from_metadata(metadata_path)
         payload = json.loads(metadata_path.read_text())
-        cfg = Config.from_dict(payload["config"])
+        cfg = config_from_checkpoint_dict(payload["config"])
+        model_override = _apply_model_override_to_config(cfg, run_dir.name)
 
         project = getattr(cfg.wandb, "project", None)
         if project_filter and project != project_filter:
@@ -410,7 +526,7 @@ def discover_runs(root: Path, project_filter: Optional[str] = PROJECT_FILTER) ->
         model_key = model_key_from_algorithm_type(cfg.algorithm.type)
         model = model_label_from_algorithm_type(cfg.algorithm.type)
         map_name = _cfg_extra(cfg.environment, "map_name", "unknown")
-        constraint_key = constraint_key_from_run_name(wandb_run_name, map_name=map_name)
+        constraint_key = constraint_key_from_config(cfg, wandb_run_name, map_name=map_name)
         seed = int(getattr(cfg.training, "seed", 0))
 
         ckpt = _checkpoint_paths(run_dir, env_dir_name, cfg.algorithm.type)
@@ -437,6 +553,7 @@ def discover_runs(root: Path, project_filter: Optional[str] = PROJECT_FILTER) ->
                 "algorithm_type": algorithm_type,
                 "model_key": model_key,
                 "model_label": model,
+                "model_override": model_override,
                 "seed": seed,
                 "config": cfg,
                 "env_dir_name": env_dir_name,
@@ -525,6 +642,10 @@ def _evaluation_cache_key(
     return (
         str(run_row["run_dir"]),
         str(run_row["metadata_path"]),
+        str(run_row.get("map_name", "")),
+        str(run_row.get("constraint_key", "")),
+        str(run_row.get("model_label", "")),
+        int(run_row.get("seed", 0)),
         checkpoint_choice,
         str(device).lower(),
         int(eval_episodes),
@@ -1461,7 +1582,7 @@ def _evaluate_run_cpu_subprocess(
     eval_seed: int,
     deterministic: bool,
 ) -> Dict[str, Any]:
-    worker_path = _REPO_ROOT / "figures/smax_eval_subprocess_worker.py"
+    worker_path = _REPO_ROOT / "figures/tab2_smax_eval_subprocess_worker.py"
     with tempfile.TemporaryDirectory(prefix="smax_eval_cpu_") as tmpdir:
         tmpdir_path = Path(tmpdir)
         payload_path = tmpdir_path / "payload.json"
@@ -1561,6 +1682,7 @@ def evaluate_run_seeds(
     deterministic: bool = True,
     eval_seed_batch_size: int = 16,
     trainer_pool: Optional[Dict[tuple[Any, ...], tuple[Any, Path, Config]]] = None,
+    use_cache: bool = True,
 ) -> list[Dict[str, Any]]:
     if isinstance(run_row, pd.Series):
         run_row = run_row.to_dict()
@@ -1576,15 +1698,26 @@ def evaluate_run_seeds(
     missing_seeds: list[int] = []
 
     for eval_seed in normalized_eval_seeds:
-        cached, cache_key, cache_key_str = _load_cached_evaluation_result(
+        cache_key = _evaluation_cache_key(
             run_row,
             checkpoint_choice=checkpoint_choice,
             device=device,
             eval_episodes=eval_episodes,
             deterministic=deterministic,
             eval_seed=eval_seed,
-            disk_cache=disk_cache,
         )
+        cache_key_str = _evaluation_cache_key_str(cache_key)
+        cached = None
+        if use_cache:
+            cached, cache_key, cache_key_str = _load_cached_evaluation_result(
+                run_row,
+                checkpoint_choice=checkpoint_choice,
+                device=device,
+                eval_episodes=eval_episodes,
+                deterministic=deterministic,
+                eval_seed=eval_seed,
+                disk_cache=disk_cache,
+            )
         if cached is not None:
             ordered_results[eval_seed] = cached
             continue
@@ -1604,6 +1737,7 @@ def evaluate_run_seeds(
                 eval_episodes=eval_episodes,
                 eval_seed=eval_seed,
                 deterministic=deterministic,
+                use_cache=use_cache,
             )
             ordered_results[eval_seed] = dict(result)
         return [dict(ordered_results[seed]) for seed in normalized_eval_seeds]
@@ -1720,6 +1854,7 @@ def evaluate_run(
     eval_episodes: int,
     eval_seed: Optional[int] = None,
     deterministic: bool = True,
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
     if isinstance(run_row, pd.Series):
         run_row = run_row.to_dict()
@@ -1733,16 +1868,17 @@ def evaluate_run(
         eval_seed=eval_seed,
     )
     cache_key_str = _evaluation_cache_key_str(cache_key)
-    cached = _RUN_EVAL_CACHE.get(cache_key)
-    if cached is not None:
-        return dict(cached)
-
     cache_path = _evaluation_cache_path(run_row)
     disk_cache = _load_evaluation_disk_cache(cache_path)
-    disk_cached = disk_cache["entries"].get(cache_key_str)
-    if isinstance(disk_cached, dict):
-        _RUN_EVAL_CACHE[cache_key] = dict(disk_cached)
-        return dict(disk_cached)
+    if use_cache:
+        cached = _RUN_EVAL_CACHE.get(cache_key)
+        if cached is not None:
+            return dict(cached)
+
+        disk_cached = disk_cache["entries"].get(cache_key_str)
+        if isinstance(disk_cached, dict):
+            _RUN_EVAL_CACHE[cache_key] = dict(disk_cached)
+            return dict(disk_cached)
 
     trainer, checkpoint_path, cfg = build_trainer_for_run(
         run_row,
@@ -1783,6 +1919,7 @@ def evaluate_map(
     eval_seed_batch_size: int = 16,
     model_order: Optional[list[str]] = None,
     duplicate_policy: str = "error",
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
     if model_order is None:
         model_order = ordered_model_labels(runs_df["model_label"].dropna().unique().tolist())
@@ -1819,6 +1956,7 @@ def evaluate_map(
             eval_seed_batch_size=eval_seed_batch_size,
             model_order=model_order,
             duplicate_policy=duplicate_policy,
+            use_cache=use_cache,
         )
         if result["run_results"].empty:
             continue
@@ -1863,10 +2001,10 @@ def evaluate_map(
         .reset_index(drop=True)
     )
 
-    latex = format_map_constraint_latex(
+    latex = format_cross_map_latex(
         model_summary,
-        map_name=map_name,
         checkpoint_choice=checkpoint_choice,
+        map_order=[map_name],
         model_order=model_order,
     )
 
@@ -1892,6 +2030,7 @@ def evaluate_map_constraint(
     eval_seed_batch_size: int = 16,
     model_order: Optional[list[str]] = None,
     duplicate_policy: str = "error",
+    use_cache: bool = True,
 ) -> Dict[str, Any]:
     if model_order is None:
         model_order = ordered_model_labels(runs_df["model_label"].dropna().unique().tolist())
@@ -1929,6 +2068,7 @@ def evaluate_map_constraint(
                 deterministic=True,
                 eval_seed_batch_size=eval_seed_batch_size,
                 trainer_pool=trainer_pool,
+                use_cache=use_cache,
             )
         )
 
@@ -2027,7 +2167,7 @@ def format_single_map_latex(
         "\\begin{table}[t]\n"
         "\\centering\n"
         f"\\caption{{Deterministic SMAX win rate on {map_title} with {constraint_title} using {checkpoint_choice} checkpoints. "
-        "Mean $\\pm$ std are computed over seeds, not episodes.}}\n"
+        "Mean $\\pm$ std are computed over seeds, not episodes.}\n"
         f"\\label{{tab:smax_{map_name}_{constraint_key}_{checkpoint_choice}}}\n"
         "\\begin{tabular}{lc}\n"
         "\\toprule\n"
@@ -2076,7 +2216,7 @@ def format_map_constraint_latex(
         "\\begin{table}[t]\n"
         "\\centering\n"
         f"\\caption{{Deterministic SMAX win rate on {map_title} using {checkpoint_choice} checkpoints. "
-        "Rows are grouped by training constraint. Mean $\\pm$ std are computed over seeds, not episodes.}}\n"
+        "Rows are grouped by training constraint. Mean $\\pm$ std are computed over seeds, not episodes.}\n"
         f"\\label{{tab:smax_{map_name}_{checkpoint_choice}}}\n"
         "\\begin{tabular}{l" + "c" * len(model_order) + "}\n"
         "\\toprule\n"
@@ -2098,51 +2238,129 @@ def format_cross_map_latex(
 ) -> str:
     if map_order is None:
         map_order = ordered_map_names(model_summary["map_name"].dropna().unique().tolist())
-    if model_order is None:
-        model_order = ordered_model_labels(model_summary["model_label"].dropna().unique().tolist())
+    table_model_order = ["ippo", "pci-ippo", "mappo", "pci-mappo"]
+    if model_order is not None:
+        ordered = [model for model in table_model_order if model in set(model_order)]
+        table_model_order = ordered or table_model_order
     summary_lookup = {
         (row["map_name"], row["constraint_key"], row["model_label"]): row
         for _, row in model_summary.iterrows()
     }
-    constraints_by_map = {}
-    for map_name in map_order:
-        map_constraints = model_summary.loc[
-            model_summary["map_name"] == map_name, "constraint_label"
-        ].dropna().unique().tolist()
-        constraints_by_map[map_name] = _ordered_constraint_keys(map_constraints)
 
-    def fmt(map_name: str, constraint: str, model: str) -> str:
+    target_constraint_labels = {
+        ("3m", "tar_w=2"): "Hard",
+        ("2s3z", "tar_w=4"): "Medium",
+        ("2s3z", "tar_w=3"): "Hard",
+        ("6h_vs_8z", "tar_w=6"): "Hard",
+        ("3s5z", "tar_w=6"): "Hard",
+        ("smacv2_5_units", "tar_w=4"): "Medium",
+        ("smacv2_5_units", "tar_w=3"): "Hard",
+        ("smacv2_10_units", "tar_w=8"): "Medium",
+        ("smacv2_10_units", "tar_w=6"): "Hard",
+    }
+
+    def display_constraint(map_name: str, constraint: str) -> str:
+        if constraint == "vanilla":
+            return "Vanilla"
+        return target_constraint_labels.get((map_name, constraint), constraint_label(constraint))
+
+    def constraint_rank(map_name: str, constraint: str) -> tuple[int, Any]:
+        label = display_constraint(map_name, constraint)
+        rank = {"Vanilla": 0, "Medium": 1, "Hard": 2}.get(label, 3)
+        return (rank, _constraint_sort_key(constraint))
+
+    def escape_latex(text: str) -> str:
+        return str(text).replace("_", "\\_")
+
+    def row_value(map_name: str, constraint: str, model: str) -> float | None:
+        row = summary_lookup.get((map_name, constraint, model))
+        if row is None:
+            return None
+        return float(row["mean_success_rate"]) * 100.0
+
+    def fmt_model(map_name: str, constraint: str, model: str, best_value: float | None) -> str:
         row = summary_lookup.get((map_name, constraint, model))
         if row is None:
             return "--"
         mean = float(row["mean_success_rate"]) * 100.0
         std = float(row["std_success_rate"]) * 100.0
-        return f"{mean:.1f} \scriptsize$\\pm$ {std:.1f}"
+        mean_text = f"{mean:.1f}"
+        if best_value is not None and abs(mean - best_value) < 1e-9:
+            mean_text = f"\\textbf{{{mean_text}}}"
+        return f"{mean_text} \\scriptsize$\\pm$ {std:.1f}"
 
-    header_cols = " & ".join(["Map", "Constraint"] + list(model_order))
-    rows = []
+    def fmt_delta(base: float | None, improved: float | None) -> str:
+        if base is None or improved is None:
+            return "--"
+        delta = improved - base
+        delta_text = f"{delta:.1f}"
+        if delta > 0:
+            return f"\\textbf{{\\textcolor{{blue}}{{{delta_text}}}}}"
+        if delta < 0:
+            return f"\\textbf{{\\textcolor{{red}}{{{delta_text}}}}}"
+        return delta_text
+
+    constraints_by_map = {}
     for map_name in map_order:
-        for constraint in constraints_by_map.get(map_name, []):
-            row = " & ".join(fmt(map_name, constraint, model) for model in model_order)
-            rows.append(f"{map_label(map_name)} & {constraint_label(constraint)} & {row} \\\\")
+        map_constraints = model_summary.loc[
+            model_summary["map_name"] == map_name, "constraint_key"
+        ].dropna().unique().tolist()
+        constraints_by_map[map_name] = sorted(set(map_constraints), key=lambda key: constraint_rank(map_name, key))
+
+    rows = []
+    present_maps = [map_name for map_name in map_order if constraints_by_map.get(map_name)]
+    for map_index, map_name in enumerate(present_maps):
+        constraints = constraints_by_map.get(map_name, [])
+        for constraint_index, constraint in enumerate(constraints):
+            model_values = [
+                row_value(map_name, constraint, model)
+                for model in table_model_order
+            ]
+            non_missing_values = [value for value in model_values if value is not None]
+            best_value = max(non_missing_values) if non_missing_values else None
+
+            ippo = row_value(map_name, constraint, "ippo")
+            pci_ippo = row_value(map_name, constraint, "pci-ippo")
+            mappo = row_value(map_name, constraint, "mappo")
+            pci_mappo = row_value(map_name, constraint, "pci-mappo")
+            map_cell = escape_latex(map_name) if constraint_index == 0 else ""
+            rows.append(
+                "    "
+                + " & ".join(
+                    [
+                        map_cell,
+                        display_constraint(map_name, constraint),
+                        fmt_model(map_name, constraint, "ippo", best_value),
+                        fmt_model(map_name, constraint, "pci-ippo", best_value),
+                        fmt_delta(ippo, pci_ippo),
+                        fmt_model(map_name, constraint, "mappo", best_value),
+                        fmt_model(map_name, constraint, "pci-mappo", best_value),
+                        fmt_delta(mappo, pci_mappo),
+                    ]
+                )
+                + r" \\"
+            )
+        if map_index != len(present_maps) - 1:
+            rows.append("    \\midrule")
 
     body = "\n".join(rows)
     return (
-        "\\begin{table*}[t]\n"
+        "\\begin{table}[htbp]\n"
+        "\\vspace{-1em}\n"
+        "\\caption{Test win rates (\\%) on SMAX maps. $\\pm$ denotes one standard deviation over available training seeds. "
+        "The best results are highlighted in bold. The sign of \\(\\Delta\\) and colored values indicate performance improvements "
+        "(blue) or degradations (red) over their respective baselines.}\n"
+        "\\label{tab:smax}\n"
         "\\centering\n"
-        f"\\caption{{Deterministic SMAX win rate using {checkpoint_choice} checkpoints. "
-        "Rows are grouped by map and training constraint. Mean $\\pm$ std are computed over seeds, not episodes.}}\n"
-        f"\\label{{tab:smax_cross_map_{checkpoint_choice}}}\n"
-        "\\resizebox{\\linewidth}{!}{%\n"
-        "\\begin{tabular}{ll" + "c" * len(model_order) + "}\n"
+        "\\resizebox{0.9\\textwidth}{!}{%\n\n"
+        "\\begin{tabular}{c c c c c c c c}\n"
         "\\toprule\n"
-        f"{header_cols} \\\\\n"
+        "Map & Target Constraint & IPPO & PCI-IPPO* & \\(\\Delta\\) & MAPPO & PCI-MAPPO* & \\(\\Delta\\)\\\\\n"
         "\\midrule\n"
         f"{body}\n"
         "\\bottomrule\n"
-        "\\end{tabular}%\n"
-        "}\n"
-        "\\end{table*}"
+        "\\end{tabular}}\n"
+        "\\end{table}"
     )
 
 
@@ -2186,7 +2404,7 @@ def format_seedwise_cross_map_latex(
             "Seed-wise deterministic SMAX test win rates (\\%) using "
             f"{checkpoint_choice} checkpoints. Each entry is the mean over the shared evaluation-seed set "
             f"({seed_summary['n_eval_seeds'].iloc[0]} eval seeds where available). "
-            "Missing entries indicate that the corresponding training seed was unavailable."
+            "All configured training seeds are present."
         )
 
     rows = []

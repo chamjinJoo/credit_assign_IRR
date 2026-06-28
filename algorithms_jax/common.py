@@ -42,7 +42,7 @@ class RecurrentActor(nn.Module):
         # Standard orthogonal init (on-policy convention):
         #   Dense(orth,√2) → ReLU → LayerNorm → GRU(orth,1) → LayerNorm → Dense(orth,0.01)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
 
@@ -51,7 +51,7 @@ class RecurrentActor(nn.Module):
         new_hidden, core_out = gru(hidden, x)
         core_out = nn.LayerNorm()(core_out)
 
-        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_POLICY)(core_out)
+        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_POLICY, bias_init=nn.initializers.zeros)(core_out)
         return new_hidden, logits
 
 
@@ -70,7 +70,7 @@ class RecurrentCritic(nn.Module):
         # Standard orthogonal init (on-policy convention):
         #   Dense(orth,√2) → ReLU → LayerNorm → GRU(orth,1) → LayerNorm → Dense(orth,1)
         x = jnp.concatenate([obs, prev_actions], axis=-1)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
 
@@ -79,7 +79,7 @@ class RecurrentCritic(nn.Module):
         new_hidden, core_out = gru(hidden, x)
         core_out = nn.LayerNorm()(core_out)
 
-        values = nn.Dense(self.output_dim, kernel_init=_ORTH_UNIT)(core_out)
+        values = nn.Dense(self.output_dim, kernel_init=_ORTH_UNIT, bias_init=nn.initializers.zeros)(core_out)
         if self.output_dim == 1:
             values = values.squeeze(-1)
         return new_hidden, values
@@ -98,13 +98,13 @@ class FeedForwardActor(nn.Module):
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         del prev_actions, masks
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(obs)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(obs)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_POLICY)(x)
+        logits = nn.Dense(self.action_dim, kernel_init=_ORTH_POLICY, bias_init=nn.initializers.zeros)(x)
         return hidden, logits
 
 
@@ -121,13 +121,13 @@ class FeedForwardCritic(nn.Module):
         masks: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
         del prev_actions, masks
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(obs)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(obs)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        values = nn.Dense(self.output_dim, kernel_init=_ORTH_UNIT)(x)
+        values = nn.Dense(self.output_dim, kernel_init=_ORTH_UNIT, bias_init=nn.initializers.zeros)(x)
         if self.output_dim == 1:
             values = values.squeeze(-1)
         return hidden, values
@@ -151,14 +151,14 @@ class DeltaCritic(nn.Module):
             x = jnp.concatenate([obs, actor_hidden], axis=-1)
         else:
             x = obs
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        return nn.Dense(1, kernel_init=_ORTH_UNIT)(x).squeeze(-1)
-
+        
+        return nn.Dense(1, kernel_init=_ORTH_UNIT, bias_init=nn.initializers.zeros)(x).squeeze(-1) # default
 
 class CausalBridgeNetwork(nn.Module):
     hidden_dim: int
@@ -179,16 +179,16 @@ class CausalBridgeNetwork(nn.Module):
         action_onehot = jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim)
         x = jnp.concatenate([local_obs, others_obs, bridge_context, action_onehot], axis=-1)
         x = nn.LayerNorm()(x)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
-        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU)(x)
+        x = nn.Dense(self.hidden_dim, kernel_init=_ORTH_RELU, bias_init=nn.initializers.zeros)(x)
         x = nn.relu(x)
         x = nn.LayerNorm()(x)
         return nn.Dense(
-            self.num_agents,
-            kernel_init=nn.initializers.orthogonal(1e-2),  # Alternative: normal(stddev=1e-3)
-            bias_init=nn.initializers.zeros,               # Explicit zero init.
+            self.num_agents, 
+            kernel_init=nn.initializers.orthogonal(1e-2), 
+            bias_init=nn.initializers.zeros
         )(x)
         # return nn.Dense(self.num_agents, kernel_init=_ORTH_UNIT)(x)
 
@@ -206,6 +206,41 @@ def make_train_state(
         optax.adam(learning_rate),
     )
     return train_state.TrainState.create(apply_fn=module.apply, params=params, tx=tx)
+
+
+class DynamicLearningRateTrainState(train_state.TrainState):
+    learning_rate: jnp.ndarray
+
+    def apply_gradients(self, *, grads, **kwargs):
+        updates, new_opt_state = self.tx.update(grads, self.opt_state, self.params)
+        updates = jax.tree_util.tree_map(lambda update: update * self.learning_rate, updates)
+        new_params = optax.apply_updates(self.params, updates)
+        return self.replace(
+            step=self.step + 1,
+            params=new_params,
+            opt_state=new_opt_state,
+            **kwargs,
+        )
+
+
+def make_dynamic_lr_train_state(
+    module: nn.Module,
+    params_key: jax.Array,
+    sample_inputs: tuple[jnp.ndarray, ...],
+    learning_rate: float,
+    max_grad_norm: float,
+) -> DynamicLearningRateTrainState:
+    params = module.init(params_key, *sample_inputs)["params"]
+    tx = optax.chain(
+        optax.clip_by_global_norm(max_grad_norm),
+        optax.adam(1.0),
+    )
+    return DynamicLearningRateTrainState.create(
+        apply_fn=module.apply,
+        params=params,
+        tx=tx,
+        learning_rate=jnp.asarray(learning_rate, dtype=jnp.float32),
+    )
 
 
 def mask_logits(logits: jnp.ndarray, available_actions: jnp.ndarray) -> jnp.ndarray:

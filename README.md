@@ -38,3 +38,9 @@ the script before running it.
 - `envs/`: multi-agent environments and wrappers.
 - `runner/`, `runner_jax/`: training loops for Torch and JAX.
 - `utils/`: shared utility code.
+- `figures/`: analysis notebooks/scripts used to produce paper figures and tables.
+- `legacy/`: retired source snapshots kept for reference only, not imported by anything.
+- `third_party/`: vendored dependencies (`StarCraftII/` game assets, `gym-cooking/` env).
+- `slurms/templates/`: SLURM `.sbatch` job templates; submit from the repo root, e.g. `sbatch slurms/templates/slurm_train_smax.sbatch`.
+- `runs/`: gitignored training outputs (checkpoints, W&B logs/exports) consolidated under one directory.
+- `not_for_submit/`: gitignored eval checkpoints excluded from paper submission.
