@@ -11,7 +11,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SOURCE_ROOT = REPO_ROOT / "runs" / "checkpoints"
+DEFAULT_SOURCE_ROOT = REPO_ROOT / "save_checkpoints"
 DEFAULT_DEST_ROOT = REPO_ROOT / "not_for_submit" / "checkpoints_for_eval_LBF"
 LBF_ENV_DIR_NAMES = {"jumanjilbfbatchwrapper"}
 
@@ -277,7 +277,7 @@ def write_manifest(rows: list[dict[str, str]], manifest_path: Path) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Collect completed Jumanji LBF runs from runs/checkpoints into "
+            "Collect completed Jumanji LBF runs from save_checkpoints into "
             "not_for_submit/checkpoints_for_eval_LBF/<env_id>/<model>/."
         )
     )

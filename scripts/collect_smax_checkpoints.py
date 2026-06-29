@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LOCAL_TZ = ZoneInfo("Asia/Seoul")
-DEFAULT_SOURCE_ROOT = REPO_ROOT / "runs" / "checkpoints"
+DEFAULT_SOURCE_ROOT = REPO_ROOT / "save_checkpoints"
 DEFAULT_DEST_ROOT = REPO_ROOT / "checkpoints_for_eval"
 DEFAULT_RUN_CSV_ROOT = REPO_ROOT / "runs" / "wandb_csv"
 DEFAULT_HOSTNAME_FILTER = os.environ.get("CHECKPOINT_HOSTNAME_FILTER", "bmlgs4")
@@ -776,7 +776,7 @@ def write_manifest(rows: list[dict[str, Any]], dest_root: Path) -> Path:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Collect completed SMAX checkpoints from runs/checkpoints into checkpoints_for_eval."
+        description="Collect completed SMAX checkpoints from save_checkpoints into checkpoints_for_eval."
     )
     parser.add_argument("--source-root", type=Path, default=DEFAULT_SOURCE_ROOT)
     parser.add_argument("--dest-root", type=Path, default=DEFAULT_DEST_ROOT)

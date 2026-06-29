@@ -1,5 +1,4 @@
-# checkpoints (root-level fallback: active jobs submitted before the runs/ migration
-# will recreate these at root on exit; safe to delete once merged into runs/)
+# checkpoints (legacy root names, pending migration to runs/ once active jobs finish)
 save_checkpoints/
 save_animations/
 checkpoints_for_eval/

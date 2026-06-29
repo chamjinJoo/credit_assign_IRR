@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ROOT = REPO_ROOT / "runs" / "checkpoints_gs1"
+DEFAULT_ROOT = REPO_ROOT / "gs1_checkpoints"
 CHECKPOINT_NAMES = ("jax_checkpoint_best.pkl", "jax_checkpoint_final.pkl")
 WRAPPER_DIR_NAMES = ("smaxbatchwrapper", "smaxwrapper")
 
