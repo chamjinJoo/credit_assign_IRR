@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from runner.trainer import Trainer
+from runner.torch.trainer import Trainer
 
 
 class JAXTrainer(Trainer):

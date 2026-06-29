@@ -1163,7 +1163,7 @@ def _is_jax_eval_cuda_runtime_error(exc: BaseException) -> bool:
 
 @contextmanager
 def _cheap_jax_eval_init_context():
-    import algorithms_jax.common as common
+    import models.jax.common as common
 
     original_relu = common._ORTH_RELU
     original_unit = common._ORTH_UNIT
@@ -1440,7 +1440,7 @@ def _greedy_action_for_agent(agent: Any, obs: torch.Tensor, available_actions: O
 
 
 def deterministic_nonjax_evaluation(trainer: Any, num_episodes: int) -> Dict[str, float]:
-    from algorithms.common import resolve_step_episode_done
+    from models.torch.common import resolve_step_episode_done
 
     env = trainer.eval_env
     device = trainer.algorithm.device

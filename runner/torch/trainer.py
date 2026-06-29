@@ -8,8 +8,8 @@ from collections import defaultdict, deque
 from tqdm import tqdm
 from datetime import datetime
 
-from algorithms import rMAPPOAlgorithm, rIPPOAlgorithm, rPCIAlgorithm
-from algorithms.common import resolve_step_episode_done
+from models.torch import rMAPPOAlgorithm, rIPPOAlgorithm, rPCIAlgorithm
+from models.torch.common import resolve_step_episode_done
 from envs import MultiAgentEnv, dict_to_tensor, create_environment
 from utils import Logger, MetricsTracker
 from typing import Union

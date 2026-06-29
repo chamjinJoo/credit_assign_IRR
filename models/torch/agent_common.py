@@ -4,7 +4,7 @@ import torch
 import torch.nn.functional as F
 import torch.optim as optim
 
-from algorithms.networks import (
+from models.torch.networks import (
     RNNPolicyNetwork,
     RNNValueNetwork,
 )

@@ -32,11 +32,11 @@ the script before running it.
 
 ## Code Layout
 
-- `algorithms/`: Torch implementations used for Stag Hunt.
-- `algorithms_jax/`: JAX implementations used for SMAX.
+- `models/torch/`: Torch algorithm implementations used for Stag Hunt.
+- `models/jax/`: JAX algorithm implementations used for SMAX.
 - `configs/`: YAML and dataclass-based experiment configuration.
 - `envs/`: multi-agent environments and wrappers.
-- `runner/`, `runner_jax/`: training loops for Torch and JAX.
+- `runner/torch/`, `runner/jax/`: training loops for Torch and JAX.
 - `utils/`: shared utility code.
 - `figures/`: analysis notebooks/scripts used to produce paper figures and tables.
 - `legacy/`: retired source snapshots kept for reference only, not imported by anything.

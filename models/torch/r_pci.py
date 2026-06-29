@@ -6,8 +6,8 @@ import math
 import hashlib
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
-from algorithms.agent_common import RecurrentActorCriticAgent
-from algorithms.common import (
+from models.torch.agent_common import RecurrentActorCriticAgent
+from models.torch.common import (
     build_agent_active_masks,
     build_agent_masks_batch,
     build_available_actions_batch,
@@ -23,8 +23,8 @@ from algorithms.common import (
     resolve_step_episode_done,
     split_action_and_log_probs,
 )
-from algorithms.networks.rnn import RNNValueNetwork
-from algorithms.networks import (
+from models.torch.networks.rnn import RNNValueNetwork
+from models.torch.networks import (
     OutcomeBridgeNetwork,
     NaivePredictor,
 )

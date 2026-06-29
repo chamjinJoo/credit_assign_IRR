@@ -365,7 +365,7 @@ def _evaluation_cache_key_with_metric_version(
 
 
 def _deterministic_nonjax_evaluation(trainer: Any, num_episodes: int) -> dict[str, float]:
-    from algorithms.common import resolve_step_episode_done
+    from models.torch.common import resolve_step_episode_done
 
     env = trainer.eval_env
     device = trainer.algorithm.device

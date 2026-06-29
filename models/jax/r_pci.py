@@ -147,6 +147,7 @@ class JAXRPCIAlgorithm:
             else None
         )
 
+
         self.anneal_lr = bool(anneal_lr)
         self.total_iterations = int(total_iterations)
 
@@ -222,6 +223,7 @@ class JAXRPCIAlgorithm:
                 lr_bridge,
                 max_grad_norm,
             )
+
 
         self.delta_critic_state = None
         if use_delta_critic:
@@ -365,7 +367,6 @@ class JAXRPCIAlgorithm:
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
         # normalize both adv before combining. 
-        # # NOTE: if using adv norm here, at initial, pci_flat affects too much even though it is nearly zero.
         env_flat = self._normalize_actor_advantages(env_flat)
         pci_flat = self._normalize_actor_advantages(pci_flat)
 
@@ -1138,10 +1139,11 @@ class JAXRPCIAlgorithm:
         metrics["critic_grad_norm"] = global_norm(grads)
         return new_critic_state, metrics
 
-    @partial(jax.jit, static_argnums=0)
+    @partial(jax.jit, static_argnums=(0, 2))
     def _compute_gram(
         self,
         batch: Dict[str, jnp.ndarray],
+        compute_spectrum_metrics: bool = False,
     ) -> tuple[jnp.ndarray, jnp.ndarray, Dict[str, jnp.ndarray]]:
         """Compute per-agent Gram matrices for one mini-batch chunk.
 
@@ -1153,7 +1155,8 @@ class JAXRPCIAlgorithm:
         Returns:
             gram_pa:     (N, B_n, B_n) — per-agent Gram matrices.
             reg_gram_pa: (N, B_n, B_n) — Tikhonov-regularized per-agent Grams.
-            gram_metrics: dict with Kz_offdiag_mean/std averaged across agents.
+            gram_metrics: dict with off-diagonal and eigen-spectrum summaries
+                averaged across agents.
         """
         B   = batch["agent_ids"].shape[0]
         N   = self.num_agents
@@ -1219,15 +1222,23 @@ class JAXRPCIAlgorithm:
             # contribution; keep for API consistency with the non-split formulation.
             xobs_norm_n = jnp.concatenate([xobs_cont_n, xobs_n[:, self.obs_dim:]], axis=-1)
 
-            K_n = _rbf_gram(z_norm_n, gamma_z) * _rbf_gram(aoh_n, gamma_a) * _rbf_gram(xobs_norm_n, gamma_xobs)
+            component_kernels = [
+                _rbf_gram(z_norm_n, gamma_z),
+                _rbf_gram(aoh_n, gamma_a),
+                _rbf_gram(xobs_norm_n, gamma_xobs),
+            ]
 
             if self.bridge_hidden_dim > 0:
                 xhid_h_n = _standardize_n(xhid_n[:, :self.bridge_hidden_dim], mask_n)
-                K_n = K_n * _rbf_gram(xhid_h_n, gamma_xhid)
+                component_kernels.append(_rbf_gram(xhid_h_n, gamma_xhid))
 
             if self.bridge_prev_action_dim > 0:
                 # Other agents' prev-actions: already float one-hot, no standardization needed.
-                K_n = K_n * _rbf_gram(xhid_n[:, self.bridge_hidden_dim:], 1.0)
+                component_kernels.append(_rbf_gram(xhid_n[:, self.bridge_hidden_dim:], 1.0))
+
+            K_n = component_kernels[0]
+            for component_K in component_kernels[1:]:
+                K_n = K_n * component_K
 
             K_n     = K_n * valid_n
             reg_K_n = (self.tikhonov_gamma + 1.0e-6) * eye_n + self.stabilizer_lambda * K_n
@@ -1248,6 +1259,61 @@ class JAXRPCIAlgorithm:
             "Kz_offdiag_mean": kz_off_mean,
             "Kz_offdiag_std":  kz_off_std,
         }
+
+        if compute_spectrum_metrics:
+            # Eigen-spectrum diagnostics are O(B_n^3) per agent block, so keep them
+            # out of the training update path and compute them only for eval snapshots.
+            gram_sym = 0.5 * (gram_pa + jnp.swapaxes(gram_pa, -1, -2))
+            eigvals = jnp.clip(jnp.linalg.eigvalsh(gram_sym), a_min=0.0)  # (N, B_n), ascending
+            eig_sum = jnp.sum(eigvals, axis=-1)
+            eig_prob = eigvals / jnp.clip(eig_sum[:, None], a_min=1.0e-8)
+            eig_entropy = -jnp.sum(
+                jnp.where(
+                    eig_prob > 0.0,
+                    eig_prob * jnp.log(jnp.clip(eig_prob, a_min=1.0e-12)),
+                    0.0,
+                ),
+                axis=-1,
+            )
+            has_spectrum = eig_sum > 1.0e-8
+            effective_rank = jnp.where(has_spectrum, jnp.exp(eig_entropy), 0.0)
+            valid_counts = jnp.maximum(jnp.sum(mask_pa, axis=-1), 1.0)
+            effective_rank_norm = effective_rank / valid_counts
+
+            eig_pos = eigvals > 1.0e-8
+            eig_min_pos = jnp.min(jnp.where(eig_pos, eigvals, jnp.inf), axis=-1)
+            eig_min_pos = jnp.where(jnp.isfinite(eig_min_pos), eig_min_pos, 0.0)
+            eig_max = eigvals[:, -1]
+            eig_condition = eig_max / jnp.clip(eig_min_pos, a_min=1.0e-8)
+
+            eig_top1 = eigvals[:, -1] if B_n >= 1 else jnp.zeros((N,), dtype=jnp.float32)
+            eig_top2 = eigvals[:, -2] if B_n >= 2 else jnp.zeros((N,), dtype=jnp.float32)
+            eig_top3 = eigvals[:, -3] if B_n >= 3 else jnp.zeros((N,), dtype=jnp.float32)
+            eig_top4 = eigvals[:, -4] if B_n >= 4 else jnp.zeros((N,), dtype=jnp.float32)
+            eig_top5 = eigvals[:, -5] if B_n >= 5 else jnp.zeros((N,), dtype=jnp.float32)
+            eig_sum_safe = jnp.clip(eig_sum, a_min=1.0e-8)
+
+            gram_metrics.update({
+                "K_effective_rank_mean": jnp.mean(effective_rank),
+                "K_effective_rank_std": jnp.std(effective_rank),
+                "K_effective_rank_norm_mean": jnp.mean(effective_rank_norm),
+                "K_effective_rank_norm_std": jnp.std(effective_rank_norm),
+                "K_eig_trace_mean": jnp.mean(eig_sum),
+                "K_eig_max_mean": jnp.mean(eig_max),
+                "K_eig_min_pos_mean": jnp.mean(eig_min_pos),
+                "K_eig_condition_mean": jnp.mean(eig_condition),
+                "K_eig_log_condition_mean": jnp.mean(jnp.log1p(eig_condition)),
+                "K_eig_top1_mean": jnp.mean(eig_top1),
+                "K_eig_top2_mean": jnp.mean(eig_top2),
+                "K_eig_top3_mean": jnp.mean(eig_top3),
+                "K_eig_top4_mean": jnp.mean(eig_top4),
+                "K_eig_top5_mean": jnp.mean(eig_top5),
+                "K_eig_top1_frac_mean": jnp.mean(eig_top1 / eig_sum_safe),
+                "K_eig_top2_frac_mean": jnp.mean(eig_top2 / eig_sum_safe),
+                "K_eig_top3_frac_mean": jnp.mean(eig_top3 / eig_sum_safe),
+                "K_eig_top4_frac_mean": jnp.mean(eig_top4 / eig_sum_safe),
+                "K_eig_top5_frac_mean": jnp.mean(eig_top5 / eig_sum_safe),
+            })
         return gram_pa, reg_gram_pa, gram_metrics
 
     @partial(jax.jit, static_argnums=0)
@@ -1324,6 +1390,22 @@ class JAXRPCIAlgorithm:
             if end > start:
                 yield jnp.arange(start, end)
 
+    def _iterate_causal_minibatches(self, te_total: int):
+        # causal_mini_batch_size is measured in (t,e) pairs, not flat (t,e,n) samples.
+        # Each (t,e) pair contributes N consecutive flat indices, so each chunk yields
+        # causal_mini_batch_size*N flat indices preserving the interleaved agent order
+        # required by _compute_gram's (B_n,N,d) reshape.
+        N = self.num_agents
+        te_idx = jnp.arange(te_total)
+        for te_start in range(0, te_total, self.causal_mini_batch_size):
+            te_end = te_start + self.causal_mini_batch_size
+            if te_end <= te_total:
+                te_chunk = te_idx[te_start:te_end]
+            else:
+                pad = self.causal_mini_batch_size - (te_total - te_start)
+                te_chunk = jnp.concatenate([te_idx[te_start:], te_idx[:pad]])
+            yield (te_chunk[:, None] * N + jnp.arange(N)[None, :]).reshape(-1)
+
     def update_causal_networks(self, rollout: Optional[Dict[str, jnp.ndarray]] = None) -> Dict[str, float]:
         if rollout is None:
             rollout = self.latest_rollout
@@ -1335,40 +1417,31 @@ class JAXRPCIAlgorithm:
         causal_batch = self._causal_batch(rollout)
         total_flat = causal_batch["x_obs"].shape[0]   # T*E*N
         te_total   = total_flat // self.num_agents     # T*E — iteration unit is (t,e) pairs
-        N = self.num_agents
         _KEYS = ("z", "w", "x_obs", "x_hid", "actions", "targets", "agent_ids", "loss_mask")
 
-        loss_metric_entries = []
+        # Gram/reg_gram depend only on rollout data, not on bridge params, so compute
+        # them once per chunk and reuse across all bridge_epoch gradient accumulations.
+        chunks = []
         gram_metric_entries = []
+        for idx in self._iterate_causal_minibatches(te_total):
+            batch = {k: causal_batch[k][idx] for k in _KEYS}
+            gram, reg_gram, gram_metrics = self._compute_gram(batch, False)
+            chunks.append((batch, gram, reg_gram))
+            gram_metric_entries.append({key: float(value) for key, value in tree_to_host(gram_metrics).items()})
+
+        loss_metric_entries = []
         grad_norms = []
-
         for _ in range(self.bridge_epoch):
-            # Shuffle at TE level so each epoch sees a different minibatch composition.
-            # self.bridge_rng, perm_rng = jax.random.split(self.bridge_rng)
-            # te_perm = jax.random.permutation(perm_rng, te_total)
-            
-            # No Shuffle
-            te_perm = jnp.arange(te_total)
-            
-            n_batches = min(self.num_batches, te_total)
-            for batch_idx in range(n_batches):
-                te_start = (te_total * batch_idx) // n_batches
-                te_end   = (te_total * (batch_idx + 1)) // n_batches
-                if te_end <= te_start:
-                    continue
-                te_chunk = te_perm[te_start:te_end]
-                # Expand TE pairs to flat (T*E*N) indices preserving agent-interleaved order
-                # required by _compute_gram's (B_n, N, d) reshape.
-                flat_idx = (te_chunk[:, None] * N + jnp.arange(N)[None, :]).reshape(-1)
-
-                batch = {k: causal_batch[k][flat_idx] for k in _KEYS}
-                gram, reg_gram, gram_metrics = self._compute_gram(batch)
-                gram_metric_entries.append({key: float(value) for key, value in tree_to_host(gram_metrics).items()})
-
-                grads, batch_metrics = self._bridge_grad_step(self.bridge_state.params, batch, gram, reg_gram)
-                self.bridge_state = self.bridge_state.apply_gradients(grads=grads)
-                grad_norms.append(float(global_norm(grads)))
+            base_params = self.bridge_state.params
+            grads_sum = None
+            for batch, gram, reg_gram in chunks:
+                grads, batch_metrics = self._bridge_grad_step(base_params, batch, gram, reg_gram)
+                grads_sum = grads if grads_sum is None else jax.tree_util.tree_map(jnp.add, grads_sum, grads)
                 loss_metric_entries.append({key: float(value) for key, value in tree_to_host(batch_metrics).items()})
+
+            grads_avg = jax.tree_util.tree_map(lambda g: g / len(chunks), grads_sum)
+            self.bridge_state = self.bridge_state.apply_gradients(grads=grads_avg)
+            grad_norms.append(float(global_norm(grads_avg)))
 
         stacked = stack_metrics(loss_metric_entries)
         stacked.update(stack_metrics(gram_metric_entries))
@@ -1378,6 +1451,35 @@ class JAXRPCIAlgorithm:
         stacked.setdefault("Kz_offdiag_mean", 0.0)
         stacked.setdefault("Kz_offdiag_std", 0.0)
         return stacked
+
+    def compute_gram_spectrum_metrics(
+        self,
+        rollout: Optional[Dict[str, jnp.ndarray]] = None,
+    ) -> Dict[str, float]:
+        """Compute expensive Gram spectrum diagnostics for eval-time logging."""
+        if rollout is None:
+            rollout = self.latest_rollout
+        if rollout is None or self.bridge_state is None:
+            return {}
+
+        causal_batch = self._causal_batch(rollout)
+        total_flat = causal_batch["x_obs"].shape[0]
+        te_total = total_flat // self.num_agents
+        keys = ("z", "w", "x_obs", "x_hid", "actions", "targets", "agent_ids", "loss_mask")
+        metric_entries = []
+        for idx in self._iterate_causal_minibatches(te_total):
+            batch = {key: causal_batch[key][idx] for key in keys}
+            _, _, gram_metrics = self._compute_gram(batch, True)
+            metric_entries.append({key: float(value) for key, value in tree_to_host(gram_metrics).items()})
+
+        metrics = stack_metrics(metric_entries)
+        important_keys = (
+            "K_effective_rank_norm_mean",
+            "K_eig_top1_frac_mean",
+            "Kz_offdiag_mean",
+            "K_eig_log_condition_mean",
+        )
+        return {key: metrics[key] for key in important_keys if key in metrics}
 
     def compute_causal_rewards(
         self,
@@ -1511,7 +1613,7 @@ class JAXRPCIAlgorithm:
         if self.latest_rollout is None:
             return {}
 
-        rollout = self.latest_rollout # training data for one iteration. handled in runner_jax/trainer.py
+        rollout = self.latest_rollout # training data for one iteration. handled in runner/jax/trainer.py
         metrics = {}
         causal_lambda = self.get_current_causal_lambda()
 

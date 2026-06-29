@@ -41,7 +41,7 @@ def import_runtime_modules():
     global Trainer, JAXTrainer
 
     from envs import create_environment, get_available_environments
-    from algorithms import (
+    from models import (
         rMAPPOAlgorithm,
         rIPPOAlgorithm,
         rPCIAlgorithm,

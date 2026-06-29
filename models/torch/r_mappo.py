@@ -4,9 +4,9 @@ import torch.nn.functional as F
 from typing import Dict, List, Tuple, Optional
 from collections import defaultdict
 
-from algorithms.networks import RNNValueNetwork
-from algorithms.agent_common import RecurrentPolicyAgent
-from algorithms.common import (
+from models.torch.networks import RNNValueNetwork
+from models.torch.agent_common import RecurrentPolicyAgent
+from models.torch.common import (
     build_agent_active_masks,
     build_available_actions_batch,
     build_team_done_sequence,
