@@ -112,7 +112,7 @@ class rPCIAlgorithm:
         rkhs_gamma: float = 1.0,
         env_required_agents: Optional[Dict[int, List[int]]] = None,
         # Optimization parameter
-        causal_mini_batch_size: Optional[int] = 10000,
+        causal_mini_batch_size: Optional[int] = 1000,
         use_causal_rff: bool = True,
         causal_rff_features: int = 512,
         causal_rff_seed: int = 0,

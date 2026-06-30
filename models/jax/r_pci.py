@@ -57,7 +57,7 @@ class JAXRPCIAlgorithm:
         use_centralized_critic: bool = False,
         causal_lambda: float = 0.0,
         bridge_epoch: int = 4,
-        causal_mini_batch_size: int = 10000,
+        causal_mini_batch_size: int = 1000,
         tikhonov_gamma: float = 1.0e-4,
         stabilizer_lambda: float = 1.0,
         use_recurrent_policy: bool = True,

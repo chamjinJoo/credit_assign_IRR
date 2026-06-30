@@ -475,7 +475,7 @@ def parse_args() -> argparse.Namespace:
     
     # Algorithm
     parser.add_argument('--algorithm-type', '--model', type=str, default=None,
-                        help='Algorithm type: pci_mappo, mappo, ippo, jax_ippo, jax_mappo, jax_rpci, etc.')
+                        help='Algorithm type: pci_mappo, mappo, ippo, qmix, jax_qmix, jax_ippo, jax_mappo, jax_rpci, etc.')
     parser.add_argument('--clip-delta', type=float, default=None,
                         help='Clip threshold for delta (causal intrinsic reward)')
     parser.add_argument('--causal-lambda', type=float, default=None,
@@ -500,6 +500,8 @@ def parse_args() -> argparse.Namespace:
                         help='Learning rate for bridge networks')
     parser.add_argument('--lr-critic', type=float, default=None,
                         help='Learning rate for critic')
+    parser.add_argument('--lr', type=float, default=None,
+                        help='General learning rate for value-based algorithms such as QMIX')
     parser.add_argument('--lr-delta-critic', type=float, default=None,
                         help='Learning rate for delta critic; defaults to lr_critic when unset')
     parser.add_argument('--max-grad-norm', type=float, default=None,
@@ -662,6 +664,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.network.lr_bridge = args.lr_bridge
     if hasattr(args, 'lr_critic') and args.lr_critic:
         config.network.lr_critic = args.lr_critic
+    if hasattr(args, 'lr') and args.lr is not None:
+        config.network.lr = args.lr
     if hasattr(args, 'lr_delta_critic') and args.lr_delta_critic is not None:
         config.network.lr_delta_critic = args.lr_delta_critic
     if hasattr(args, 'recurrent_N') and args.recurrent_N is not None:

@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Train JAX IPPO, MAPPO, PCI-IPPO, and PCI-MAPPO on SMAX scenarios from the LR table.
+# Train JAX IPPO, MAPPO, PCI-IPPO, PCI-MAPPO, and QMIX on SMAX scenarios from the LR table.
 #
 # Vanilla rows are represented by setting allowed_target_window to the
 # full enemy count, which disables the allowed-target restriction.
@@ -115,6 +115,7 @@ get_config() {
         mappo) echo "configs/smax_configs/smax_mappo.yaml" ;;
         ipci) echo "configs/smax_configs/smax_pci_ippo.yaml" ;;
         mpci) echo "configs/smax_configs/smax_pci_mappo.yaml" ;;
+        qmix) echo "configs/smax_configs/smax_ippo.yaml" ;;
         *)
             echo "Unknown algorithm: ${algorithm}" >&2
             return 1
@@ -130,6 +131,7 @@ get_model() {
         mappo) echo "jax-mappo" ;;
         ipci) echo "jax-pci-ippo" ;;
         mpci) echo "jax-pci-mappo" ;;
+        qmix) echo "jax-qmix" ;;
         *)
             echo "Unknown algorithm: ${algorithm}" >&2
             return 1
@@ -206,6 +208,22 @@ get_lr() {
         mpci:smacv2_10_units:6) echo "0.001" ;;
         mpci:smacv2_10_units:8) echo "0.001" ;;
         mpci:smacv2_10_units:10) echo "0.001" ;;
+
+        qmix:3m:2) echo "0.0005" ;;
+        qmix:3m:3) echo "0.0005" ;;
+        qmix:2s3z:3) echo "0.0005" ;;
+        qmix:2s3z:4) echo "0.0005" ;;
+        qmix:2s3z:5) echo "0.0005" ;;
+        qmix:3s5z:6) echo "0.0005" ;;
+        qmix:3s5z:8) echo "0.0005" ;;
+        qmix:6h_vs_8z:6) echo "0.0005" ;;
+        qmix:6h_vs_8z:8) echo "0.0005" ;;
+        qmix:smacv2_5_units:3) echo "0.0005" ;;
+        qmix:smacv2_5_units:4) echo "0.0005" ;;
+        qmix:smacv2_5_units:5) echo "0.0005" ;;
+        qmix:smacv2_10_units:6) echo "0.0005" ;;
+        qmix:smacv2_10_units:8) echo "0.0005" ;;
+        qmix:smacv2_10_units:10) echo "0.0005" ;;
         *)
             echo "Missing LR for ${algorithm} ${map_name} target=${allowed_target_window}" >&2
             return 1
@@ -222,6 +240,7 @@ run_training() {
     local config
     local model
     local lr
+    local lr_args=()
     local lr_delta_critic
     local causal_args=()
 
@@ -232,6 +251,11 @@ run_training() {
 
     if [[ "${algorithm}" == "ipci" || "${algorithm}" == "mpci" ]]; then
         causal_args=(--causal-lambda 0.1 --lr-delta-critic "${lr_delta_critic}")
+    fi
+    if [[ "${algorithm}" == "qmix" ]]; then
+        lr_args=(--lr "${lr}")
+    else
+        lr_args=(--lr-actor "${lr}" --lr-critic "${lr}")
     fi
 
     local wandb_group="${map_name}"
@@ -251,8 +275,7 @@ run_training() {
         --use-recurrent-policy "${use_recurrent_policy}" \
         "${causal_args[@]}" \
         --allowed-target-window "${allowed_target_window}" \
-        --lr-actor "${lr}" \
-        --lr-critic "${lr}" \
+        "${lr_args[@]}" \
         --n-rollout-threads "${n_rollout_threads}" \
         --device "${device}" \
         --seed "${seed}" \

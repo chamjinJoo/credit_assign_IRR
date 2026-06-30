@@ -6,9 +6,11 @@ gs1_checkpoints/
 
 # runs (consolidated checkpoints/wandb/logs)
 runs/
+wandb/
 
 # plots
 plots/
+figures/
 
 # logs
 logs/
@@ -28,10 +30,12 @@ slurms/
 *.sbatch
 
 # third-party binaries
-third_party/StarCraftII/
+third_party/
 
 # backup
 not_for_submit/
+legacy/
+src/
 
 # vscode
 .vscode/
