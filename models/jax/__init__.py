@@ -3,6 +3,7 @@ from .r_ippo import JAXRIPPOAlgorithm
 from .r_mappo import JAXRMAPPOAlgorithm
 from .r_pci import JAXRPCIAlgorithm
 from .qmix import JAXQMIXAlgorithm
+from .pci_qmix import JAXPCIQMIXAlgorithm
 
 __all__ = [
     "JAXPPOAlgorithm",
@@ -10,4 +11,5 @@ __all__ = [
     "JAXRMAPPOAlgorithm",
     "JAXRIPPOAlgorithm",
     "JAXQMIXAlgorithm",
+    "JAXPCIQMIXAlgorithm",
 ]

@@ -715,7 +715,6 @@ class rQMIXAlgorithm:
     def _train_step(self, completed_episodes: List[List[Dict]]) -> Dict[str, float]:
         """
         Perform a single gradient update step (PyMARL's QLearner.train equivalent).
-        
         Samples a mini-batch from the replay buffer and performs one gradient step
         on the Q-network and mixer.
         
@@ -751,8 +750,9 @@ class rQMIXAlgorithm:
         
         # ---- Compute target Q-values ----
         with torch.no_grad():
+            # Compute target Q-values using target network
             target_mac_out = self._forward_agent_q_values(batch, self.target_q_network)
-            # We only need t=1 to T+1 for targets
+            # t = 1 ~ T+1 for targets
             target_mac_out_future = target_mac_out[:, 1:]  # [B, T, N, A]
             
             # Mask unavailable actions
@@ -764,6 +764,7 @@ class rQMIXAlgorithm:
                 mac_out_detach = mac_out.clone().detach()
                 if avail_actions is not None:
                     mac_out_detach[avail_actions == 0] = -9999999
+                # choose actions (index/action-id of q-value) from the online q-netowork output
                 cur_max_actions = mac_out_detach[:, 1:].max(dim=3, keepdim=True)[1]
                 target_max_qvals = torch.gather(
                     target_mac_out_future, 3, cur_max_actions
@@ -820,14 +821,6 @@ class rQMIXAlgorithm:
     def update(self, **kwargs) -> Dict[str, float]:
         """
         Update Q-network and mixer using completed episodes from replay buffer.
-        
-        Follows PyMARL's training loop: 1 gradient step per collected episode.
-        The trainer passes num_episodes_collected via kwargs so that QMIX
-        performs the correct number of gradient updates per iteration.
-        
-        QMIX is off-policy: completed episodes accumulate in the replay buffer
-        and are randomly sampled each update — the buffer is NOT cleared after
-        each call.
         """
         if not self.buffer_manager.has_completed_episodes():
             return {}

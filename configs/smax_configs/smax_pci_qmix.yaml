@@ -1,0 +1,93 @@
+# Canonical JAX PCI-QMIX config for SMAX 3m hard
+
+network:
+  hidden_dim: 512
+  lr: 5.0e-5
+  lr_actor: 5.0e-5
+  lr_critic: 5.0e-5
+  lr_bridge: 2.0e-3
+  lr_delta_critic: null
+  recurrent_N: 1
+  use_recurrent_policy: true
+
+algorithm:
+  type: "jax_pci_qmix"
+  gamma: 0.99
+  max_grad_norm: 10.0
+  target_update_interval: 80 # for TARGET UPDATE INTERVAL=10 (=target_update_interval/qmix_update_epochs)
+  qmix_update_epochs: 8
+  epsilon_start: 1.0
+  epsilon_finish: 0.05
+  epsilon_anneal_time: 1.0e+6 # 0.1 of 1e7 timesteps.
+  double_q: true
+  mixing_embed_dim: 64
+  hypernet_layers: 2
+  hypernet_embed: 256
+  replay_buffer_size: 5000
+  train_batch_size: 32
+  global_reward: true
+  add_agent_id: true
+  anneal_lr: false
+
+  # Outcome bridge settings aligned with smax_pci_ippo/smax_pci_mappo.
+  bridge_epoch: 2
+  causal_mini_batch_size: 3200
+  causal_lambda: 1.0
+  clip_delta: 0.0
+  agent_delta_td_coef: 1.0
+  tikhonov_gamma: 1.0e-4
+  stabilizer_lambda: 1.0
+  print_bridge_predictions: false
+  bridge_prediction_print_samples: 10
+  bridge_prediction_print_interval: 50
+  bridge_prediction_batch_size: 2048
+
+training:
+  # 4883 * (16 parallel envs * 128 rollout steps) ~= 1.0e7 timesteps.
+  max_iterations: 4883
+  max_steps_per_iteration: 2048
+  n_rollout_threads: 16
+  log_interval: 2
+  save_interval: 500
+  eval_interval: 25
+  eval_episodes: 16
+  save_dir: "./runs/checkpoints"
+  device: "cuda"
+  seed: 42
+  deterministic: true
+
+environment:
+  env_name: "SMAX"
+  map_name: "3m"
+
+  # 3m hard in scripts/smax/train_all.sh corresponds to allowed_target_window=2.
+  use_allowed_targets: true
+  use_partial_damage_restore: false
+  allowed_target_window: 2
+
+  max_steps: 100
+  use_individual_rewards: false
+  enemy_shoots: true
+  attack_mode: "closest"
+  map_width: 32
+  map_height: 32
+  world_steps_per_env_step: 8
+  time_per_step: 0.0625
+  see_enemy_actions: true
+  won_battle_bonus: 1.0
+  walls_cause_death: true
+  observation_type: "unit_list"
+  smacv2_position_generation: true
+  smacv2_unit_type_generation: true
+
+  use_cooperative_kill_bonus: false
+  cooperative_bonus_mode: "kill"
+  cooperative_kill_window: 2
+  cooperative_kill_bonus: 0.5
+  cooperative_kill_owner_ratio: 0.7
+  cooperative_size: 2
+
+wandb:
+  use_wandb: false
+  project: "pci-marl-smax-jax-v2"
+  tags: ["jax", "smax", "pci-qmix", "qmix", "jaxmarl"]

@@ -913,6 +913,9 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
 
         delta_agent = self.compute_causal_deltas_from_batch(batch, mac_out.detach())
         delta_team = delta_agent.sum(dim=-1)
+        causal_lambda = float(self.get_current_causal_lambda())
+        env_team_reward = batch["rewards"]
+        shaped_team_reward = env_team_reward + causal_lambda * delta_team
 
         with torch.no_grad():
             target_mac_out = self._forward_agent_q_values(batch, self.target_q_network)
@@ -943,7 +946,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         terminated_expanded = terminated.unsqueeze(-1)
         masks_expanded = masks.unsqueeze(-1)
         targets = (
-            delta_team.unsqueeze(-1)
+            shaped_team_reward.unsqueeze(-1)
             + self.gamma * (1 - terminated_expanded) * target_max_q_tot
         )
         td_error = chosen_action_q_tot - targets.detach()
@@ -959,7 +962,8 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         masked_agent_td_error = agent_td_error * agent_masks
         agent_delta_td_loss = (masked_agent_td_error ** 2).sum() / agent_masks.sum().clamp(min=1.0)
 
-        loss = qmix_loss + self.agent_delta_td_coef * agent_delta_td_loss
+        effective_agent_delta_td_coef = self.agent_delta_td_coef * causal_lambda
+        loss = qmix_loss + effective_agent_delta_td_coef * agent_delta_td_loss
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -988,6 +992,13 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             "loss": loss.item(),
             "qmix_loss": qmix_loss.item(),
             "agent_delta_td_loss": agent_delta_td_loss.item(),
+            "causal_lambda": causal_lambda,
+            "effective_agent_delta_td_coef": effective_agent_delta_td_coef,
+            "env_reward_mean": (env_team_reward * masks).sum().item()
+            / masks.sum().clamp(min=1.0).item(),
+            "delta_team_mean": (delta_team * masks).sum().item() / masks.sum().clamp(min=1.0).item(),
+            "shaped_reward_mean": (shaped_team_reward * masks).sum().item()
+            / masks.sum().clamp(min=1.0).item(),
             "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
             "td_error_abs": masked_td_error.abs().sum().item() / mask_sum,
             "agent_td_error_abs": masked_agent_td_error.abs().sum().item() / agent_mask_sum,
@@ -998,7 +1009,6 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             "delta_mean": delta_mean,
             "delta_std": delta_std,
             "delta_abs_mean": delta_abs_mean,
-            "delta_team_mean": (delta_team * masks).sum().item() / masks.sum().clamp(min=1.0).item(),
         }
         metrics.update(bridge_metrics)
         return metrics

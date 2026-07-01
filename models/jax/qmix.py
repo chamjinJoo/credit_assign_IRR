@@ -114,6 +114,7 @@ class JAXQMIXAlgorithm:
         hypernet_embed: int = 64,
         replay_buffer_size: int = 5000,
         train_batch_size: int = 32,
+        qmix_update_epochs: Optional[int] = None,
         device: str = "cpu",
         add_agent_id: bool = True,
         global_reward: bool = True,
@@ -141,6 +142,9 @@ class JAXQMIXAlgorithm:
         self.double_q = bool(double_q)
         self.replay_buffer_size = max(1, int(replay_buffer_size))
         self.train_batch_size = max(1, int(train_batch_size))
+        self.qmix_update_epochs = (
+            None if qmix_update_epochs is None else max(1, int(qmix_update_epochs))
+        )
 
         self.training_steps = 0
         self.total_env_steps = 0
@@ -341,7 +345,7 @@ class JAXQMIXAlgorithm:
                     dones_all.astype(jnp.float32)[:, None],
                 )
                 next_prev_actions = action_one_hot(actions, self.action_dim)
-                next_prev_actions = next_prev_actions * (1.0 - agent_done_next[..., None])
+                next_prev_actions = next_prev_actions * (1.0 - dones_all)[:, None, None]
                 next_runner = {
                     "hidden": hidden_next,
                     "prev_actions": next_prev_actions,
@@ -352,6 +356,8 @@ class JAXQMIXAlgorithm:
                 transition = {
                     "obs": obs_aug.astype(jnp.float32),
                     "avail_actions": current_avail.astype(jnp.float32),
+                    "actor_hidden": hidden_prev.astype(jnp.float32),
+                    "prev_actions": prev_actions_prev.astype(jnp.float32),
                     "actions": actions.astype(jnp.int32),
                     "rewards": rewards.astype(jnp.float32),
                     "dones": dones_all.astype(jnp.float32),
@@ -431,9 +437,21 @@ class JAXQMIXAlgorithm:
                 transition = {
                     "obs": rollout_np["obs"][t, env_idx],
                     "avail_actions": rollout_np["avail_actions"][t, env_idx],
+                    "actor_hidden": rollout_np.get("actor_hidden", np.zeros(
+                        (time_steps, n_envs, self.num_agents, self.hidden_dim),
+                        dtype=np.float32,
+                    ))[t, env_idx],
+                    "prev_actions": rollout_np.get("prev_actions", np.zeros(
+                        (time_steps, n_envs, self.num_agents, self.action_dim),
+                        dtype=np.float32,
+                    ))[t, env_idx],
                     "actions": rollout_np["actions"][t, env_idx],
                     "rewards": rollout_np["rewards"][t, env_idx],
                     "done": bool(rollout_np["dones"][t, env_idx] > 0.5),
+                    "agent_dones": rollout_np.get("agent_dones", np.zeros(
+                        (time_steps, n_envs, self.num_agents),
+                        dtype=np.float32,
+                    ))[t, env_idx],
                     "next_obs": rollout_np["next_obs"][t, env_idx],
                     "next_avail_actions": rollout_np["next_avail_actions"][t, env_idx],
                 }
@@ -456,8 +474,18 @@ class JAXQMIXAlgorithm:
         joint_obs = np.zeros((batch_size, tp1, self.state_dim), dtype=np.float32)
         actions = np.zeros((batch_size, tp1, self.num_agents), dtype=np.int32)
         rewards = np.zeros((batch_size, max_t), dtype=np.float32)
+        agent_rewards = np.zeros((batch_size, max_t, self.num_agents), dtype=np.float32)
         terminated = np.zeros((batch_size, max_t), dtype=np.float32)
         masks = np.zeros((batch_size, max_t), dtype=np.float32)
+        actor_hidden = np.zeros(
+            (batch_size, max_t, self.num_agents, self.hidden_dim),
+            dtype=np.float32,
+        )
+        prev_actions = np.zeros(
+            (batch_size, max_t, self.num_agents, self.action_dim),
+            dtype=np.float32,
+        )
+        agent_dones = np.zeros((batch_size, max_t, self.num_agents), dtype=np.float32)
         available_actions = np.ones(
             (batch_size, tp1, self.num_agents, self.action_dim),
             dtype=np.float32,
@@ -470,6 +498,22 @@ class JAXQMIXAlgorithm:
                 joint_obs[batch_idx, t] = obs_t.reshape(-1)
                 actions[batch_idx, t] = transition["actions"].astype(np.int32)
                 available_actions[batch_idx, t] = transition["avail_actions"].astype(np.float32)
+                actor_hidden[batch_idx, t] = transition.get("actor_hidden", np.zeros(
+                    (self.num_agents, self.hidden_dim),
+                    dtype=np.float32,
+                )).astype(np.float32)
+                if "prev_actions" in transition:
+                    prev_actions[batch_idx, t] = transition["prev_actions"].astype(np.float32)
+                elif t > 0:
+                    prev_actions[batch_idx, t] = np.eye(
+                        self.action_dim,
+                        dtype=np.float32,
+                    )[actions[batch_idx, t - 1]]
+                agent_dones[batch_idx, t] = transition.get(
+                    "agent_dones",
+                    np.zeros((self.num_agents,), dtype=np.float32),
+                ).astype(np.float32)
+                agent_rewards[batch_idx, t] = transition["rewards"].astype(np.float32)
 
                 if self.global_reward:
                     rewards[batch_idx, t] = float(np.mean(transition["rewards"]))
@@ -496,8 +540,12 @@ class JAXQMIXAlgorithm:
             "joint_obs": jnp.asarray(joint_obs),
             "actions": jnp.asarray(actions),
             "rewards": jnp.asarray(rewards),
+            "agent_rewards": jnp.asarray(agent_rewards),
             "terminated": jnp.asarray(terminated),
             "masks": jnp.asarray(masks),
+            "actor_hidden": jnp.asarray(actor_hidden),
+            "prev_actions": jnp.asarray(prev_actions),
+            "agent_dones": jnp.asarray(agent_dones),
             "available_actions": jnp.asarray(available_actions),
         }
 
@@ -618,15 +666,22 @@ class JAXQMIXAlgorithm:
 
     def update(self, **kwargs: Any) -> Dict[str, float]:
         n_available = len(self._completed_episodes)
+        num_episodes_collected = int(kwargs.get("num_episodes_collected", 1))
         metadata = {
             "epsilon": float(self.epsilon),
             "total_env_steps": float(self.total_env_steps),
             "replay_buffer_episodes": float(n_available),
+            "qmix_update_epochs": float(self.qmix_update_epochs or 0),
+            "num_episodes_collected": float(num_episodes_collected),
         }
         if n_available < self.train_batch_size:
             return metadata
 
-        num_updates = max(1, int(kwargs.get("num_episodes_collected", 1)))
+        num_updates = (
+            self.qmix_update_epochs
+            if self.qmix_update_epochs is not None
+            else max(1, num_episodes_collected)
+        )
         accumulated = defaultdict(float)
         for _ in range(num_updates):
             indices = self._rng_np.choice(n_available, self.train_batch_size, replace=False)

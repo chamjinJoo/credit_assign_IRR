@@ -17,11 +17,11 @@ algorithm:
   type: "jax_qmix"
   gamma: 0.99
   max_grad_norm: 10.0
-  target_update_interval: 200
+  target_update_interval: 80 # for TARGET UPDATE INTERVAL=10 (=target_update_interval/qmix_update_epochs)
+  qmix_update_epochs: 8
   epsilon_start: 1.0
   epsilon_finish: 0.05
-  # Paper epsilon decay is 0.1 of 1e7 timesteps.
-  epsilon_anneal_time: 1000000
+  epsilon_anneal_time: 1.0e+6 # 0.1 of 1e7 timesteps.
   double_q: true
   mixing_embed_dim: 64
   hypernet_layers: 2

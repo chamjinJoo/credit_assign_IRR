@@ -37,7 +37,7 @@ def import_runtime_modules():
     global create_environment, get_available_environments
     global PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm
     global X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm
-    global rQMIXAlgorithm, JAXPPOAlgorithm, JAXQPCIAlgorithm, JAXRPCIAlgorithm, JAXQMIXAlgorithm
+    global rQMIXAlgorithm, JAXPPOAlgorithm, JAXQPCIAlgorithm, JAXRPCIAlgorithm, JAXQMIXAlgorithm, JAXPCIQMIXAlgorithm
     global Trainer, JAXTrainer
 
     from envs import create_environment, get_available_environments
@@ -49,6 +49,7 @@ def import_runtime_modules():
         JAXPPOAlgorithm,
         JAXRPCIAlgorithm,
         JAXQMIXAlgorithm,
+        JAXPCIQMIXAlgorithm,
     )
     from runner import Trainer, JAXTrainer
 
@@ -383,7 +384,7 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
-    elif algorithm_type in ['qmix', 'r_qmix', 'jax_qmix', 'jax_r_qmix']:
+    elif algorithm_type in ['qmix', 'r_qmix', 'jax_qmix', 'jax_r_qmix', 'jax_pci_qmix', 'jax_pciqmix']:
         epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)
 
         if epsilon_anneal_time_config is None:
@@ -430,9 +431,45 @@ def create_algorithm(env, config):
                 hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
                 replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
                 train_batch_size=getattr(algorithm_config, 'train_batch_size', 64),
+                qmix_update_epochs=getattr(algorithm_config, 'qmix_update_epochs', None),
                 device=config.training.device,
                 add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
                 global_reward=getattr(algorithm_config, 'global_reward', True),
+                seed=getattr(config.training, 'seed', 42),
+            )
+        elif algorithm_type in ['jax_pci_qmix', 'jax_pciqmix']:
+            algorithm = JAXPCIQMIXAlgorithm(
+                env=env,
+                num_agents=env.num_agents,
+                obs_dim=base_obs_dim,
+                action_dim=env.get_action_dim(),
+                hidden_dim=network_config.hidden_dim,
+                lr=getattr(network_config, 'lr', getattr(network_config, 'lr_actor', 5e-4)),
+                lr_bridge=getattr(network_config, 'lr_bridge', 2e-3),
+                gamma=algorithm_config.gamma,
+                max_grad_norm=algorithm_config.max_grad_norm,
+                target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
+                epsilon_start=getattr(algorithm_config, 'epsilon_start', 1.0),
+                epsilon_finish=getattr(algorithm_config, 'epsilon_finish', 0.05),
+                epsilon_anneal_time=epsilon_anneal_time,
+                double_q=getattr(algorithm_config, 'double_q', True),
+                mixing_embed_dim=getattr(algorithm_config, 'mixing_embed_dim', 32),
+                hypernet_layers=getattr(algorithm_config, 'hypernet_layers', 2),
+                hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
+                replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
+                train_batch_size=getattr(algorithm_config, 'train_batch_size', 64),
+                qmix_update_epochs=getattr(algorithm_config, 'qmix_update_epochs', None),
+                device=config.training.device,
+                add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
+                global_reward=getattr(algorithm_config, 'global_reward', True),
+                causal_lambda=getattr(algorithm_config, 'causal_lambda', 1.0),
+                bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 2),
+                causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 3200,
+                tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
+                stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
+                clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
+                agent_delta_td_coef=getattr(algorithm_config, 'agent_delta_td_coef', 1.0),
+                bridge_prediction_batch_size=getattr(algorithm_config, 'bridge_prediction_batch_size', 2048),
                 seed=getattr(config.training, 'seed', 42),
             )
         else:
@@ -458,7 +495,7 @@ def create_algorithm(env, config):
                 use_episode_buffer=True,
             )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_pci_ippo', 'jax_pci_mappo', 'jax_qmix', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'r_qmix'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_pci_ippo', 'jax_pci_mappo', 'jax_qmix', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', 'r_qmix', or 'jax_pci_qmix'")
     
     return algorithm
 

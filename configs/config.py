@@ -84,6 +84,8 @@ class AlgorithmConfig:
     hypernet_embed: int = 64  # Hypernetwork embedding dimension
     replay_buffer_size: int = 5000  # Maximum number of episodes in replay buffer
     train_batch_size: int = 40  # Number of episodes to sample for training
+    qmix_update_epochs: Optional[int] = None  # None: legacy episode_count-based QMIX updates
+    agent_delta_td_coef: float = 1.0  # PCI-QMIX auxiliary per-agent delta TD coefficient
 
 @dataclass
 class TrainingConfig:
@@ -530,6 +532,10 @@ def parse_args() -> argparse.Namespace:
                         help='Maximum number of episodes in replay buffer')
     parser.add_argument('--train-batch-size', type=int, default=None,
                         help='Number of episodes to sample for training')
+    parser.add_argument('--qmix-update-epochs', type=int, default=None,
+                        help='Fixed number of QMIX replay updates per training iteration')
+    parser.add_argument('--agent-delta-td-coef', type=float, default=None,
+                        help='PCI-QMIX auxiliary per-agent delta TD loss coefficient')
 
     # Logging
     parser.add_argument('--save-dir', type=str, default=None,
@@ -695,6 +701,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.replay_buffer_size = args.replay_buffer_size
     if hasattr(args, 'train_batch_size') and args.train_batch_size is not None:
         config.algorithm.train_batch_size = args.train_batch_size
+    if hasattr(args, 'qmix_update_epochs') and args.qmix_update_epochs is not None:
+        config.algorithm.qmix_update_epochs = None if args.qmix_update_epochs <= 0 else args.qmix_update_epochs
+    if hasattr(args, 'agent_delta_td_coef') and args.agent_delta_td_coef is not None:
+        config.algorithm.agent_delta_td_coef = args.agent_delta_td_coef
 
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb
