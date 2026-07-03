@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import copy
-from collections import defaultdict
 from functools import partial
 from typing import Any, Dict, Optional
 
@@ -12,10 +10,9 @@ import numpy as np
 
 from .common import (
     CausalBridgeNetwork,
-    VERY_NEGATIVE,
+    gather_other_agent_obs,
     global_norm,
     make_dynamic_lr_train_state,
-    stack_metrics,
     tree_to_host,
 )
 from .qmix import JAXQMIXAlgorithm
@@ -240,6 +237,128 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         }
 
     @partial(jax.jit, static_argnums=0)
+    def _weighted_delta_from_batch(
+        self,
+        bridge_params: Dict[str, Any],
+        batch: Dict[str, jnp.ndarray],
+        mac_out: jnp.ndarray,
+    ):
+        batch_size = batch["agent_rewards"].shape[0]
+        time_steps = batch["agent_rewards"].shape[1]
+        flat_batch = batch_size * time_steps
+
+        obs_tm = jnp.swapaxes(batch["agent_obs"][:, :-1], 0, 1)
+        obs_4d = obs_tm.reshape(flat_batch, self.num_agents, self.policy_obs_dim)
+        local_obs = obs_4d.reshape(-1, self.policy_obs_dim)
+        others_obs = gather_other_agent_obs(obs_4d).reshape(
+            -1,
+            (self.num_agents - 1) * self.policy_obs_dim,
+        )
+
+        hidden_tm = jnp.swapaxes(batch["actor_hidden"], 0, 1)
+        hidden_4d = hidden_tm.reshape(flat_batch, self.num_agents, self.actor_state_dim)
+        hidden_others = gather_other_agent_obs(hidden_4d).reshape(-1, self.bridge_hidden_dim)
+
+        prev_actions_tm = jnp.swapaxes(batch["prev_actions"], 0, 1)
+        prev_actions_4d = prev_actions_tm.reshape(flat_batch, self.num_agents, self.action_dim)
+        prev_actions_others = gather_other_agent_obs(prev_actions_4d).reshape(
+            -1,
+            self.bridge_prev_action_dim,
+        )
+        bridge_context = jnp.concatenate([hidden_others, prev_actions_others], axis=-1)
+
+        actions_tm = jnp.swapaxes(batch["actions"][:, :-1], 0, 1)
+        actions_flat = actions_tm.reshape(-1)
+
+        rewards_tm = jnp.swapaxes(batch["agent_rewards"], 0, 1)
+        if self.global_reward:
+            team_rewards = rewards_tm.sum(axis=-1) / self.num_agents
+            reward_targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
+        else:
+            reward_targets = jnp.repeat(
+                rewards_tm[:, :, None, :],
+                self.num_agents,
+                axis=2,
+            ).reshape(-1, self.num_agents)
+
+        avail_tm = jnp.swapaxes(batch["available_actions"][:, :-1], 0, 1)
+        q_tm = jnp.swapaxes(jax.lax.stop_gradient(mac_out[:, :-1]), 0, 1)
+        masked_q = self._masked_q_values(q_tm, avail_tm)
+        probs = jax.nn.softmax(masked_q, axis=-1).reshape(-1, self.action_dim)
+        avail_flat = avail_tm.reshape(-1, self.action_dim)
+
+        all_actions = jnp.arange(self.action_dim, dtype=jnp.int32)
+
+        def predict_one_action(action_id):
+            tiled = jnp.full((local_obs.shape[0],), action_id, dtype=jnp.int32)
+            return self.bridge_state.apply_fn(
+                {"params": bridge_params},
+                local_obs,
+                others_obs,
+                bridge_context,
+                tiled,
+            )
+
+        all_preds = jax.vmap(predict_one_action)(all_actions).transpose(1, 0, 2)
+        factual_mask = 1.0 - jax.nn.one_hot(
+            actions_flat.astype(jnp.int32),
+            self.action_dim,
+            dtype=jnp.float32,
+        )
+        probs_counterfactual = probs * factual_mask * avail_flat
+        renorm = probs_counterfactual.sum(axis=-1, keepdims=True)
+        renormalized_probs = probs_counterfactual / jnp.clip(renorm, a_min=1.0e-10)
+        baseline = jnp.sum(renormalized_probs[..., None] * all_preds, axis=1)
+        no_valid_cf = renorm.squeeze(-1) <= 1.0e-8
+        baseline = jnp.where(no_valid_cf[:, None], jnp.zeros_like(baseline), baseline)
+
+        raw_effects = reward_targets - baseline
+        raw_effects = jnp.where(no_valid_cf[:, None], jnp.zeros_like(raw_effects), raw_effects)
+
+        agent_dones_tm = jnp.swapaxes(batch["agent_dones"], 0, 1)
+        alive = self._alive_from_agent_dones(agent_dones_tm).astype(jnp.float32)
+        if self.global_reward:
+            actor_team_effects = raw_effects.reshape(time_steps, batch_size, self.num_agents, 1)
+            alive_counts = jnp.clip(alive.sum(axis=-1, keepdims=True), a_min=1.0)
+            recipient_weights = alive[..., None, :] / alive_counts[..., None, :]
+            c_matrix = actor_team_effects * recipient_weights
+            c_matrix = c_matrix * alive[..., :, None]
+        else:
+            c_matrix = raw_effects.reshape(time_steps, batch_size, self.num_agents, self.num_agents)
+            c_matrix = c_matrix * alive[..., :, None] * alive[..., None, :]
+
+        delta_time_major = c_matrix.sum(axis=-1)
+        delta_agent = jnp.swapaxes(delta_time_major, 0, 1)
+        if self.clip_delta > 0.0:
+            delta_agent = jnp.where(jnp.abs(delta_agent) < self.clip_delta, 0.0, delta_agent)
+
+        masks = batch["masks"]
+        agent_masks = jnp.broadcast_to(masks[..., None], delta_agent.shape)
+        denom = jnp.maximum(jnp.sum(agent_masks), 1.0)
+        delta_mean = jnp.sum(delta_agent * agent_masks) / denom
+        centered = (delta_agent - delta_mean) * agent_masks
+        delta_std = jnp.sqrt(jnp.sum(jnp.square(centered)) / denom)
+        delta_abs_mean = jnp.sum(jnp.abs(delta_agent) * agent_masks) / denom
+        team_delta = jnp.sum(delta_agent, axis=-1)
+        team_denom = jnp.maximum(jnp.sum(masks), 1.0)
+        delta_team_mean = jnp.sum(team_delta * masks) / team_denom
+
+        alive_flat = alive.reshape(-1).astype(jnp.bool_)
+        alive_count = jnp.sum(alive_flat).astype(jnp.float32)
+        dead_count = jnp.sum(~alive_flat).astype(jnp.float32)
+        metrics = {
+            "delta_mean": delta_mean,
+            "delta_std": delta_std,
+            "delta_abs_mean": delta_abs_mean,
+            "delta_team_mean": delta_team_mean,
+            "no_valid_cf_rate": jnp.mean(no_valid_cf.astype(jnp.float32)),
+            "no_valid_cf_rate_alive": jnp.sum(no_valid_cf & alive_flat) / jnp.maximum(alive_count, 1.0),
+            "no_valid_cf_rate_dead": jnp.sum(no_valid_cf & ~alive_flat) / jnp.maximum(dead_count, 1.0),
+            "dead_agent_fraction": jnp.mean((~alive_flat).astype(jnp.float32)),
+        }
+        return delta_agent.astype(jnp.float32), delta_time_major.astype(jnp.float32), metrics
+
+    @partial(jax.jit, static_argnums=0)
     def _train_step_pci(
         self,
         train_state_value: Any,
@@ -305,29 +424,32 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             denom = jnp.maximum(jnp.sum(masks), 1.0)
             qmix_loss = jnp.sum(jnp.square(masked_td_error)) / denom
 
-            agent_targets = (
-                batch["pci_agent_rewards"]
-                + self.gamma * (1.0 - batch["terminated"][..., None]) * target_max_q
-            )
-            agent_masks = jnp.broadcast_to(batch["masks"][..., None], chosen_q.shape)
-            agent_td_error = chosen_q - jax.lax.stop_gradient(agent_targets)
-            masked_agent_td_error = agent_td_error * agent_masks
-            agent_denom = jnp.maximum(jnp.sum(agent_masks), 1.0)
-            agent_delta_td_loss = jnp.sum(jnp.square(masked_agent_td_error)) / agent_denom
+            if self.agent_delta_td_coef > 0.0:
+                agent_targets = (
+                    batch["pci_agent_rewards"]
+                    + self.gamma * (1.0 - batch["terminated"][..., None]) * target_max_q
+                )
+                agent_masks = jnp.broadcast_to(batch["masks"][..., None], chosen_q.shape)
+                agent_td_error = chosen_q - jax.lax.stop_gradient(agent_targets)
+                masked_agent_td_error = agent_td_error * agent_masks
+                agent_denom = jnp.maximum(jnp.sum(agent_masks), 1.0)
+                agent_delta_td_loss = jnp.sum(jnp.square(masked_agent_td_error)) / agent_denom
+                agent_td_error_abs = jnp.sum(jnp.abs(masked_agent_td_error)) / agent_denom
+            else:
+                agent_delta_td_loss = jnp.array(0.0, dtype=jnp.float32)
+                agent_td_error_abs = jnp.array(0.0, dtype=jnp.float32)
 
-            effective_agent_delta_td_coef = self.agent_delta_td_coef * causal_lambda
-            loss = qmix_loss + effective_agent_delta_td_coef * agent_delta_td_loss
+            loss = qmix_loss + self.agent_delta_td_coef * agent_delta_td_loss
             metrics = {
                 "loss": loss,
                 "qmix_loss": qmix_loss,
                 "agent_delta_td_loss": agent_delta_td_loss,
                 "causal_lambda": causal_lambda,
-                "effective_agent_delta_td_coef": effective_agent_delta_td_coef,
                 "env_reward_mean": jnp.sum(env_rewards * masks) / denom,
                 "delta_team_mean": jnp.sum(delta_rewards * masks) / denom,
                 "shaped_reward_mean": jnp.sum(shaped_rewards * masks) / denom,
                 "td_error_abs": jnp.sum(jnp.abs(masked_td_error)) / denom,
-                "agent_td_error_abs": jnp.sum(jnp.abs(masked_agent_td_error)) / agent_denom,
+                "agent_td_error_abs": agent_td_error_abs,
                 "q_taken_mean": jnp.sum(chosen_tot * masks) / (denom * self.num_agents),
                 "target_mean": jnp.sum(targets * masks) / (denom * self.num_agents),
             }
@@ -337,6 +459,140 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         new_train_state = train_state_value.apply_gradients(grads=grads)
         metrics["grad_norm"] = global_norm(grads)
         return new_train_state, metrics
+
+    @partial(jax.jit, static_argnums=0)
+    def _train_many_pci_steps(
+        self,
+        train_state_value: Any,
+        target_params: Dict[str, Any],
+        bridge_params: Dict[str, Any],
+        training_steps: jnp.ndarray,
+        batches: Dict[str, jnp.ndarray],
+    ):
+        def train_one(state, tgt_params, bridge_params_value, batch):
+            def loss_fn(params):
+                mac_out = self._forward_agent_q_values(
+                    params["agent"],
+                    batch["agent_obs"],
+                    batch["actions"],
+                )
+                delta_agent, _, delta_metrics = self._weighted_delta_from_batch(
+                    bridge_params_value,
+                    batch,
+                    mac_out,
+                )
+                chosen_q = jnp.take_along_axis(
+                    mac_out[:, :-1],
+                    batch["actions"][:, :-1, :, None],
+                    axis=-1,
+                ).squeeze(-1)
+
+                target_mac_out = self._forward_agent_q_values(
+                    tgt_params["agent"],
+                    batch["agent_obs"],
+                    batch["actions"],
+                )
+                target_future = self._masked_q_values(
+                    target_mac_out[:, 1:],
+                    batch["available_actions"][:, 1:],
+                )
+
+                if self.double_q:
+                    online_future = self._masked_q_values(
+                        mac_out[:, 1:],
+                        batch["available_actions"][:, 1:],
+                    )
+                    max_actions = jnp.argmax(online_future, axis=-1)
+                    target_max_q = jnp.take_along_axis(
+                        target_future,
+                        max_actions[..., None],
+                        axis=-1,
+                    ).squeeze(-1)
+                else:
+                    target_max_q = jnp.max(target_future, axis=-1)
+
+                chosen_tot = self.mixer_model.apply(
+                    {"params": params["mixer"]},
+                    chosen_q,
+                    batch["joint_obs"][:, :-1],
+                )
+                target_tot = self.mixer_model.apply(
+                    {"params": tgt_params["mixer"]},
+                    target_max_q,
+                    batch["joint_obs"][:, 1:],
+                )
+
+                env_rewards = batch["rewards"][..., None]
+                delta_rewards = jnp.sum(delta_agent, axis=-1)[..., None]
+                causal_lambda = jnp.asarray(self.get_current_causal_lambda(), dtype=jnp.float32)
+                shaped_rewards = env_rewards + causal_lambda * delta_rewards
+                terminated = batch["terminated"][..., None]
+                masks = batch["masks"][..., None]
+                targets = shaped_rewards + self.gamma * (1.0 - terminated) * target_tot
+                td_error = chosen_tot - jax.lax.stop_gradient(targets)
+                masked_td_error = td_error * masks
+                denom = jnp.maximum(jnp.sum(masks), 1.0)
+                qmix_loss = jnp.sum(jnp.square(masked_td_error)) / denom
+
+                effective_agent_delta_td_coef = self.agent_delta_td_coef * causal_lambda
+                if self.agent_delta_td_coef > 0.0:
+                    agent_targets = (
+                        delta_agent
+                        + self.gamma * (1.0 - batch["terminated"][..., None]) * target_max_q
+                    )
+                    agent_masks = jnp.broadcast_to(batch["masks"][..., None], chosen_q.shape)
+                    agent_td_error = chosen_q - jax.lax.stop_gradient(agent_targets)
+                    masked_agent_td_error = agent_td_error * agent_masks
+                    agent_denom = jnp.maximum(jnp.sum(agent_masks), 1.0)
+                    agent_delta_td_loss = jnp.sum(jnp.square(masked_agent_td_error)) / agent_denom
+                    agent_td_error_abs = jnp.sum(jnp.abs(masked_agent_td_error)) / agent_denom
+                else:
+                    agent_delta_td_loss = jnp.array(0.0, dtype=jnp.float32)
+                    agent_td_error_abs = jnp.array(0.0, dtype=jnp.float32)
+
+                loss = qmix_loss + effective_agent_delta_td_coef * agent_delta_td_loss
+                metrics = {
+                    "loss": loss,
+                    "qmix_loss": qmix_loss,
+                    "agent_delta_td_loss": agent_delta_td_loss,
+                    "causal_lambda": causal_lambda,
+                    "effective_agent_delta_td_coef": effective_agent_delta_td_coef,
+                    "env_reward_mean": jnp.sum(env_rewards * masks) / denom,
+                    "delta_team_mean": jnp.sum(delta_rewards * masks) / denom,
+                    "shaped_reward_mean": jnp.sum(shaped_rewards * masks) / denom,
+                    "td_error_abs": jnp.sum(jnp.abs(masked_td_error)) / denom,
+                    "agent_td_error_abs": agent_td_error_abs,
+                    "q_taken_mean": jnp.sum(chosen_tot * masks) / (denom * self.num_agents),
+                    "target_mean": jnp.sum(targets * masks) / (denom * self.num_agents),
+                }
+                metrics.update(delta_metrics)
+                return loss, metrics
+
+            grads, metrics = jax.grad(loss_fn, has_aux=True)(state.params)
+            new_state = state.apply_gradients(grads=grads)
+            metrics["grad_norm"] = global_norm(grads)
+            return new_state, metrics
+
+        def scan_fn(carry, batch):
+            state, tgt_params, step_count = carry
+            state, metrics = train_one(state, tgt_params, bridge_params, batch)
+            step_count = step_count + jnp.asarray(1, dtype=jnp.int32)
+            should_update_target = (step_count % self.target_update_interval) == 0
+            tgt_params = jax.lax.cond(
+                should_update_target,
+                lambda _: state.params,
+                lambda _: tgt_params,
+                operand=None,
+            )
+            return (state, tgt_params, step_count), metrics
+
+        (new_state, new_target_params, new_training_steps), metrics_seq = jax.lax.scan(
+            scan_fn,
+            (train_state_value, target_params, training_steps),
+            batches,
+        )
+        metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), metrics_seq)
+        return new_state, new_target_params, new_training_steps, metrics
 
     def update(self, **kwargs: Any) -> Dict[str, float]:
         n_available = len(self._completed_episodes)
@@ -363,53 +619,30 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             else max(1, num_episodes_collected)
         )
 
-        bridge_indices = self._rng_np.choice(n_available, self.train_batch_size, replace=False)
-        bridge_sampled = [self._completed_episodes[int(idx)] for idx in bridge_indices]
-        bridge_batch = self._pad_and_stack(bridge_sampled)
+        bridge_batch = self._sample_batch(n_available)
+        batches = self._sample_update_batches(n_available, num_updates)
         bridge_rollout = self._batch_to_bridge_rollout(bridge_batch)
         bridge_metrics = self.update_causal_networks(bridge_rollout)
 
-        accumulated = defaultdict(float)
-        for _ in range(num_updates):
-            indices = self._rng_np.choice(n_available, self.train_batch_size, replace=False)
-            sampled = [self._completed_episodes[int(idx)] for idx in indices]
-            batch = self._pad_and_stack(sampled)
-
-            mac_out = self._forward_agent_q_values(
-                self.train_state.params["agent"],
-                batch["agent_obs"],
-                batch["actions"],
-            )
-            delta_rollout = self._batch_to_bridge_rollout(batch, mac_out=mac_out)
-            c_matrix, pci_metrics = self.compute_causal_rewards(delta_rollout, baseline_type="weighted")
-            delta_time_major = c_matrix.sum(axis=-1)
-            delta_agent = jnp.swapaxes(delta_time_major, 0, 1)
-            if self.clip_delta > 0.0:
-                delta_agent = jnp.where(jnp.abs(delta_agent) < self.clip_delta, 0.0, delta_agent)
-
-            train_batch = dict(batch)
-            train_batch["pci_agent_rewards"] = delta_agent.astype(jnp.float32)
-            train_batch["pci_rewards"] = jnp.sum(delta_agent, axis=-1).astype(jnp.float32)
-            self.train_state, train_metrics = self._train_step_pci(
+        if self.bridge_state is None:
+            self.train_state, self.target_params, training_steps, metrics = self._train_many_steps(
                 self.train_state,
                 self.target_params,
-                train_batch,
+                jnp.asarray(self.training_steps, dtype=jnp.int32),
+                batches,
             )
-
-            metrics_host = {}
-            metrics_host.update({key: float(value) for key, value in tree_to_host(train_metrics).items()})
-            metrics_host.update(pci_metrics)
-            metrics_host.update(self._masked_delta_metrics(delta_agent, batch["masks"]))
-            metrics_host.update(self._categorized_action_delta_metrics(delta_rollout, delta_time_major))
-            for key, value in metrics_host.items():
-                accumulated[key] += float(value)
-
-            self.training_steps += 1
-            if self.training_steps % self.target_update_interval == 0:
-                self.target_params = copy.deepcopy(self.train_state.params)
+        else:
+            self.train_state, self.target_params, training_steps, metrics = self._train_many_pci_steps(
+                self.train_state,
+                self.target_params,
+                self.bridge_state.params,
+                jnp.asarray(self.training_steps, dtype=jnp.int32),
+                batches,
+            )
+        self.training_steps = int(training_steps)
 
         self.current_iteration += 1
-        averaged = {key: value / num_updates for key, value in accumulated.items()}
+        averaged = {key: float(value) for key, value in tree_to_host(metrics).items()}
         averaged.update(bridge_metrics)
         averaged.update(metadata)
         averaged["num_updates"] = float(num_updates)

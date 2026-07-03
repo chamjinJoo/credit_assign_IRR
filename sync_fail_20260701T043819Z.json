@@ -1,0 +1,10 @@
+{
+  "time": "20260701T043819Z",
+  "job_id": "3283",
+  "root": "/home/chamjin/pci_marl",
+  "mode": "detached",
+  "sync_status": 1,
+  "message": "sync_from_head failed",
+  "sync_stdout": "",
+  "sync_stderr": "error: overlapping sync root is already locked.\ncurrent root: /home/chamjin/pci_marl\nlocked root:  /home/chamjin/pci_marl\nlock file:    /tmp/cluster_sync/chamjin/locks/e4f793c0a4cc660a86b07ab09be2862578e508c16ab16b40b048734c85df341b.local.lock/info\n\nAnother sync is already running for a parent or child directory.\nUse one consistent project root, or wait for the existing sync to finish.\nIf the lock is stale, run from the desired project root: clean_lockfiles -f\n"
+}

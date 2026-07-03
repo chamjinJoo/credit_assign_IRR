@@ -10,14 +10,14 @@ model="jax-pci-qmix"
 
 # env settings
 map_name="3m"
-allowed_target_windows=(2 3)
+allowed_target_windows=(2)
 
 # QMIX settings
-lr=0.0005
+lr=1.0e-3
 qmix_update_epochs=8
 
 # Outcome bridge settings
-lr_bridge=0.002
+lr_bridge=2.0e-3
 causal_lambda=1.0
 bridge_epoch=2
 causal_mini_batch_size=3200
@@ -28,7 +28,7 @@ agent_delta_td_coef=1.0
 seeds=(42 1 2 31 32)
 device="cuda"
 n_rollout_threads=16
-run_name_postfix=""
+run_name_postfix="lr1e-3"
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 

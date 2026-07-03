@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from collections import defaultdict
 from functools import partial
 from typing import Any, Dict, List, Optional
 
@@ -153,6 +152,7 @@ class JAXQMIXAlgorithm:
         self._current_episodes: List[List[Dict[str, np.ndarray]]] = []
         self._completed_episodes: List[List[Dict[str, np.ndarray]]] = []
         self._rng_np = np.random.default_rng(int(seed))
+        self._episode_limit = self._infer_episode_limit()
 
         base_rng = jax.random.PRNGKey(int(seed))
         init_rng, agent_key, mixer_key = jax.random.split(base_rng, 3)
@@ -191,6 +191,25 @@ class JAXQMIXAlgorithm:
             tx=tx,
         )
         self.target_params = copy.deepcopy(self.train_state.params)
+
+    def _infer_episode_limit(self) -> Optional[int]:
+        for attr in ("max_steps", "episode_limit"):
+            value = getattr(self.env, attr, None)
+            if value is not None:
+                try:
+                    return max(1, int(value))
+                except (TypeError, ValueError):
+                    pass
+        env_info = getattr(self.env, "get_env_info", None)
+        if callable(env_info):
+            try:
+                info = env_info()
+                value = info.get("episode_limit")
+                if value is not None:
+                    return max(1, int(value))
+            except Exception:
+                return None
+        return None
 
     def _augment_obs(self, obs: jnp.ndarray) -> jnp.ndarray:
         return add_agent_id_features(obs) if self.add_agent_id else obs
@@ -457,12 +476,95 @@ class JAXQMIXAlgorithm:
                 }
                 self._current_episodes[env_idx].append(transition)
                 if transition["done"]:
-                    self._completed_episodes.append(self._current_episodes[env_idx])
+                    self._completed_episodes.append(self._pack_episode(self._current_episodes[env_idx]))
                     self._current_episodes[env_idx] = []
                     if len(self._completed_episodes) > self.replay_buffer_size:
                         self._completed_episodes.pop(0)
 
-    def _pad_and_stack(self, episodes: List[List[Dict[str, np.ndarray]]]) -> Dict[str, jnp.ndarray]:
+    def _pack_episode(self, episode: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
+        episode_len = len(episode)
+        max_t = self._episode_limit or episode_len
+        max_t = max(max_t, episode_len)
+        tp1 = max_t + 1
+
+        agent_obs = np.zeros((tp1, self.num_agents, self.policy_obs_dim), dtype=np.float32)
+        joint_obs = np.zeros((tp1, self.state_dim), dtype=np.float32)
+        actions = np.zeros((tp1, self.num_agents), dtype=np.int32)
+        rewards = np.zeros((max_t,), dtype=np.float32)
+        agent_rewards = np.zeros((max_t, self.num_agents), dtype=np.float32)
+        terminated = np.zeros((max_t,), dtype=np.float32)
+        masks = np.zeros((max_t,), dtype=np.float32)
+        actor_hidden = np.zeros((max_t, self.num_agents, self.hidden_dim), dtype=np.float32)
+        prev_actions = np.zeros((max_t, self.num_agents, self.action_dim), dtype=np.float32)
+        agent_dones = np.zeros((max_t, self.num_agents), dtype=np.float32)
+        available_actions = np.ones((tp1, self.num_agents, self.action_dim), dtype=np.float32)
+
+        eye_actions = np.eye(self.action_dim, dtype=np.float32)
+        for t, transition in enumerate(episode):
+            obs_t = transition["obs"].astype(np.float32)
+            agent_obs[t] = obs_t
+            joint_obs[t] = obs_t.reshape(-1)
+            actions[t] = transition["actions"].astype(np.int32)
+            available_actions[t] = transition["avail_actions"].astype(np.float32)
+            actor_hidden[t] = transition.get(
+                "actor_hidden",
+                np.zeros((self.num_agents, self.hidden_dim), dtype=np.float32),
+            ).astype(np.float32)
+            if "prev_actions" in transition:
+                prev_actions[t] = transition["prev_actions"].astype(np.float32)
+            elif t > 0:
+                prev_actions[t] = eye_actions[actions[t - 1]]
+            agent_dones[t] = transition.get(
+                "agent_dones",
+                np.zeros((self.num_agents,), dtype=np.float32),
+            ).astype(np.float32)
+            reward_t = transition["rewards"].astype(np.float32)
+            agent_rewards[t] = reward_t
+            rewards[t] = float(np.mean(reward_t)) if self.global_reward else float(np.sum(reward_t))
+            terminated[t] = 1.0 if transition["done"] else 0.0
+            masks[t] = 1.0
+
+            if t == episode_len - 1:
+                next_obs = transition["next_obs"].astype(np.float32)
+                agent_obs[t + 1] = next_obs
+                joint_obs[t + 1] = next_obs.reshape(-1)
+                available_actions[t + 1] = transition["next_avail_actions"].astype(np.float32)
+
+        if episode_len > 1:
+            masks[1:episode_len] *= 1.0 - terminated[: episode_len - 1]
+
+        return {
+            "agent_obs": agent_obs,
+            "joint_obs": joint_obs,
+            "actions": actions,
+            "rewards": rewards,
+            "agent_rewards": agent_rewards,
+            "terminated": terminated,
+            "masks": masks,
+            "actor_hidden": actor_hidden,
+            "prev_actions": prev_actions,
+            "agent_dones": agent_dones,
+            "available_actions": available_actions,
+            "length": np.asarray(episode_len, dtype=np.int32),
+        }
+
+    def _pad_and_stack(self, episodes: List[Any]) -> Dict[str, jnp.ndarray]:
+        if episodes and isinstance(episodes[0], dict):
+            keys = (
+                "agent_obs",
+                "joint_obs",
+                "actions",
+                "rewards",
+                "agent_rewards",
+                "terminated",
+                "masks",
+                "actor_hidden",
+                "prev_actions",
+                "agent_dones",
+                "available_actions",
+            )
+            return {key: jnp.asarray(np.stack([episode[key] for episode in episodes], axis=0)) for key in keys}
+
         batch_size = len(episodes)
         max_t = max(len(ep) for ep in episodes)
         tp1 = max_t + 1
@@ -548,6 +650,15 @@ class JAXQMIXAlgorithm:
             "agent_dones": jnp.asarray(agent_dones),
             "available_actions": jnp.asarray(available_actions),
         }
+
+    def _sample_batch(self, n_available: int) -> Dict[str, jnp.ndarray]:
+        indices = self._rng_np.choice(n_available, self.train_batch_size, replace=False)
+        sampled = [self._completed_episodes[int(idx)] for idx in indices]
+        return self._pad_and_stack(sampled)
+
+    def _sample_update_batches(self, n_available: int, num_updates: int) -> Dict[str, jnp.ndarray]:
+        batches = [self._sample_batch(n_available) for _ in range(num_updates)]
+        return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *batches)
 
     @partial(jax.jit, static_argnums=0)
     def _forward_agent_q_values(
@@ -664,6 +775,35 @@ class JAXQMIXAlgorithm:
         metrics["grad_norm"] = global_norm(grads)
         return new_train_state, metrics
 
+    @partial(jax.jit, static_argnums=0)
+    def _train_many_steps(
+        self,
+        train_state_value: train_state.TrainState,
+        target_params: Dict[str, Any],
+        training_steps: jnp.ndarray,
+        batches: Dict[str, jnp.ndarray],
+    ):
+        def scan_fn(carry, batch):
+            state, tgt_params, step_count = carry
+            state, metrics = self._train_step(state, tgt_params, batch)
+            step_count = step_count + jnp.asarray(1, dtype=jnp.int32)
+            should_update_target = (step_count % self.target_update_interval) == 0
+            tgt_params = jax.lax.cond(
+                should_update_target,
+                lambda _: state.params,
+                lambda _: tgt_params,
+                operand=None,
+            )
+            return (state, tgt_params, step_count), metrics
+
+        (new_state, new_target_params, new_training_steps), metrics_seq = jax.lax.scan(
+            scan_fn,
+            (train_state_value, target_params, training_steps),
+            batches,
+        )
+        metrics = jax.tree_util.tree_map(lambda x: jnp.mean(x, axis=0), metrics_seq)
+        return new_state, new_target_params, new_training_steps, metrics
+
     def update(self, **kwargs: Any) -> Dict[str, float]:
         n_available = len(self._completed_episodes)
         num_episodes_collected = int(kwargs.get("num_episodes_collected", 1))
@@ -682,25 +822,15 @@ class JAXQMIXAlgorithm:
             if self.qmix_update_epochs is not None
             else max(1, num_episodes_collected)
         )
-        accumulated = defaultdict(float)
-        for _ in range(num_updates):
-            indices = self._rng_np.choice(n_available, self.train_batch_size, replace=False)
-            sampled = [self._completed_episodes[int(idx)] for idx in indices]
-            batch = self._pad_and_stack(sampled)
-            self.train_state, metrics = self._train_step(
-                self.train_state,
-                self.target_params,
-                batch,
-            )
-            metrics_host = tree_to_host(metrics)
-            for key, value in metrics_host.items():
-                accumulated[key] += float(value)
-
-            self.training_steps += 1
-            if self.training_steps % self.target_update_interval == 0:
-                self.target_params = copy.deepcopy(self.train_state.params)
-
-        averaged = {key: value / num_updates for key, value in accumulated.items()}
+        batches = self._sample_update_batches(n_available, num_updates)
+        self.train_state, self.target_params, training_steps, metrics = self._train_many_steps(
+            self.train_state,
+            self.target_params,
+            jnp.asarray(self.training_steps, dtype=jnp.int32),
+            batches,
+        )
+        self.training_steps = int(training_steps)
+        averaged = {key: float(value) for key, value in tree_to_host(metrics).items()}
         averaged.update(metadata)
         averaged["num_updates"] = float(num_updates)
         return averaged

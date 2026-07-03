@@ -13,14 +13,14 @@ map_name="3m"
 allowed_target_windows=(2 3)
 
 # QMIX settings
-lr=0.0005
+lr=1.0e-3
 qmix_update_epochs=8
 
 # training settings
 seeds=(42 1 2 31 32)
 device="cuda"
 n_rollout_threads=8
-run_name_postfix=""
+run_name_postfix="lr1e-3"
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
