@@ -19,7 +19,8 @@ logs/
 __pycache__/
 .agents/
 
-# figures
+# figures\
+figures/
 *.png
 *.jpg
 *.pdf
