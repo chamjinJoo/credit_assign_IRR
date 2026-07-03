@@ -15,6 +15,7 @@ from .common import (
     make_dynamic_lr_train_state,
     tree_to_host,
 )
+from .preprocessing import masked_delta_metrics, qmix_batch_to_bridge_rollout
 from .qmix import JAXQMIXAlgorithm
 from .r_pci import JAXRPCIAlgorithm
 
@@ -64,6 +65,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         replay_buffer_size: int = 5000,
         train_batch_size: int = 32,
         qmix_update_epochs: Optional[int] = None,
+        learning_starts: int = 0,
         device: str = "cpu",
         add_agent_id: bool = True,
         global_reward: bool = True,
@@ -98,6 +100,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             replay_buffer_size=replay_buffer_size,
             train_batch_size=train_batch_size,
             qmix_update_epochs=qmix_update_epochs,
+            learning_starts=learning_starts,
             device=device,
             add_agent_id=add_agent_id,
             global_reward=global_reward,
@@ -186,55 +189,19 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         batch: Dict[str, jnp.ndarray],
         mac_out: Optional[jnp.ndarray] = None,
     ) -> Dict[str, jnp.ndarray]:
-        obs = jnp.swapaxes(batch["agent_obs"][:, :-1], 0, 1)
-        actions = jnp.swapaxes(batch["actions"][:, :-1], 0, 1)
-        rewards = jnp.swapaxes(batch["agent_rewards"], 0, 1)
-        masks = jnp.swapaxes(batch["masks"], 0, 1)
-        dones = jnp.swapaxes(batch["terminated"], 0, 1)
-        avail_actions = jnp.swapaxes(batch["available_actions"][:, :-1], 0, 1)
-        actor_hidden = jnp.swapaxes(batch["actor_hidden"], 0, 1)
-        prev_actions = jnp.swapaxes(batch["prev_actions"], 0, 1)
-        agent_dones = jnp.swapaxes(batch["agent_dones"], 0, 1)
-
-        if mac_out is None:
-            probs = jnp.ones_like(avail_actions) / float(self.action_dim)
-        else:
-            q_values = jnp.swapaxes(mac_out[:, :-1], 0, 1)
-            masked_q = self._masked_q_values(q_values, avail_actions)
-            probs = jax.nn.softmax(masked_q, axis=-1)
-
-        return {
-            "obs": obs.astype(jnp.float32),
-            "avail_actions": avail_actions.astype(jnp.float32),
-            "actor_hidden": actor_hidden.astype(jnp.float32),
-            "prev_actions": prev_actions.astype(jnp.float32),
-            "actions": actions.astype(jnp.int32),
-            "rewards": rewards.astype(jnp.float32),
-            "dones": dones.astype(jnp.float32),
-            "masks": masks.astype(jnp.float32),
-            "agent_dones": agent_dones.astype(jnp.float32),
-            "probs": probs.astype(jnp.float32),
-        }
+        return qmix_batch_to_bridge_rollout(
+            batch,
+            action_dim=self.action_dim,
+            masked_q_values=self._masked_q_values,
+            mac_out=mac_out,
+        )
 
     def _masked_delta_metrics(
         self,
         delta_agent: jnp.ndarray,
         masks: jnp.ndarray,
     ) -> Dict[str, float]:
-        agent_masks = jnp.broadcast_to(masks[..., None], delta_agent.shape)
-        denom = jnp.maximum(jnp.sum(agent_masks), 1.0)
-        mean = jnp.sum(delta_agent * agent_masks) / denom
-        centered = (delta_agent - mean) * agent_masks
-        std = jnp.sqrt(jnp.sum(jnp.square(centered)) / denom)
-        abs_mean = jnp.sum(jnp.abs(delta_agent) * agent_masks) / denom
-        team_delta = jnp.sum(delta_agent, axis=-1)
-        team_mean = jnp.sum(team_delta * masks) / jnp.maximum(jnp.sum(masks), 1.0)
-        return {
-            "delta_mean": float(mean),
-            "delta_std": float(std),
-            "delta_abs_mean": float(abs_mean),
-            "delta_team_mean": float(team_mean),
-        }
+        return masked_delta_metrics(delta_agent, masks)
 
     @partial(jax.jit, static_argnums=0)
     def _weighted_delta_from_batch(
@@ -603,6 +570,8 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             "replay_buffer_episodes": float(n_available),
             "qmix_update_epochs": float(self.qmix_update_epochs or 0),
             "num_episodes_collected": float(num_episodes_collected),
+            "learning_starts": float(self.learning_starts),
+            "learning_started": float(self.total_env_steps > self.learning_starts),
         }
         if n_available < self.train_batch_size:
             return metadata
@@ -620,9 +589,17 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         )
 
         bridge_batch = self._sample_batch(n_available)
-        batches = self._sample_update_batches(n_available, num_updates)
         bridge_rollout = self._batch_to_bridge_rollout(bridge_batch)
         bridge_metrics = self.update_causal_networks(bridge_rollout)
+
+        if self.total_env_steps <= self.learning_starts:
+            self.current_iteration += 1
+            skipped = dict(bridge_metrics)
+            skipped.update(metadata)
+            skipped["num_updates"] = 0.0
+            return skipped
+
+        batches = self._sample_update_batches(n_available, num_updates)
 
         if self.bridge_state is None:
             self.train_state, self.target_params, training_steps, metrics = self._train_many_steps(

@@ -20,6 +20,13 @@ from .common import (
     make_gru_cell,
     tree_to_host,
 )
+from .preprocessing import (
+    qmix_pack_episode_arrays,
+    qmix_pack_rollout_slice,
+    qmix_pack_transition_episode,
+    qmix_stack_episodes,
+    qmix_transition_from_rollout,
+)
 
 
 class JAXQMIXRNNAgent(nn.Module):
@@ -114,6 +121,7 @@ class JAXQMIXAlgorithm:
         replay_buffer_size: int = 5000,
         train_batch_size: int = 32,
         qmix_update_epochs: Optional[int] = None,
+        learning_starts: int = 0,
         device: str = "cpu",
         add_agent_id: bool = True,
         global_reward: bool = True,
@@ -144,13 +152,14 @@ class JAXQMIXAlgorithm:
         self.qmix_update_epochs = (
             None if qmix_update_epochs is None else max(1, int(qmix_update_epochs))
         )
+        self.learning_starts = max(0, int(learning_starts))
 
         self.training_steps = 0
         self.total_env_steps = 0
         self.latest_rollout: Optional[Dict[str, jnp.ndarray]] = None
         self._rollout_fns: Dict[int, Any] = {}
         self._current_episodes: List[List[Dict[str, np.ndarray]]] = []
-        self._completed_episodes: List[List[Dict[str, np.ndarray]]] = []
+        self._completed_episodes: List[Dict[str, np.ndarray]] = []
         self._rng_np = np.random.default_rng(int(seed))
         self._episode_limit = self._infer_episode_limit()
 
@@ -443,6 +452,64 @@ class JAXQMIXAlgorithm:
         while len(self._current_episodes) < n_envs:
             self._current_episodes.append([])
 
+    def _append_completed_episode(self, episode: Dict[str, np.ndarray]):
+        self._completed_episodes.append(episode)
+        if len(self._completed_episodes) > self.replay_buffer_size:
+            self._completed_episodes.pop(0)
+
+    def _transition_from_rollout(
+        self,
+        rollout_np: Dict[str, np.ndarray],
+        actor_hidden: np.ndarray,
+        prev_actions: np.ndarray,
+        agent_dones: np.ndarray,
+        env_idx: int,
+        t: int,
+    ) -> Dict[str, np.ndarray]:
+        return qmix_transition_from_rollout(
+            rollout_np,
+            actor_hidden,
+            prev_actions,
+            agent_dones,
+            env_idx,
+            t,
+        )
+
+    def _pack_rollout_slice(
+        self,
+        rollout_np: Dict[str, np.ndarray],
+        actor_hidden: np.ndarray,
+        prev_actions: np.ndarray,
+        agent_dones: np.ndarray,
+        env_idx: int,
+        start: int,
+        end: int,
+    ) -> Dict[str, np.ndarray]:
+        return qmix_pack_rollout_slice(
+            rollout_np,
+            actor_hidden,
+            prev_actions,
+            agent_dones,
+            env_idx,
+            start,
+            end,
+            **self._qmix_pack_kwargs(),
+        )
+
+    def _qmix_pack_kwargs(self) -> Dict[str, Any]:
+        return {
+            "episode_limit": self._episode_limit,
+            "num_agents": self.num_agents,
+            "policy_obs_dim": self.policy_obs_dim,
+            "state_dim": self.state_dim,
+            "hidden_dim": self.hidden_dim,
+            "action_dim": self.action_dim,
+            "global_reward": self.global_reward,
+        }
+
+    def _pack_episode_arrays(self, episode: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
+        return qmix_pack_episode_arrays(episode, **self._qmix_pack_kwargs())
+
     def _ingest_rollout_into_replay(self, rollout: Dict[str, jnp.ndarray]):
         rollout_np = {
             key: np.asarray(jax.device_get(value))
@@ -450,206 +517,80 @@ class JAXQMIXAlgorithm:
         }
         time_steps, n_envs = rollout_np["actions"].shape[:2]
         self._ensure_episode_slots(n_envs)
+        actor_hidden = rollout_np.get(
+            "actor_hidden",
+            np.zeros((time_steps, n_envs, self.num_agents, self.hidden_dim), dtype=np.float32),
+        )
+        prev_actions = rollout_np.get(
+            "prev_actions",
+            np.zeros((time_steps, n_envs, self.num_agents, self.action_dim), dtype=np.float32),
+        )
+        agent_dones = rollout_np.get(
+            "agent_dones",
+            np.zeros((time_steps, n_envs, self.num_agents), dtype=np.float32),
+        )
 
         for env_idx in range(n_envs):
-            for t in range(time_steps):
-                transition = {
-                    "obs": rollout_np["obs"][t, env_idx],
-                    "avail_actions": rollout_np["avail_actions"][t, env_idx],
-                    "actor_hidden": rollout_np.get("actor_hidden", np.zeros(
-                        (time_steps, n_envs, self.num_agents, self.hidden_dim),
-                        dtype=np.float32,
-                    ))[t, env_idx],
-                    "prev_actions": rollout_np.get("prev_actions", np.zeros(
-                        (time_steps, n_envs, self.num_agents, self.action_dim),
-                        dtype=np.float32,
-                    ))[t, env_idx],
-                    "actions": rollout_np["actions"][t, env_idx],
-                    "rewards": rollout_np["rewards"][t, env_idx],
-                    "done": bool(rollout_np["dones"][t, env_idx] > 0.5),
-                    "agent_dones": rollout_np.get("agent_dones", np.zeros(
-                        (time_steps, n_envs, self.num_agents),
-                        dtype=np.float32,
-                    ))[t, env_idx],
-                    "next_obs": rollout_np["next_obs"][t, env_idx],
-                    "next_avail_actions": rollout_np["next_avail_actions"][t, env_idx],
-                }
-                self._current_episodes[env_idx].append(transition)
-                if transition["done"]:
-                    self._completed_episodes.append(self._pack_episode(self._current_episodes[env_idx]))
+            start = 0
+            done_indices = np.nonzero(rollout_np["dones"][:, env_idx] > 0.5)[0]
+            for done_t_raw in done_indices:
+                done_t = int(done_t_raw)
+                current_episode = self._current_episodes[env_idx]
+                if current_episode:
+                    for t in range(start, done_t + 1):
+                        current_episode.append(
+                            self._transition_from_rollout(
+                                rollout_np,
+                                actor_hidden,
+                                prev_actions,
+                                agent_dones,
+                                env_idx,
+                                t,
+                            )
+                        )
+                    self._append_completed_episode(self._pack_episode(current_episode))
                     self._current_episodes[env_idx] = []
-                    if len(self._completed_episodes) > self.replay_buffer_size:
-                        self._completed_episodes.pop(0)
+                else:
+                    self._append_completed_episode(
+                        self._pack_rollout_slice(
+                            rollout_np,
+                            actor_hidden,
+                            prev_actions,
+                            agent_dones,
+                            env_idx,
+                            start,
+                            done_t + 1,
+                        )
+                    )
+                start = done_t + 1
+
+            if start < time_steps:
+                current_episode = self._current_episodes[env_idx]
+                for t in range(start, time_steps):
+                    current_episode.append(
+                        self._transition_from_rollout(
+                            rollout_np,
+                            actor_hidden,
+                            prev_actions,
+                            agent_dones,
+                            env_idx,
+                            t,
+                        )
+                    )
 
     def _pack_episode(self, episode: List[Dict[str, np.ndarray]]) -> Dict[str, np.ndarray]:
-        episode_len = len(episode)
-        max_t = self._episode_limit or episode_len
-        max_t = max(max_t, episode_len)
-        tp1 = max_t + 1
-
-        agent_obs = np.zeros((tp1, self.num_agents, self.policy_obs_dim), dtype=np.float32)
-        joint_obs = np.zeros((tp1, self.state_dim), dtype=np.float32)
-        actions = np.zeros((tp1, self.num_agents), dtype=np.int32)
-        rewards = np.zeros((max_t,), dtype=np.float32)
-        agent_rewards = np.zeros((max_t, self.num_agents), dtype=np.float32)
-        terminated = np.zeros((max_t,), dtype=np.float32)
-        masks = np.zeros((max_t,), dtype=np.float32)
-        actor_hidden = np.zeros((max_t, self.num_agents, self.hidden_dim), dtype=np.float32)
-        prev_actions = np.zeros((max_t, self.num_agents, self.action_dim), dtype=np.float32)
-        agent_dones = np.zeros((max_t, self.num_agents), dtype=np.float32)
-        available_actions = np.ones((tp1, self.num_agents, self.action_dim), dtype=np.float32)
-
-        eye_actions = np.eye(self.action_dim, dtype=np.float32)
-        for t, transition in enumerate(episode):
-            obs_t = transition["obs"].astype(np.float32)
-            agent_obs[t] = obs_t
-            joint_obs[t] = obs_t.reshape(-1)
-            actions[t] = transition["actions"].astype(np.int32)
-            available_actions[t] = transition["avail_actions"].astype(np.float32)
-            actor_hidden[t] = transition.get(
-                "actor_hidden",
-                np.zeros((self.num_agents, self.hidden_dim), dtype=np.float32),
-            ).astype(np.float32)
-            if "prev_actions" in transition:
-                prev_actions[t] = transition["prev_actions"].astype(np.float32)
-            elif t > 0:
-                prev_actions[t] = eye_actions[actions[t - 1]]
-            agent_dones[t] = transition.get(
-                "agent_dones",
-                np.zeros((self.num_agents,), dtype=np.float32),
-            ).astype(np.float32)
-            reward_t = transition["rewards"].astype(np.float32)
-            agent_rewards[t] = reward_t
-            rewards[t] = float(np.mean(reward_t)) if self.global_reward else float(np.sum(reward_t))
-            terminated[t] = 1.0 if transition["done"] else 0.0
-            masks[t] = 1.0
-
-            if t == episode_len - 1:
-                next_obs = transition["next_obs"].astype(np.float32)
-                agent_obs[t + 1] = next_obs
-                joint_obs[t + 1] = next_obs.reshape(-1)
-                available_actions[t + 1] = transition["next_avail_actions"].astype(np.float32)
-
-        if episode_len > 1:
-            masks[1:episode_len] *= 1.0 - terminated[: episode_len - 1]
-
-        return {
-            "agent_obs": agent_obs,
-            "joint_obs": joint_obs,
-            "actions": actions,
-            "rewards": rewards,
-            "agent_rewards": agent_rewards,
-            "terminated": terminated,
-            "masks": masks,
-            "actor_hidden": actor_hidden,
-            "prev_actions": prev_actions,
-            "agent_dones": agent_dones,
-            "available_actions": available_actions,
-            "length": np.asarray(episode_len, dtype=np.int32),
-        }
+        return qmix_pack_transition_episode(episode, **self._qmix_pack_kwargs())
 
     def _pad_and_stack(self, episodes: List[Any]) -> Dict[str, jnp.ndarray]:
-        if episodes and isinstance(episodes[0], dict):
-            keys = (
-                "agent_obs",
-                "joint_obs",
-                "actions",
-                "rewards",
-                "agent_rewards",
-                "terminated",
-                "masks",
-                "actor_hidden",
-                "prev_actions",
-                "agent_dones",
-                "available_actions",
-            )
-            return {key: jnp.asarray(np.stack([episode[key] for episode in episodes], axis=0)) for key in keys}
-
-        batch_size = len(episodes)
-        max_t = max(len(ep) for ep in episodes)
-        tp1 = max_t + 1
-
-        agent_obs = np.zeros(
-            (batch_size, tp1, self.num_agents, self.policy_obs_dim),
-            dtype=np.float32,
+        return qmix_stack_episodes(
+            episodes,
+            num_agents=self.num_agents,
+            policy_obs_dim=self.policy_obs_dim,
+            state_dim=self.state_dim,
+            hidden_dim=self.hidden_dim,
+            action_dim=self.action_dim,
+            global_reward=self.global_reward,
         )
-        joint_obs = np.zeros((batch_size, tp1, self.state_dim), dtype=np.float32)
-        actions = np.zeros((batch_size, tp1, self.num_agents), dtype=np.int32)
-        rewards = np.zeros((batch_size, max_t), dtype=np.float32)
-        agent_rewards = np.zeros((batch_size, max_t, self.num_agents), dtype=np.float32)
-        terminated = np.zeros((batch_size, max_t), dtype=np.float32)
-        masks = np.zeros((batch_size, max_t), dtype=np.float32)
-        actor_hidden = np.zeros(
-            (batch_size, max_t, self.num_agents, self.hidden_dim),
-            dtype=np.float32,
-        )
-        prev_actions = np.zeros(
-            (batch_size, max_t, self.num_agents, self.action_dim),
-            dtype=np.float32,
-        )
-        agent_dones = np.zeros((batch_size, max_t, self.num_agents), dtype=np.float32)
-        available_actions = np.ones(
-            (batch_size, tp1, self.num_agents, self.action_dim),
-            dtype=np.float32,
-        )
-
-        for batch_idx, episode in enumerate(episodes):
-            for t, transition in enumerate(episode):
-                obs_t = transition["obs"].astype(np.float32)
-                agent_obs[batch_idx, t] = obs_t
-                joint_obs[batch_idx, t] = obs_t.reshape(-1)
-                actions[batch_idx, t] = transition["actions"].astype(np.int32)
-                available_actions[batch_idx, t] = transition["avail_actions"].astype(np.float32)
-                actor_hidden[batch_idx, t] = transition.get("actor_hidden", np.zeros(
-                    (self.num_agents, self.hidden_dim),
-                    dtype=np.float32,
-                )).astype(np.float32)
-                if "prev_actions" in transition:
-                    prev_actions[batch_idx, t] = transition["prev_actions"].astype(np.float32)
-                elif t > 0:
-                    prev_actions[batch_idx, t] = np.eye(
-                        self.action_dim,
-                        dtype=np.float32,
-                    )[actions[batch_idx, t - 1]]
-                agent_dones[batch_idx, t] = transition.get(
-                    "agent_dones",
-                    np.zeros((self.num_agents,), dtype=np.float32),
-                ).astype(np.float32)
-                agent_rewards[batch_idx, t] = transition["rewards"].astype(np.float32)
-
-                if self.global_reward:
-                    rewards[batch_idx, t] = float(np.mean(transition["rewards"]))
-                else:
-                    rewards[batch_idx, t] = float(np.sum(transition["rewards"]))
-                terminated[batch_idx, t] = 1.0 if transition["done"] else 0.0
-                masks[batch_idx, t] = 1.0
-
-                if t == len(episode) - 1:
-                    next_obs = transition["next_obs"].astype(np.float32)
-                    agent_obs[batch_idx, t + 1] = next_obs
-                    joint_obs[batch_idx, t + 1] = next_obs.reshape(-1)
-                    available_actions[batch_idx, t + 1] = transition[
-                        "next_avail_actions"
-                    ].astype(np.float32)
-
-            if len(episode) > 1:
-                masks[batch_idx, 1 : len(episode)] *= 1.0 - terminated[
-                    batch_idx, : len(episode) - 1
-                ]
-
-        return {
-            "agent_obs": jnp.asarray(agent_obs),
-            "joint_obs": jnp.asarray(joint_obs),
-            "actions": jnp.asarray(actions),
-            "rewards": jnp.asarray(rewards),
-            "agent_rewards": jnp.asarray(agent_rewards),
-            "terminated": jnp.asarray(terminated),
-            "masks": jnp.asarray(masks),
-            "actor_hidden": jnp.asarray(actor_hidden),
-            "prev_actions": jnp.asarray(prev_actions),
-            "agent_dones": jnp.asarray(agent_dones),
-            "available_actions": jnp.asarray(available_actions),
-        }
 
     def _sample_batch(self, n_available: int) -> Dict[str, jnp.ndarray]:
         indices = self._rng_np.choice(n_available, self.train_batch_size, replace=False)
@@ -813,8 +754,13 @@ class JAXQMIXAlgorithm:
             "replay_buffer_episodes": float(n_available),
             "qmix_update_epochs": float(self.qmix_update_epochs or 0),
             "num_episodes_collected": float(num_episodes_collected),
+            "learning_starts": float(self.learning_starts),
+            "learning_started": float(self.total_env_steps > self.learning_starts),
         }
         if n_available < self.train_batch_size:
+            return metadata
+        if self.total_env_steps <= self.learning_starts:
+            metadata["num_updates"] = 0.0
             return metadata
 
         num_updates = (

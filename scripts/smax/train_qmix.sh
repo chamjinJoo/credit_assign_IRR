@@ -9,8 +9,8 @@ config="configs/smax_configs/smax_qmix.yaml"
 model="jax-qmix"
 
 # env settings
-map_name="3m"
-allowed_target_windows=(2 3)
+map_name="2s3z"
+allowed_target_windows=(3 4 5)
 
 # QMIX settings
 lr=1.0e-3
@@ -19,7 +19,7 @@ qmix_update_epochs=8
 # training settings
 seeds=(42 1 2 31 32)
 device="cuda"
-n_rollout_threads=8
+n_rollout_threads=16
 run_name_postfix="lr1e-3"
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8

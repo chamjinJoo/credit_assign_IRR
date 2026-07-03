@@ -19,12 +19,22 @@ from .common import (
     add_agent_id_features,
     categorical_stats,
     compute_gae,
-    gather_other_agent_obs,
     global_norm,
     make_dynamic_lr_train_state,
     make_train_state,
     stack_metrics,
     tree_to_host,
+)
+from .preprocessing import (
+    bridge_inputs_from_rollout,
+    causal_batch_from_rollout,
+    causal_minibatch_indices,
+    flatten_actor_batch,
+    flatten_critic_batch,
+    flatten_delta_critic_batch,
+    minibatch_indices,
+    preprocess_causal_rollout,
+    slice_batch,
 )
 
 
@@ -807,152 +817,78 @@ class JAXRPCIAlgorithm:
         causal_lambda: float = 0.0,
     ):
         del pci_advantages, causal_lambda
-        total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
-        obs = rollout["obs"].reshape(total_steps, self.num_agents, self.policy_obs_dim)
-        avail_actions = rollout["avail_actions"].reshape(total_steps, self.num_agents, self.action_dim)
-        actions = rollout["actions"].reshape(total_steps, self.num_agents)
-        old_log_probs = rollout["log_probs"].reshape(total_steps, self.num_agents)
-        prev_actions = rollout["prev_actions"].reshape(total_steps, self.num_agents, self.action_dim)
-        hidden = rollout["actor_hidden"].reshape(total_steps, self.num_agents, self.actor_state_dim)
-        masks = jnp.broadcast_to(
-            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
-            rollout["actions"].shape,
-        ).reshape(total_steps, self.num_agents)
-        loss_masks = masks
-
-        if advantages.ndim == 2:
-            adv = jnp.repeat(advantages[..., None], self.num_agents, axis=-1)
-        else:
-            adv = advantages
-        adv = adv.reshape(total_steps, self.num_agents)
-        # 2nd norm
-        adv = self._normalize_actor_advantages(adv)
-
-        return {
-            "obs": obs,
-            "avail_actions": avail_actions,
-            "actions": actions,
-            "old_log_probs": old_log_probs,
-            "prev_actions": prev_actions,
-            "hidden": hidden,
-            "masks": masks,
-            "loss_masks": loss_masks,
-            "advantages": adv,
-        }
+        return flatten_actor_batch(
+            rollout,
+            advantages,
+            num_agents=self.num_agents,
+            policy_obs_dim=self.policy_obs_dim,
+            action_dim=self.action_dim,
+            actor_state_dim=self.actor_state_dim,
+            normalize_advantages=self._normalize_actor_advantages,
+        )
 
     def _flatten_critic_batch(self, rollout: Dict[str, jnp.ndarray], returns: jnp.ndarray):
-        if self.use_centralized_critic:
-            total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1]
-            base_masks = rollout["masks"].reshape(-1)
-            if returns.ndim == 2:
-                returns_flat = returns.reshape(-1)
-                loss_masks = base_masks
-            else:
-                returns_flat = returns.reshape(-1, self.num_agents)
-                loss_masks = jnp.broadcast_to(base_masks[:, None], (total_steps, self.num_agents))
-            return {
-                "obs": rollout["obs"].reshape(rollout["obs"].shape[0], rollout["obs"].shape[1], -1).reshape(-1, self.policy_obs_dim * self.num_agents),
-                "prev_actions": rollout["prev_actions"].reshape(rollout["prev_actions"].shape[0], rollout["prev_actions"].shape[1], -1).reshape(-1, self.action_dim * self.num_agents),
-                "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
-                "masks": base_masks,
-                "loss_masks": loss_masks,
-                "returns": returns_flat,
-            }
-
-        total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
-        per_agent_masks = jnp.broadcast_to(
-            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
-            rollout["actions"].shape,
-        ).reshape(-1)
-        return {
-            "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
-            "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
-            "hidden": rollout["critic_hidden"].reshape(total_steps, self.critic_state_dim),
-            "masks": per_agent_masks,
-            "loss_masks": per_agent_masks,
-            "returns": returns.reshape(-1),
-        }
+        return flatten_critic_batch(
+            rollout,
+            returns,
+            num_agents=self.num_agents,
+            policy_obs_dim=self.policy_obs_dim,
+            action_dim=self.action_dim,
+            critic_state_dim=self.critic_state_dim,
+            use_centralized_critic=self.use_centralized_critic,
+        )
 
     def _flatten_delta_critic_batch(
         self,
         rollout: Dict[str, jnp.ndarray],
         delta_returns: jnp.ndarray,
     ):
-        total_steps = rollout["obs"].shape[0] * rollout["obs"].shape[1] * rollout["obs"].shape[2]
-        per_agent_masks = jnp.broadcast_to(
-            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
-            rollout["actions"].shape,
-        ).reshape(-1)
-        return {
-            "obs": rollout["obs"].reshape(-1, self.policy_obs_dim),
-            "prev_actions": rollout["prev_actions"].reshape(-1, self.action_dim),
-            "hidden": rollout["delta_critic_hidden"].reshape(total_steps, self.delta_critic_state_dim),
-            "masks": per_agent_masks,
-            "loss_masks": per_agent_masks,
-            "returns": delta_returns.reshape(-1),
-        }
+        return flatten_delta_critic_batch(
+            rollout,
+            delta_returns,
+            policy_obs_dim=self.policy_obs_dim,
+            action_dim=self.action_dim,
+            delta_critic_state_dim=self.delta_critic_state_dim,
+        )
 
     def _preprocess_rollout(self, rollout: Dict[str, jnp.ndarray]):
-        """Shared rollout flattening used by both _causal_batch and _bridge_inputs."""
-        obs = rollout["obs"]
-        time_steps, n_envs = obs.shape[:2]
-        flat_batch = time_steps * n_envs
-
-        obs_4d = obs.reshape(flat_batch, self.num_agents, self.policy_obs_dim)
-        local_obs = obs_4d.reshape(-1, self.policy_obs_dim)
-        others_obs = gather_other_agent_obs(obs_4d).reshape(
-            -1, (self.num_agents - 1) * self.policy_obs_dim
+        return preprocess_causal_rollout(
+            rollout,
+            num_agents=self.num_agents,
+            policy_obs_dim=self.policy_obs_dim,
+            action_dim=self.action_dim,
+            actor_state_dim=self.actor_state_dim,
+            bridge_hidden_dim=self.bridge_hidden_dim,
+            bridge_prev_action_dim=self.bridge_prev_action_dim,
+            use_recurrent_policy=self.use_recurrent_policy,
+            global_reward=self.global_reward,
         )
-        prev_actions_4d = rollout["prev_actions"].reshape(flat_batch, self.num_agents, self.action_dim)
-        prev_actions_others = gather_other_agent_obs(prev_actions_4d).reshape(
-            -1, self.bridge_prev_action_dim
-        )
-
-        if self.use_recurrent_policy:
-            hidden_4d = rollout["actor_hidden"].reshape(flat_batch, self.num_agents, self.actor_state_dim)
-            z = hidden_4d.reshape(-1, self.actor_state_dim)
-            hidden_others = gather_other_agent_obs(hidden_4d).reshape(-1, self.bridge_hidden_dim)
-        else:
-            n_flat = flat_batch * self.num_agents
-            z = jnp.zeros((n_flat, 0), dtype=jnp.float32)
-            hidden_others = jnp.zeros((n_flat, 0), dtype=jnp.float32)
-
-        bridge_context = jnp.concatenate([hidden_others, prev_actions_others], axis=-1)
-
-        actions = rollout["actions"].reshape(-1)
-        agent_ids = jnp.tile(jnp.arange(self.num_agents, dtype=jnp.int32), flat_batch)
-        if self.global_reward:
-            team_rewards = rollout["rewards"].sum(axis=-1) / self.num_agents
-            reward_targets = jnp.repeat(team_rewards.reshape(-1), self.num_agents, axis=0)[:, None]
-        else:
-            reward_targets = jnp.repeat(
-                rollout["rewards"][:, :, None, :], self.num_agents, axis=2
-            ).reshape(-1, self.num_agents)
-
-        return local_obs, others_obs, z, bridge_context, actions, reward_targets, agent_ids
 
     def _causal_batch(self, rollout: Dict[str, jnp.ndarray]) -> Dict[str, jnp.ndarray]:
-        local_obs, others_obs, z, bridge_context, actions, targets, agent_ids = self._preprocess_rollout(rollout)
-        loss_mask = jnp.broadcast_to(
-            rollout["masks"].reshape(rollout["masks"].shape + (1,)),
-            rollout["actions"].shape,
-        ).reshape(-1).astype(jnp.float32)
-        return {
-            "z":            z.astype(jnp.float32),
-            "w":            others_obs.astype(jnp.float32),
-            "x_obs":        local_obs.astype(jnp.float32),
-            "x_hid":        bridge_context.astype(jnp.float32),
-            "actions":      actions.astype(jnp.int32),
-            "targets":      targets.astype(jnp.float32),
-            "agent_ids":    agent_ids.astype(jnp.int32),
-            "loss_mask":    loss_mask,
-        }
+        return causal_batch_from_rollout(
+            rollout,
+            num_agents=self.num_agents,
+            policy_obs_dim=self.policy_obs_dim,
+            action_dim=self.action_dim,
+            actor_state_dim=self.actor_state_dim,
+            bridge_hidden_dim=self.bridge_hidden_dim,
+            bridge_prev_action_dim=self.bridge_prev_action_dim,
+            use_recurrent_policy=self.use_recurrent_policy,
+            global_reward=self.global_reward,
+        )
 
     def _bridge_inputs(self, rollout: Dict[str, jnp.ndarray]):
-        local_obs, others_obs, _, bridge_context, actions, reward_targets, _ = self._preprocess_rollout(rollout)
-        probs = rollout["probs"].reshape(-1, self.action_dim)
-        avail_actions = rollout["avail_actions"].reshape(-1, self.action_dim)
-        return local_obs, others_obs, bridge_context, actions, reward_targets, probs, avail_actions
+        return bridge_inputs_from_rollout(
+            rollout,
+            num_agents=self.num_agents,
+            policy_obs_dim=self.policy_obs_dim,
+            action_dim=self.action_dim,
+            actor_state_dim=self.actor_state_dim,
+            bridge_hidden_dim=self.bridge_hidden_dim,
+            bridge_prev_action_dim=self.bridge_prev_action_dim,
+            use_recurrent_policy=self.use_recurrent_policy,
+            global_reward=self.global_reward,
+        )
 
     @partial(jax.jit, static_argnums=0)
     def _bridge_predictions_chunk(
@@ -1373,38 +1309,21 @@ class JAXRPCIAlgorithm:
         return grads, metrics
 
     def _slice_batch(self, batch: Dict[str, jnp.ndarray], idx: jnp.ndarray) -> Dict[str, jnp.ndarray]:
-        return {key: value[idx] for key, value in batch.items()}
+        return slice_batch(batch, idx)
 
     def _iterate_minibatches(self, size: int):
-        if size <= 0:
-            return
-        if self.batch_size > 0:
-            for start in range(0, size, self.batch_size):
-                yield jnp.arange(start, min(start + self.batch_size, size))
-            return
-
-        n_batches = min(self.num_batches, size)
-        for batch_idx in range(n_batches):
-            start = (size * batch_idx) // n_batches
-            end = (size * (batch_idx + 1)) // n_batches
-            if end > start:
-                yield jnp.arange(start, end)
+        yield from minibatch_indices(
+            size,
+            batch_size=self.batch_size,
+            num_batches=self.num_batches,
+        )
 
     def _iterate_causal_minibatches(self, te_total: int):
-        # causal_mini_batch_size is measured in (t,e) pairs, not flat (t,e,n) samples.
-        # Each (t,e) pair contributes N consecutive flat indices, so each chunk yields
-        # causal_mini_batch_size*N flat indices preserving the interleaved agent order
-        # required by _compute_gram's (B_n,N,d) reshape.
-        N = self.num_agents
-        te_idx = jnp.arange(te_total)
-        for te_start in range(0, te_total, self.causal_mini_batch_size):
-            te_end = te_start + self.causal_mini_batch_size
-            if te_end <= te_total:
-                te_chunk = te_idx[te_start:te_end]
-            else:
-                pad = self.causal_mini_batch_size - (te_total - te_start)
-                te_chunk = jnp.concatenate([te_idx[te_start:], te_idx[:pad]])
-            yield (te_chunk[:, None] * N + jnp.arange(N)[None, :]).reshape(-1)
+        yield from causal_minibatch_indices(
+            te_total,
+            num_agents=self.num_agents,
+            causal_mini_batch_size=self.causal_mini_batch_size,
+        )
 
     def update_causal_networks(self, rollout: Optional[Dict[str, jnp.ndarray]] = None) -> Dict[str, float]:
         if rollout is None:

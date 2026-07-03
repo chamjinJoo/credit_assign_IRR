@@ -85,6 +85,7 @@ class AlgorithmConfig:
     replay_buffer_size: int = 5000  # Maximum number of episodes in replay buffer
     train_batch_size: int = 40  # Number of episodes to sample for training
     qmix_update_epochs: Optional[int] = None  # None: legacy episode_count-based QMIX updates
+    learning_starts: int = 0  # Environment steps before starting QMIX TD updates
     agent_delta_td_coef: float = 1.0  # PCI-QMIX auxiliary per-agent delta TD coefficient
 
 @dataclass
@@ -534,6 +535,8 @@ def parse_args() -> argparse.Namespace:
                         help='Number of episodes to sample for training')
     parser.add_argument('--qmix-update-epochs', type=int, default=None,
                         help='Fixed number of QMIX replay updates per training iteration')
+    parser.add_argument('--learning-starts', type=int, default=None,
+                        help='Environment steps before starting QMIX replay TD updates')
     parser.add_argument('--agent-delta-td-coef', type=float, default=None,
                         help='PCI-QMIX auxiliary per-agent delta TD loss coefficient')
 
@@ -703,6 +706,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.train_batch_size = args.train_batch_size
     if hasattr(args, 'qmix_update_epochs') and args.qmix_update_epochs is not None:
         config.algorithm.qmix_update_epochs = None if args.qmix_update_epochs <= 0 else args.qmix_update_epochs
+    if hasattr(args, 'learning_starts') and args.learning_starts is not None:
+        config.algorithm.learning_starts = max(0, args.learning_starts)
     if hasattr(args, 'agent_delta_td_coef') and args.agent_delta_td_coef is not None:
         config.algorithm.agent_delta_td_coef = args.agent_delta_td_coef
 

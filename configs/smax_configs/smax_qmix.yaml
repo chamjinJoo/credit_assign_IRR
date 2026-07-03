@@ -28,6 +28,7 @@ algorithm:
   hypernet_embed: 256
   replay_buffer_size: 5000
   train_batch_size: 32
+  learning_starts: 10000
   global_reward: true
   add_agent_id: true
   anneal_lr: false
