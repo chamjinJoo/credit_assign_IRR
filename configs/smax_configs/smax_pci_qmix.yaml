@@ -23,6 +23,8 @@ algorithm:
   mixing_embed_dim: 64
   hypernet_layers: 2
   hypernet_embed: 256
+  mixer_init_scale: 1.0e-3
+  reward_scale: 10.0
   replay_buffer_size: 5000
   train_batch_size: 32
   learning_starts: 10000

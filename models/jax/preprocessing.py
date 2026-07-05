@@ -55,6 +55,7 @@ def qmix_pack_episode_arrays(
     hidden_dim: int,
     action_dim: int,
     global_reward: bool,
+    reward_scale: float = 1.0,
 ) -> Dict[str, np.ndarray]:
     episode_len = int(episode["actions"].shape[0])
     max_t = episode_limit or episode_len
@@ -81,7 +82,7 @@ def qmix_pack_episode_arrays(
     actor_hidden[:episode_len] = episode["actor_hidden"].astype(np.float32, copy=False)
     prev_actions[:episode_len] = episode["prev_actions"].astype(np.float32, copy=False)
     agent_dones[:episode_len] = episode["agent_dones"].astype(np.float32, copy=False)
-    reward_seq = episode["rewards"].astype(np.float32, copy=False)
+    reward_seq = episode["rewards"].astype(np.float32, copy=False) * float(reward_scale)
     agent_rewards[:episode_len] = reward_seq
     rewards[:episode_len] = (
         np.mean(reward_seq, axis=-1) if global_reward else np.sum(reward_seq, axis=-1)
@@ -151,6 +152,7 @@ def qmix_pack_transition_episode(
     hidden_dim: int,
     action_dim: int,
     global_reward: bool,
+    reward_scale: float = 1.0,
 ) -> Dict[str, np.ndarray]:
     episode_len = len(episode)
     max_t = episode_limit or episode_len
@@ -201,6 +203,7 @@ def qmix_pack_transition_episode(
         hidden_dim=hidden_dim,
         action_dim=action_dim,
         global_reward=global_reward,
+        reward_scale=reward_scale,
     )
     packed["length"] = np.asarray(episode_len, dtype=np.int32)
     return packed
@@ -215,6 +218,7 @@ def qmix_stack_episodes(
     hidden_dim: int,
     action_dim: int,
     global_reward: bool,
+    reward_scale: float = 1.0,
 ) -> Dict[str, jnp.ndarray]:
     if episodes and isinstance(episodes[0], dict):
         return {
@@ -233,6 +237,7 @@ def qmix_stack_episodes(
             hidden_dim=hidden_dim,
             action_dim=action_dim,
             global_reward=global_reward,
+            reward_scale=reward_scale,
         )
         for episode in episodes
     ]

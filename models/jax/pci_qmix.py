@@ -572,6 +572,8 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             "num_episodes_collected": float(num_episodes_collected),
             "learning_starts": float(self.learning_starts),
             "learning_started": float(self.total_env_steps > self.learning_starts),
+            "reward_scale": float(self.reward_scale),
+            "mixer_init_scale": float(self.mixer_init_scale),
         }
         if n_available < self.train_batch_size:
             return metadata

@@ -82,6 +82,8 @@ class AlgorithmConfig:
     mixing_embed_dim: int = 32  # Mixing network embedding dimension
     hypernet_layers: int = 2  # Number of hypernetwork layers
     hypernet_embed: int = 64  # Hypernetwork embedding dimension
+    mixer_init_scale: float = 1.0e-3  # QMIX mixer/hypernetwork orthogonal init scale
+    reward_scale: float = 1.0  # QMIX replay reward scale before TD targets
     replay_buffer_size: int = 5000  # Maximum number of episodes in replay buffer
     train_batch_size: int = 40  # Number of episodes to sample for training
     qmix_update_epochs: Optional[int] = None  # None: legacy episode_count-based QMIX updates
@@ -531,6 +533,10 @@ def parse_args() -> argparse.Namespace:
                         help='Steps to anneal epsilon over')
     parser.add_argument('--replay-buffer-size', type=int, default=None,
                         help='Maximum number of episodes in replay buffer')
+    parser.add_argument('--mixer-init-scale', type=float, default=None,
+                        help='QMIX mixer/hypernetwork orthogonal initialization scale')
+    parser.add_argument('--reward-scale', type=float, default=None,
+                        help='QMIX reward scale applied before replay TD targets')
     parser.add_argument('--train-batch-size', type=int, default=None,
                         help='Number of episodes to sample for training')
     parser.add_argument('--qmix-update-epochs', type=int, default=None,
@@ -702,6 +708,10 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.epsilon_anneal_time = args.epsilon_anneal_time
     if hasattr(args, 'replay_buffer_size') and args.replay_buffer_size is not None:
         config.algorithm.replay_buffer_size = args.replay_buffer_size
+    if hasattr(args, 'mixer_init_scale') and args.mixer_init_scale is not None:
+        config.algorithm.mixer_init_scale = args.mixer_init_scale
+    if hasattr(args, 'reward_scale') and args.reward_scale is not None:
+        config.algorithm.reward_scale = args.reward_scale
     if hasattr(args, 'train_batch_size') and args.train_batch_size is not None:
         config.algorithm.train_batch_size = args.train_batch_size
     if hasattr(args, 'qmix_update_epochs') and args.qmix_update_epochs is not None:

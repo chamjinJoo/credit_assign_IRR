@@ -32,6 +32,7 @@ from .preprocessing import (
 class JAXQMIXRNNAgent(nn.Module):
     hidden_dim: int
     action_dim: int
+    init_scale: float = 1.0
 
     @nn.compact
     def __call__(
@@ -39,11 +40,12 @@ class JAXQMIXRNNAgent(nn.Module):
         inputs: jnp.ndarray,
         hidden: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray]:
-        x = nn.Dense(self.hidden_dim)(inputs)
+        init = nn.initializers.orthogonal(self.init_scale)
+        x = nn.Dense(self.hidden_dim, kernel_init=init, bias_init=nn.initializers.zeros)(inputs)
         x = nn.relu(x)
         gru = make_gru_cell(self.hidden_dim)
         new_hidden, core_out = gru(hidden, x)
-        q_values = nn.Dense(self.action_dim)(core_out)
+        q_values = nn.Dense(self.action_dim, kernel_init=init, bias_init=nn.initializers.zeros)(core_out)
         return new_hidden, q_values
 
 
@@ -53,6 +55,7 @@ class JAXQMixer(nn.Module):
     mixing_embed_dim: int = 32
     hypernet_layers: int = 2
     hypernet_embed: int = 64
+    init_scale: float = 1.0
 
     @nn.compact
     def __call__(self, agent_qs: jnp.ndarray, states: jnp.ndarray) -> jnp.ndarray:
@@ -66,29 +69,62 @@ class JAXQMixer(nn.Module):
             flat_agent_qs = agent_qs.reshape(batch_size, 1, self.n_agents)
             flat_states = states.reshape(batch_size, self.state_dim)
 
+        init = nn.initializers.orthogonal(self.init_scale)
         if self.hypernet_layers == 1:
-            w1 = nn.Dense(self.mixing_embed_dim * self.n_agents)(flat_states)
-            w_final = nn.Dense(self.mixing_embed_dim)(flat_states)
+            w1 = nn.Dense(
+                self.mixing_embed_dim * self.n_agents,
+                kernel_init=init,
+                bias_init=nn.initializers.zeros,
+            )(flat_states)
+            w_final = nn.Dense(
+                self.mixing_embed_dim,
+                kernel_init=init,
+                bias_init=nn.initializers.zeros,
+            )(flat_states)
         elif self.hypernet_layers == 2:
-            w1 = nn.Dense(self.hypernet_embed)(flat_states)
+            w1 = nn.Dense(
+                self.hypernet_embed,
+                kernel_init=init,
+                bias_init=nn.initializers.zeros,
+            )(flat_states)
             w1 = nn.relu(w1)
-            w1 = nn.Dense(self.mixing_embed_dim * self.n_agents)(w1)
+            w1 = nn.Dense(
+                self.mixing_embed_dim * self.n_agents,
+                kernel_init=init,
+                bias_init=nn.initializers.zeros,
+            )(w1)
 
-            w_final = nn.Dense(self.hypernet_embed)(flat_states)
+            w_final = nn.Dense(
+                self.hypernet_embed,
+                kernel_init=init,
+                bias_init=nn.initializers.zeros,
+            )(flat_states)
             w_final = nn.relu(w_final)
-            w_final = nn.Dense(self.mixing_embed_dim)(w_final)
+            w_final = nn.Dense(
+                self.mixing_embed_dim,
+                kernel_init=init,
+                bias_init=nn.initializers.zeros,
+            )(w_final)
         else:
             raise ValueError(f"hypernet_layers must be 1 or 2, got {self.hypernet_layers}")
 
-        b1 = nn.Dense(self.mixing_embed_dim)(flat_states)
+        b1 = nn.Dense(
+            self.mixing_embed_dim,
+            kernel_init=init,
+            bias_init=nn.initializers.zeros,
+        )(flat_states)
         w1 = jnp.abs(w1).reshape(-1, self.n_agents, self.mixing_embed_dim)
         b1 = b1.reshape(-1, 1, self.mixing_embed_dim)
         hidden = nn.elu(jnp.matmul(flat_agent_qs, w1) + b1)
 
         w_final = jnp.abs(w_final).reshape(-1, self.mixing_embed_dim, 1)
-        v = nn.Dense(self.mixing_embed_dim)(flat_states)
+        v = nn.Dense(
+            self.mixing_embed_dim,
+            kernel_init=init,
+            bias_init=nn.initializers.zeros,
+        )(flat_states)
         v = nn.relu(v)
-        v = nn.Dense(1)(v).reshape(-1, 1, 1)
+        v = nn.Dense(1, kernel_init=init, bias_init=nn.initializers.zeros)(v).reshape(-1, 1, 1)
 
         y = jnp.matmul(hidden, w_final) + v
         if has_time:
@@ -118,6 +154,8 @@ class JAXQMIXAlgorithm:
         mixing_embed_dim: int = 32,
         hypernet_layers: int = 2,
         hypernet_embed: int = 64,
+        mixer_init_scale: float = 1.0e-3,
+        reward_scale: float = 1.0,
         replay_buffer_size: int = 5000,
         train_batch_size: int = 32,
         qmix_update_epochs: Optional[int] = None,
@@ -147,6 +185,8 @@ class JAXQMIXAlgorithm:
         self.epsilon_anneal_time = max(1, int(epsilon_anneal_time))
         self.epsilon = self.epsilon_start
         self.double_q = bool(double_q)
+        self.mixer_init_scale = float(mixer_init_scale)
+        self.reward_scale = float(reward_scale)
         self.replay_buffer_size = max(1, int(replay_buffer_size))
         self.train_batch_size = max(1, int(train_batch_size))
         self.qmix_update_epochs = (
@@ -177,6 +217,7 @@ class JAXQMIXAlgorithm:
             mixing_embed_dim=mixing_embed_dim,
             hypernet_layers=hypernet_layers,
             hypernet_embed=hypernet_embed,
+            init_scale=self.mixer_init_scale,
         )
 
         agent_params = self.agent_model.init(
@@ -192,7 +233,7 @@ class JAXQMIXAlgorithm:
 
         tx = optax.chain(
             optax.clip_by_global_norm(self.max_grad_norm),
-            optax.adam(learning_rate=float(lr)),
+            optax.radam(learning_rate=float(lr)),
         )
         self.train_state = train_state.TrainState.create(
             apply_fn=lambda *args, **kwargs: None,
@@ -505,6 +546,7 @@ class JAXQMIXAlgorithm:
             "hidden_dim": self.hidden_dim,
             "action_dim": self.action_dim,
             "global_reward": self.global_reward,
+            "reward_scale": self.reward_scale,
         }
 
     def _pack_episode_arrays(self, episode: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
@@ -590,6 +632,7 @@ class JAXQMIXAlgorithm:
             hidden_dim=self.hidden_dim,
             action_dim=self.action_dim,
             global_reward=self.global_reward,
+            reward_scale=self.reward_scale,
         )
 
     def _sample_batch(self, n_available: int) -> Dict[str, jnp.ndarray]:
@@ -756,6 +799,8 @@ class JAXQMIXAlgorithm:
             "num_episodes_collected": float(num_episodes_collected),
             "learning_starts": float(self.learning_starts),
             "learning_started": float(self.total_env_steps > self.learning_starts),
+            "reward_scale": float(self.reward_scale),
+            "mixer_init_scale": float(self.mixer_init_scale),
         }
         if n_available < self.train_batch_size:
             return metadata
