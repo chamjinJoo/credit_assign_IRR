@@ -43,7 +43,7 @@ src/
 .claude/
 .idea/
 .agents/
-AGENT.md
+AGENTS.md
 
 # others
 merge.sh
