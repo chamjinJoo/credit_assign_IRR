@@ -90,6 +90,7 @@ class AlgorithmConfig:
     qmix_update_epochs: Optional[int] = None  # None: legacy episode_count-based QMIX updates
     learning_starts: int = 0  # Environment steps before starting QMIX TD updates
     agent_delta_td_coef: float = 1.0  # PCI-QMIX auxiliary per-agent delta TD coefficient
+    standardize_delta: bool = False  # PCI-QMIX standardize team delta before TD targets
 
 @dataclass
 class TrainingConfig:
@@ -548,6 +549,8 @@ def parse_args() -> argparse.Namespace:
                         help='Environment steps before starting QMIX replay TD updates')
     parser.add_argument('--agent-delta-td-coef', type=float, default=None,
                         help='PCI-QMIX auxiliary per-agent delta TD loss coefficient')
+    parser.add_argument('--standardize-delta', type=str, default=None,
+                        help='Standardize PCI-QMIX team delta before TD targets (true/false)')
 
     # Logging
     parser.add_argument('--save-dir', type=str, default=None,
@@ -725,6 +728,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.learning_starts = max(0, args.learning_starts)
     if hasattr(args, 'agent_delta_td_coef') and args.agent_delta_td_coef is not None:
         config.algorithm.agent_delta_td_coef = args.agent_delta_td_coef
+    if hasattr(args, 'standardize_delta') and args.standardize_delta is not None:
+        config.algorithm.standardize_delta = args.standardize_delta.lower() in ('true', '1', 'yes', 'on')
 
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb

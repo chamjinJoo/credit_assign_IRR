@@ -15,6 +15,7 @@ lr_bridge=0.001
 causal_lambda=1.0
 bridge_epoch=4
 causal_mini_batch_size=2000
+standardize_delta=true
 agent_delta_td_coef=1.0
 
 # training and logging
@@ -35,6 +36,7 @@ for seed in "${seeds[@]}"; do
         --bridge-epoch ${bridge_epoch} \
         --causal-mini-batch-size ${causal_mini_batch_size} \
         --agent-delta-td-coef ${agent_delta_td_coef} \
+        --standardize-delta ${standardize_delta} \
         --n-rollout-threads ${n_rollout_threads} \
         --device ${device} \
         --seed ${seed} \

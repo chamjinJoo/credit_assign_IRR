@@ -475,6 +475,7 @@ def create_algorithm(env, config):
                 tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
                 stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
                 clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
+                standardize_delta=getattr(algorithm_config, 'standardize_delta', False),
                 agent_delta_td_coef=getattr(algorithm_config, 'agent_delta_td_coef', 1.0),
                 bridge_prediction_batch_size=getattr(algorithm_config, 'bridge_prediction_batch_size', 2048),
                 seed=getattr(config.training, 'seed', 42),
@@ -521,6 +522,7 @@ def create_algorithm(env, config):
                 tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
                 stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
                 clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
+                standardize_delta=getattr(algorithm_config, 'standardize_delta', False),
                 train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
                 agent_delta_td_coef=getattr(algorithm_config, 'agent_delta_td_coef', 1.0),
             )

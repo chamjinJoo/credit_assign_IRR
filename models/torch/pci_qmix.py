@@ -98,6 +98,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         tikhonov_gamma: float = 1e-4,
         stabilizer_lambda: float = 1.0,
         clip_delta: float = 0.0,
+        standardize_delta: bool = False,
         train_naivepredictor: bool = False,
         agent_delta_td_coef: float = 1.0,
         # Compatibility args accepted by the config system.
@@ -175,6 +176,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         self.tikhonov_gamma = tikhonov_gamma
         self.stabilizer_lambda = stabilizer_lambda
         self.clip_delta = clip_delta
+        self.standardize_delta = bool(standardize_delta)
         self.train_naivepredictor = train_naivepredictor
         self.agent_delta_td_coef = agent_delta_td_coef
         self._other_agent_mask_cache = {}
@@ -830,13 +832,13 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                     renormalized_probs = probs_counterfactual / denom.clamp_min(1e-10)
                     baseline = (renormalized_probs.unsqueeze(2) * r_hat_all).sum(dim=1)
                     no_valid_cf = denom <= 1e-10
-                    baseline = torch.where(no_valid_cf, r_hat_factual, baseline)
                 elif baseline_type == "averaged":
                     valid_cf = non_factual_mask
                     if avail_flat is not None:
                         valid_cf = valid_cf * avail_flat
                     denom = valid_cf.sum(dim=1, keepdim=True).clamp_min(1.0)
                     baseline = (r_hat_all * valid_cf.unsqueeze(2)).sum(dim=1) / denom
+                    no_valid_cf = None
                 elif baseline_type == "max":
                     valid_cf = non_factual_mask.bool()
                     if avail_flat is not None:
@@ -847,7 +849,6 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                     )
                     baseline = masked_r_hat.max(dim=1).values
                     no_valid_cf = ~valid_cf.any(dim=1, keepdim=True)
-                    baseline = torch.where(no_valid_cf, r_hat_factual, baseline)
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
@@ -857,6 +858,12 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                         reward_dim,
                     )
                     raw_effects = rewards_flat - baseline
+                    if no_valid_cf is not None:
+                        raw_effects = torch.where(
+                            no_valid_cf,
+                            torch.zeros_like(raw_effects),
+                            raw_effects,
+                        )
                     delta_chunk = raw_effects.view(curr_bs, N, 1).squeeze(-1)
                 else:
                     rewards_flat = rewards_b.unsqueeze(1).expand(-1, N, -1).reshape(
@@ -864,6 +871,12 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                         reward_dim,
                     )
                     raw_effects = rewards_flat - baseline
+                    if no_valid_cf is not None:
+                        raw_effects = torch.where(
+                            no_valid_cf,
+                            torch.zeros_like(raw_effects),
+                            raw_effects,
+                        )
                     C_chunk = raw_effects.view(curr_bs, N, N)
                     delta_chunk = C_chunk.sum(dim=2)
 
@@ -912,10 +925,47 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             }
 
         delta_agent = self.compute_causal_deltas_from_batch(batch, mac_out.detach())
-        delta_team = delta_agent.sum(dim=-1)
+        agent_masks = masks.unsqueeze(-1).expand(B, T, self.num_agents)
+        valid_agent_mask = agent_masks > 0
+        delta_team_raw = delta_agent.sum(dim=-1)
+        valid_team_mask = masks > 0
+        valid_raw_delta_team = delta_team_raw[valid_team_mask]
+        if valid_raw_delta_team.numel() == 0:
+            delta_team_mean_tensor = torch.zeros((), device=self.device)
+            delta_team_std_tensor = torch.ones((), device=self.device)
+            delta_team = delta_team_raw
+        elif self.standardize_delta:
+            delta_team_mean_tensor = valid_raw_delta_team.mean()
+            delta_team_std_tensor = valid_raw_delta_team.std(unbiased=False).clamp_min(1e-8)
+            delta_team = (delta_team_raw - delta_team_mean_tensor) / delta_team_std_tensor
+            delta_team = torch.where(valid_team_mask, delta_team, torch.zeros_like(delta_team))
+        else:
+            delta_team_mean_tensor = valid_raw_delta_team.mean()
+            delta_team_std_tensor = valid_raw_delta_team.std(unbiased=False).clamp_min(1e-8)
+            delta_team = delta_team_raw
+        valid_delta_agent_flat = delta_agent[valid_agent_mask]
+        if valid_delta_agent_flat.numel() == 0:
+            delta_agent_mean_tensor = torch.zeros((), device=self.device)
+            delta_agent_std_tensor = torch.ones((), device=self.device)
+            delta_agent_for_target = delta_agent
+        elif self.standardize_delta:
+            delta_agent_mean_tensor = valid_delta_agent_flat.mean()
+            delta_agent_std_tensor = valid_delta_agent_flat.std(unbiased=False).clamp_min(1e-8)
+            delta_agent_for_target = (delta_agent - delta_agent_mean_tensor) / delta_agent_std_tensor
+            delta_agent_for_target = torch.where(
+                valid_agent_mask,
+                delta_agent_for_target,
+                torch.zeros_like(delta_agent_for_target),
+            )
+        else:
+            delta_agent_mean_tensor = valid_delta_agent_flat.mean()
+            delta_agent_std_tensor = valid_delta_agent_flat.std(unbiased=False).clamp_min(1e-8)
+            delta_agent_for_target = delta_agent
+
         causal_lambda = float(self.get_current_causal_lambda())
         env_team_reward = batch["rewards"]
         shaped_team_reward = env_team_reward + causal_lambda * delta_team
+        agent_shaped_reward = env_team_reward.unsqueeze(-1) + causal_lambda * delta_agent_for_target
 
         with torch.no_grad():
             target_mac_out = self._forward_agent_q_values(batch, self.target_q_network)
@@ -954,11 +1004,10 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         qmix_loss = (masked_td_error ** 2).sum() / masks_expanded.sum().clamp(min=1.0)
 
         agent_targets = (
-            delta_agent
+            agent_shaped_reward
             + self.gamma * (1 - terminated.unsqueeze(-1)) * target_max_qvals
         )
         agent_td_error = chosen_action_qvals - agent_targets.detach()
-        agent_masks = masks.unsqueeze(-1).expand(B, T, self.num_agents)
         masked_agent_td_error = agent_td_error * agent_masks
         agent_delta_td_loss = (masked_agent_td_error ** 2).sum() / agent_masks.sum().clamp(min=1.0)
 
@@ -975,30 +1024,12 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             self._update_targets()
             self.last_target_update_step = self.training_steps
 
-        valid_agent_mask = agent_masks > 0
-        valid_delta = delta_agent[valid_agent_mask]
-        if valid_delta.numel() == 0:
-            delta_mean = 0.0
-            delta_std = 0.0
-            delta_abs_mean = 0.0
-        else:
-            delta_mean = valid_delta.mean().item()
-            delta_std = valid_delta.std(unbiased=False).item()
-            delta_abs_mean = valid_delta.abs().mean().item()
-
         mask_sum = masks_expanded.sum().clamp(min=1.0).item()
         agent_mask_sum = agent_masks.sum().clamp(min=1.0).item()
         metrics = {
             "loss": loss.item(),
             "qmix_loss": qmix_loss.item(),
             "agent_delta_td_loss": agent_delta_td_loss.item(),
-            "causal_lambda": causal_lambda,
-            "effective_agent_delta_td_coef": effective_agent_delta_td_coef,
-            "env_reward_mean": (env_team_reward * masks).sum().item()
-            / masks.sum().clamp(min=1.0).item(),
-            "delta_team_mean": (delta_team * masks).sum().item() / masks.sum().clamp(min=1.0).item(),
-            "shaped_reward_mean": (shaped_team_reward * masks).sum().item()
-            / masks.sum().clamp(min=1.0).item(),
             "grad_norm": grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
             "td_error_abs": masked_td_error.abs().sum().item() / mask_sum,
             "agent_td_error_abs": masked_agent_td_error.abs().sum().item() / agent_mask_sum,
@@ -1006,9 +1037,6 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             / (mask_sum * self.num_agents),
             "target_mean": (targets * masks_expanded).sum().item()
             / (mask_sum * self.num_agents),
-            "delta_mean": delta_mean,
-            "delta_std": delta_std,
-            "delta_abs_mean": delta_abs_mean,
         }
         metrics.update(bridge_metrics)
         return metrics
@@ -1039,6 +1067,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             "learning_started": float(self.total_env_steps >= self.learning_starts),
             "reward_scale": float(self.reward_scale),
             "standardize_rewards": float(self.standardize_rewards),
+            "standardize_delta": float(self.standardize_delta),
             "mixer_init_scale": float(self.mixer_init_scale),
         }
 

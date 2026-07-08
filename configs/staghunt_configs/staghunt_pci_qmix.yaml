@@ -35,6 +35,7 @@ algorithm:
   causal_mini_batch_size: 2000
   causal_lambda: 1.0
   clip_delta: 0.0
+  standardize_delta: false
   agent_delta_td_coef: 1.0
   tikhonov_gamma: 1.0e-4
   stabilizer_lambda: 1.0
