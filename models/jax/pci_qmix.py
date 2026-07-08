@@ -254,19 +254,55 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         probs = jax.nn.softmax(masked_q, axis=-1).reshape(-1, self.action_dim)
         avail_flat = avail_tm.reshape(-1, self.action_dim)
 
+        flat_rows = local_obs.shape[0]
+        chunk_size = min(self.bridge_prediction_batch_size, flat_rows)
+        num_chunks = (flat_rows + chunk_size - 1) // chunk_size
+        padded_rows = num_chunks * chunk_size
+        pad_rows = padded_rows - flat_rows
+
+        def pad_rows_to_chunk(x):
+            if pad_rows == 0:
+                return x
+            pad_width = [(0, 0)] * x.ndim
+            pad_width[0] = (0, pad_rows)
+            return jnp.pad(x, pad_width)
+
+        local_obs_chunks = pad_rows_to_chunk(local_obs).reshape(
+            num_chunks,
+            chunk_size,
+            self.policy_obs_dim,
+        )
+        others_obs_chunks = pad_rows_to_chunk(others_obs).reshape(
+            num_chunks,
+            chunk_size,
+            (self.num_agents - 1) * self.policy_obs_dim,
+        )
+        bridge_context_chunks = pad_rows_to_chunk(bridge_context).reshape(
+            num_chunks,
+            chunk_size,
+            self.bridge_context_dim,
+        )
         all_actions = jnp.arange(self.action_dim, dtype=jnp.int32)
 
-        def predict_one_action(action_id):
-            tiled = jnp.full((local_obs.shape[0],), action_id, dtype=jnp.int32)
-            return self.bridge_state.apply_fn(
-                {"params": bridge_params},
-                local_obs,
-                others_obs,
-                bridge_context,
-                tiled,
-            )
+        def predict_chunk(chunk):
+            local_obs_c, others_obs_c, bridge_context_c = chunk
 
-        all_preds = jax.vmap(predict_one_action)(all_actions).transpose(1, 0, 2)
+            def predict_one_action(action_id):
+                tiled = jnp.full((chunk_size,), action_id, dtype=jnp.int32)
+                return self.bridge_state.apply_fn(
+                    {"params": bridge_params},
+                    local_obs_c,
+                    others_obs_c,
+                    bridge_context_c,
+                    tiled,
+                )
+
+            return jax.vmap(predict_one_action)(all_actions).transpose(1, 0, 2)
+
+        all_preds = jax.lax.map(
+            predict_chunk,
+            (local_obs_chunks, others_obs_chunks, bridge_context_chunks),
+        ).reshape(padded_rows, self.action_dim, self.bridge_output_dim)[:flat_rows]
         factual_mask = 1.0 - jax.nn.one_hot(
             actions_flat.astype(jnp.int32),
             self.action_dim,
@@ -571,7 +607,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             "qmix_update_epochs": float(self.qmix_update_epochs or 0),
             "num_episodes_collected": float(num_episodes_collected),
             "learning_starts": float(self.learning_starts),
-            "learning_started": float(self.total_env_steps > self.learning_starts),
+            "learning_started": float(self.total_env_steps >= self.learning_starts),
             "reward_scale": float(self.reward_scale),
             "mixer_init_scale": float(self.mixer_init_scale),
         }
@@ -594,7 +630,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         bridge_rollout = self._batch_to_bridge_rollout(bridge_batch)
         bridge_metrics = self.update_causal_networks(bridge_rollout)
 
-        if self.total_env_steps <= self.learning_starts:
+        if self.total_env_steps < self.learning_starts:
             self.current_iteration += 1
             skipped = dict(bridge_metrics)
             skipped.update(metadata)

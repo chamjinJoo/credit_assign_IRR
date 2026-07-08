@@ -8,6 +8,11 @@ from collections import defaultdict
 import copy
 
 from .networks.qmix_mixer import QMixer
+from .qmix_preprocessing import (
+    qmix_pack_episode,
+    qmix_pad_and_stack_legacy,
+    qmix_stack_packed_episodes,
+)
 from utils.buffer import EpisodeBuffer
 
 
@@ -212,14 +217,15 @@ class rQMIXAgent:
             greedy_actions = q_values.argmax(dim=-1)
             
             # Random actions
-            if available_actions_batch is not None:
-                # Sample random available actions
-                random_actions = torch.zeros(n_envs, dtype=torch.long, device=self.device)
-                for i in range(n_envs):
-                    avail = torch.nonzero(available_actions_batch[i], as_tuple=False).squeeze(-1)
-                    random_actions[i] = avail[torch.randint(len(avail), (1,))]
-            else:
+            if available_actions_batch is None or bool((available_actions_batch > 0).all().item()):
                 random_actions = torch.randint(0, self.action_dim, (n_envs,), device=self.device)
+            else:
+                avail_probs = available_actions_batch.float().clamp_min(0.0)
+                no_available = avail_probs.sum(dim=-1) <= 0
+                if no_available.any():
+                    avail_probs = avail_probs.clone()
+                    avail_probs[no_available] = 1.0
+                random_actions = torch.multinomial(avail_probs, num_samples=1).squeeze(-1)
             
             # Combine
             actions = torch.where(random_mask, random_actions, greedy_actions)
@@ -264,8 +270,13 @@ class rQMIXAlgorithm:
         mixing_embed_dim: int = 32,
         hypernet_layers: int = 2,
         hypernet_embed: int = 64,
+        mixer_init_scale: float = 1.0e-3,
+        reward_scale: float = 1.0,
+        standardize_rewards: bool = False,
         replay_buffer_size: int = 5000,   # max episodes to keep in replay buffer
         train_batch_size: int = 32,       # number of episodes per training batch
+        qmix_update_epochs: Optional[int] = None,
+        learning_starts: int = 0,
         device: str = "cpu",
         use_episode_buffer: bool = True,
         # Additional params for compatibility with the config system
@@ -297,6 +308,11 @@ class rQMIXAlgorithm:
         
         self.use_episode_buffer = use_episode_buffer
         self.train_batch_size = train_batch_size
+        self.qmix_update_epochs = qmix_update_epochs
+        self.learning_starts = max(0, int(learning_starts))
+        self.reward_scale = float(reward_scale)
+        self.standardize_rewards = bool(standardize_rewards)
+        self.mixer_init_scale = float(mixer_init_scale)
         
         # Episode replay buffer (off-policy: episodes are kept across iterations)
         self.buffer_manager = EpisodeBuffer(max_episodes=replay_buffer_size)
@@ -326,6 +342,7 @@ class rQMIXAlgorithm:
             mixing_embed_dim=mixing_embed_dim,
             hypernet_layers=hypernet_layers,
             hypernet_embed=hypernet_embed,
+            init_scale=self.mixer_init_scale,
         ).to(self.device)
         
         self.target_mixer = copy.deepcopy(self.mixer)
@@ -573,11 +590,38 @@ class rQMIXAlgorithm:
             env_done = True
         
         if env_done:
-            self.buffer_manager.finish_episode(env_id=env_idx)
+            self.finish_episode(env_id=env_idx)
     
     def finish_episode(self, env_id: int = 0) -> Optional[List[Dict]]:
         """Finish current episode and move it to completed episodes."""
-        return self.buffer_manager.finish_episode(env_id=env_id)
+        completed = self.buffer_manager.finish_episode(env_id=env_id)
+        if completed is None:
+            return None
+        packed = self._pack_episode(completed)
+        if self.buffer_manager.completed_episodes:
+            self.buffer_manager.completed_episodes[-1] = packed
+        return packed
+
+    def _pack_episode(self, episode: List[Dict]) -> Dict[str, torch.Tensor]:
+        return qmix_pack_episode(
+            episode,
+            obs_dim=self.obs_dim,
+            num_agents=self.num_agents,
+            action_dim=self.action_dim,
+            hidden_dim=self.hidden_dim,
+            reward_scale=self.reward_scale,
+            standardize_rewards=self.standardize_rewards,
+        )
+
+    def _stack_packed_episodes(self, episodes: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        return qmix_stack_packed_episodes(
+            episodes,
+            obs_dim=self.obs_dim,
+            num_agents=self.num_agents,
+            action_dim=self.action_dim,
+            hidden_dim=self.hidden_dim,
+            device=self.device,
+        )
     
     def _pad_and_stack(self, episodes: List[List[Dict]]) -> Dict[str, torch.Tensor]:
         """
@@ -592,77 +636,17 @@ class rQMIXAlgorithm:
             masks:     [B, T]                            (1=valid, 0=padded)
             available_actions: [B, T+1, n_agents, action_dim] (optional)
         """
-        batch_size = len(episodes)
-        max_t = max(len(ep) for ep in episodes)
-        Tp1 = max_t + 1
-        
-        # T+1 length tensors
-        joint_obs = torch.zeros(batch_size, Tp1, self.obs_dim * self.num_agents, device=self.device)
-        agent_obs = torch.zeros(batch_size, Tp1, self.num_agents, self.obs_dim, device=self.device)
-        actions = torch.zeros(batch_size, Tp1, self.num_agents, dtype=torch.long, device=self.device)
-        available_actions = torch.ones(batch_size, Tp1, self.num_agents, self.action_dim, device=self.device)
-        has_available_actions = False
-        
-        # T length tensors
-        rewards = torch.zeros(batch_size, max_t, device=self.device)
-        terminated = torch.zeros(batch_size, max_t, device=self.device)
-        masks = torch.zeros(batch_size, max_t, device=self.device)
-        
-        for b, episode in enumerate(episodes):
-            t_len = len(episode)
-            
-            for t, trans in enumerate(episode):
-                # Observations and actions at time t
-                joint_obs[b, t] = self._concatenate_observations(trans['bold_o_t']).to(self.device)
-                agent_obs[b, t] = torch.stack(
-                    [trans['bold_o_t'][i] for i in range(self.num_agents)]
-                ).to(self.device)
-                actions[b, t] = torch.tensor(
-                    [trans['bold_a_t'][i] for i in range(self.num_agents)],
-                    dtype=torch.long, device=self.device
-                )
-                
-                rewards[b, t] = sum(trans['bold_r_t'].values())
-                terminated[b, t] = 1.0 if any(trans['dones'].values()) else 0.0
-                
-                # Available actions
-                avail = trans.get('available_actions', None)
-                if avail is not None:
-                    has_available_actions = True
-                    for i in range(self.num_agents):
-                        if i in avail:
-                            available_actions[b, t, i] = torch.tensor(
-                                avail[i], dtype=torch.float32, device=self.device
-                            )
-                
-                # Fill T+1 slot with next_observations from last transition
-                if t == t_len - 1 and 'next_observations' in trans:
-                    next_obs = trans['next_observations']
-                    joint_obs[b, t + 1] = self._concatenate_observations(next_obs).to(self.device)
-                    agent_obs[b, t + 1] = torch.stack(
-                        [next_obs[i] for i in range(self.num_agents)]
-                    ).to(self.device)
-            
-            # Masks: valid timesteps
-            masks[b, :t_len] = 1.0
-        
-        # pymarl style: mask[:, 1:] *= (1 - terminated[:, :-1])
-        if max_t > 1:
-            masks[:, 1:] = masks[:, 1:] * (1 - terminated[:, :-1])
-        
-        result = {
-            'joint_obs': joint_obs,
-            'agent_obs': agent_obs,
-            'actions': actions,
-            'rewards': rewards,
-            'terminated': terminated,
-            'masks': masks,
-        }
-        
-        if has_available_actions:
-            result['available_actions'] = available_actions
-        
-        return result
+        if episodes and isinstance(episodes[0], dict) and episodes[0].get("packed", False):
+            return self._stack_packed_episodes(episodes)
+        return qmix_pad_and_stack_legacy(
+            episodes,
+            obs_dim=self.obs_dim,
+            num_agents=self.num_agents,
+            action_dim=self.action_dim,
+            reward_scale=self.reward_scale,
+            standardize_rewards=self.standardize_rewards,
+            device=self.device,
+        )
     
     def _forward_agent_q_values(
         self,
@@ -712,24 +696,17 @@ class rQMIXAlgorithm:
         mac_out = torch.stack(mac_out, dim=1)
         return mac_out
     
-    def _train_step(self, completed_episodes: List[List[Dict]]) -> Dict[str, float]:
-        """
-        Perform a single gradient update step (PyMARL's QLearner.train equivalent).
-        Samples a mini-batch from the replay buffer and performs one gradient step
-        on the Q-network and mixer.
-        
-        Args:
-            completed_episodes: All completed episodes currently in the replay buffer.
-            
-        Returns:
-            Dictionary containing training metrics for this step.
-        """
+    def _sample_batch_from_replay(self, completed_episodes: List[Dict]) -> Dict[str, torch.Tensor]:
         n_available = len(completed_episodes)
         sample_size = min(self.train_batch_size, n_available)
         indices = np.random.choice(n_available, sample_size, replace=False)
         sampled_episodes = [completed_episodes[i] for i in indices]
-        batch = self._pad_and_stack(sampled_episodes)
-        
+        return self._pad_and_stack(sampled_episodes)
+
+    def _train_step_from_batch(self, batch: Dict[str, torch.Tensor]) -> Dict[str, float]:
+        """
+        Perform a single gradient update step (PyMARL's QLearner.train equivalent).
+        """
         rewards = batch['rewards']          # [B, T]
         actions = batch['actions']          # [B, T+1, N]
         terminated = batch['terminated']    # [B, T]
@@ -817,6 +794,10 @@ class rQMIXAlgorithm:
             'q_taken_mean': (chosen_action_q_tot * masks_expanded).sum().item() / (masks_expanded.sum().item() * self.num_agents),
             'target_mean': (targets * masks_expanded).sum().item() / (masks_expanded.sum().item() * self.num_agents),
         }
+
+    def _train_step(self, completed_episodes: List[Dict]) -> Dict[str, float]:
+        batch = self._sample_batch_from_replay(completed_episodes)
+        return self._train_step_from_batch(batch)
     
     def update(self, **kwargs) -> Dict[str, float]:
         """
@@ -835,24 +816,41 @@ class rQMIXAlgorithm:
             # (matches PyMARL's buffer.can_sample(args.batch_size) check)
             return {}
         
-        # PyMARL-faithful: 1 gradient step per episode collected this iteration
-        num_updates = max(1, kwargs.get('num_episodes_collected', 1))
+        metadata = {
+            'epsilon': self.epsilon,
+            'total_env_steps': self.total_env_steps,
+            'replay_buffer_episodes': n_available,
+            'qmix_update_epochs': float(self.qmix_update_epochs or 0),
+            'learning_starts': float(self.learning_starts),
+            'learning_started': float(self.total_env_steps >= self.learning_starts),
+            'reward_scale': float(self.reward_scale),
+            'standardize_rewards': float(self.standardize_rewards),
+            'mixer_init_scale': float(self.mixer_init_scale),
+        }
+
+        if self.total_env_steps < self.learning_starts:
+            metadata['num_updates'] = 0
+            return metadata
+
+        num_updates = (
+            self.qmix_update_epochs
+            if self.qmix_update_epochs is not None
+            else max(1, kwargs.get('num_episodes_collected', 1))
+        )
         
         # Accumulate metrics across all gradient steps
         accumulated = defaultdict(float)
         
         for _ in range(num_updates):
-            step_metrics = self._train_step(completed_episodes)
+            batch = self._sample_batch_from_replay(completed_episodes)
+            step_metrics = self._train_step_from_batch(batch)
             for k, v in step_metrics.items():
                 accumulated[k] += v
         
         # Average metrics over all gradient steps
         losses = {k: v / num_updates for k, v in accumulated.items()}
         
-        # Add non-averaged metadata
-        losses['epsilon'] = self.epsilon
-        losses['total_env_steps'] = self.total_env_steps
-        losses['replay_buffer_episodes'] = n_available
+        losses.update(metadata)
         losses['num_updates'] = num_updates
         
         # NOTE: Do NOT clear completed_episodes here — QMIX is off-policy.

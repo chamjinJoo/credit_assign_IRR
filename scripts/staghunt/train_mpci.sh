@@ -2,7 +2,7 @@
 # env setting
 env="StagHunt"
 num_agents=3
-config="configs/stag_hunt.yaml"
+config="configs/staghunt_configs/staghunt_pci_mappo.yaml"
  
 # model setting
 model="r-pci" 
@@ -16,7 +16,7 @@ causal_lambda=1.0
 n_rollout_threads=8
 device="cuda"
 seeds=(42 1 2 31 32)
-run_name_postfix=""
+run_name_postfix="add_agent_id"
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8

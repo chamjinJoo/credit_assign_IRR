@@ -564,135 +564,126 @@ class rIPPOAlgorithm:
                 env_id = t['info'].get('env_id', 0)
                 env_trajectories[env_id].append(t)
         
-        try:
-            # 2. Compute GAE for each trajectory
-            for env_id, traj in env_trajectories.items():
-                if len(traj) == 0:
+        # 2. Compute GAE for each trajectory
+        for env_id, traj in env_trajectories.items():
+            if len(traj) == 0:
+                continue
+            team_dones_seq = build_team_done_sequence(traj)
+            
+            # For each agent, compute GAE
+            for agent_id in range(self.num_agents):
+                if agent_id not in traj[0]['bold_o_t']:
                     continue
-                team_dones_seq = build_team_done_sequence(traj)
-                
-                # For each agent, compute GAE
-                for agent_id in range(self.num_agents):
-                    if agent_id not in traj[0]['bold_o_t']:
-                        continue
 
-                    # Optimized: Stack on CPU, then single GPU transfer
-                    agent_obs_list = [t['bold_o_t'][agent_id] for t in traj]
-                    agent_obs_seq = torch.stack(agent_obs_list).to(self.device, non_blocking=True)
-                    agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
+                # Optimized: Stack on CPU, then single GPU transfer
+                agent_obs_list = [t['bold_o_t'][agent_id] for t in traj]
+                agent_obs_seq = torch.stack(agent_obs_list).to(self.device, non_blocking=True)
+                agent_masks_seq = torch.tensor([t['masks'][agent_id] for t in traj], device=self.device).unsqueeze(1)
 
-                    agent_rewards_seq = torch.tensor(
-                        [sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
-                        dtype=torch.float32,
-                        device=self.device,
+                agent_rewards_seq = torch.tensor(
+                    [sum(t['bold_r_t'].values()) / self.num_agents for t in traj],
+                    dtype=torch.float32,
+                    device=self.device,
+                )
+
+                # Initial hidden state for value network
+                _, v_h0 = traj[0]['hidden_states'][agent_id]
+                v_h0 = v_h0.to(self.device, non_blocking=True).unsqueeze(0)
+
+                # Compute values for entire trajectory
+                with torch.no_grad():
+                    last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
+                    last_mask = 1.0 - (1.0 if team_dones_seq[-1] else 0.0)
+                    done_signal = team_dones_seq
+                    
+                    extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
+                                            last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
+                    extended_masks = torch.cat([agent_masks_seq,
+                                                torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
+                    
+                    # Extract prev_actions for sequence
+                    agent_prev_actions = torch.tensor([t['bold_a_t_minus_1'][agent_id] for t in traj], dtype=torch.long, device=self.device)
+                    agent_prev_actions_onehot = F.one_hot(agent_prev_actions, self.action_dim).float()
+                    # For the extra last step padding, simply repeat the last action
+                    last_prev_action_onehot = agent_prev_actions_onehot[-1].unsqueeze(0)
+                    extended_prev_actions = torch.cat([agent_prev_actions_onehot, last_prev_action_onehot], dim=0).unsqueeze(1)
+                    
+                    all_values, _ = self.value_net(extended_obs, v_h0, extended_masks, prev_actions=extended_prev_actions)
+                    values = all_values[:-1].view(-1)
+                    next_val = all_values[-1].item() * last_mask
+                    
+                    # Compute GAE
+                    advantages, returns = compute_gae(
+                        agent_rewards_seq.tolist(),
+                        values.tolist(),
+                        next_val,
+                        done_signal, self.gamma, self.gae_lambda,
                     )
-
-                    # Initial hidden state for value network
-                    _, v_h0 = traj[0]['hidden_states'][agent_id]
-                    v_h0 = v_h0.to(self.device, non_blocking=True).unsqueeze(0)
-
-                    # Compute values for entire trajectory
-                    with torch.no_grad():
-                        last_next_obs = traj[-1]['next_observations'][agent_id].to(self.device, non_blocking=True)
-                        last_mask = 1.0 - (1.0 if team_dones_seq[-1] else 0.0)
-                        done_signal = team_dones_seq
-                        
-                        extended_obs = torch.cat([agent_obs_seq.unsqueeze(1),
-                                                last_next_obs.unsqueeze(0).unsqueeze(1)], dim=0)
-                        extended_masks = torch.cat([agent_masks_seq,
-                                                   torch.tensor([[last_mask]], dtype=torch.float32, device=self.device)], dim=0)
-                        
-                        # Extract prev_actions for sequence
-                        agent_prev_actions = torch.tensor([t['bold_a_t_minus_1'][agent_id] for t in traj], dtype=torch.long, device=self.device)
-                        agent_prev_actions_onehot = F.one_hot(agent_prev_actions, self.action_dim).float()
-                        # For the extra last step padding, simply repeat the last action
-                        last_prev_action_onehot = agent_prev_actions_onehot[-1].unsqueeze(0)
-                        extended_prev_actions = torch.cat([agent_prev_actions_onehot, last_prev_action_onehot], dim=0).unsqueeze(1)
-                        
-                        all_values, _ = self.value_net(extended_obs, v_h0, extended_masks, prev_actions=extended_prev_actions)
-                        values = all_values[:-1].view(-1)
-                        next_val = all_values[-1].item() * last_mask
-                        
-                        # Compute GAE
-                        advantages, returns = compute_gae(
-                            agent_rewards_seq.tolist(),
-                            values.tolist(),
-                            next_val,
-                            done_signal, self.gamma, self.gae_lambda,
-                        )
-                        
-                        # Store in transitions
-                        for t_idx, t in enumerate(traj):
-                            if 'advantages' not in t:
-                                t['advantages'] = {}
-                                t['returns'] = {}
-                            t['advantages'][agent_id] = advantages[t_idx]
-                            t['returns'][agent_id] = returns[t_idx]
-            
-            # 3. Create chunks from trajectories with Padding
-            all_chunks = []
-            chunk_len = self.rnn_chunk_length
-            
-            for env_id, traj in env_trajectories.items():
-                if len(traj) == 0: continue
-                
-                # Add active_mask to existing transitions
-                for t in traj:
-                    t['active_mask'] = 1.0
-                
-                T_traj = len(traj)
-                num_full_chunks = T_traj // chunk_len
-                remainder = T_traj % chunk_len
-                
-                # Full chunks
-                for i in range(num_full_chunks):
-                    start = i * chunk_len
-                    end = start + chunk_len
-                    chunk = traj[start:end]
-                    all_chunks.append(chunk)
-                
-                # Handling remainder with padding
-                if remainder > 0:
-                    last_chunk = traj[num_full_chunks * chunk_len:]
                     
-                    # Create dummy padding transitions
-                    padding_len = chunk_len - remainder
-                    last_valid_trans = last_chunk[-1]
-                    
-                    padding_chunk = []
-                    for _ in range(padding_len):
-                        pad_t = last_valid_trans.copy() 
-                        pad_t['active_mask'] = 0.0
-                        padding_chunk.append(pad_t)
-                    
-                    full_last_chunk = last_chunk + padding_chunk
-                    all_chunks.append(full_last_chunk)
-
-            # # 4. Shuffle chunks for IID
-            # random.shuffle(all_chunks)
-            
-            # 5. Create batches
-            n_chunks_per_batch = max(1, len(all_chunks) // self.num_batches)
-            chunk_batches = [all_chunks[i:i + n_chunks_per_batch] 
-                           for i in range(0, len(all_chunks), n_chunks_per_batch)]
-            
-            # 6. Flatten chunks back to transitions
-            batches = []
-            for b in chunk_batches:
-                flat_batch = []
-                for chunk in b:
-                    flat_batch.extend(chunk)
-                if flat_batch:
-                    batches.append(flat_batch)
-                    
-        except Exception as e:
-            print(f"[ERROR rIPPO] Failed to restructure rollout data: {e}")
-            import traceback
-            traceback.print_exc()
-            # Fallback
-            batch_size = max(1, len(transitions) // self.num_batches)
-            batches = [transitions[i:i + batch_size] for i in range(0, len(transitions), batch_size)]
+                    # Store in transitions
+                    for t_idx, t in enumerate(traj):
+                        if 'advantages' not in t:
+                            t['advantages'] = {}
+                            t['returns'] = {}
+                        t['advantages'][agent_id] = advantages[t_idx]
+                        t['returns'][agent_id] = returns[t_idx]
         
+        # 3. Create chunks from trajectories with Padding
+        all_chunks = []
+        chunk_len = self.rnn_chunk_length
+        
+        for env_id, traj in env_trajectories.items():
+            if len(traj) == 0: continue
+            
+            # Add active_mask to existing transitions
+            for t in traj:
+                t['active_mask'] = 1.0
+            
+            T_traj = len(traj)
+            num_full_chunks = T_traj // chunk_len
+            remainder = T_traj % chunk_len
+            
+            # Full chunks
+            for i in range(num_full_chunks):
+                start = i * chunk_len
+                end = start + chunk_len
+                chunk = traj[start:end]
+                all_chunks.append(chunk)
+            
+            # Handling remainder with padding
+            if remainder > 0:
+                last_chunk = traj[num_full_chunks * chunk_len:]
+                
+                # Create dummy padding transitions
+                padding_len = chunk_len - remainder
+                last_valid_trans = last_chunk[-1]
+                
+                padding_chunk = []
+                for _ in range(padding_len):
+                    pad_t = last_valid_trans.copy() 
+                    pad_t['active_mask'] = 0.0
+                    padding_chunk.append(pad_t)
+                
+                full_last_chunk = last_chunk + padding_chunk
+                all_chunks.append(full_last_chunk)
+
+        # # 4. Shuffle chunks for IID
+        # random.shuffle(all_chunks)
+        
+        # 5. Create batches
+        n_chunks_per_batch = max(1, len(all_chunks) // self.num_batches)
+        chunk_batches = [all_chunks[i:i + n_chunks_per_batch] 
+                        for i in range(0, len(all_chunks), n_chunks_per_batch)]
+        
+        # 6. Flatten chunks back to transitions
+        batches = []
+        for b in chunk_batches:
+            flat_batch = []
+            for chunk in b:
+                flat_batch.extend(chunk)
+            if flat_batch:
+                batches.append(flat_batch)
+                    
         total_losses = defaultdict(float)
         
         for batch_data in batches:

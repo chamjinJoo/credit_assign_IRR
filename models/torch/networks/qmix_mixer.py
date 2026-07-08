@@ -26,6 +26,7 @@ class QMixer(nn.Module):
         mixing_embed_dim: int = 32,
         hypernet_layers: int = 2,
         hypernet_embed: int = 64,
+        init_scale: float = None,
     ):
         super(QMixer, self).__init__()
         
@@ -60,6 +61,16 @@ class QMixer(nn.Module):
             nn.ReLU(),
             nn.Linear(self.embed_dim, 1)
         )
+
+        if init_scale is not None:
+            self._init_weights(float(init_scale))
+
+    def _init_weights(self, init_scale: float):
+        for module in self.modules():
+            if isinstance(module, nn.Linear):
+                nn.init.orthogonal_(module.weight, gain=init_scale)
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
     
     def forward(self, agent_qs: torch.Tensor, states: torch.Tensor) -> torch.Tensor:
         """

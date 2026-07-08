@@ -2,7 +2,7 @@
 # env setting
 env="StagHunt"
 num_agents=3
-config="configs/stag_hunt.yaml"
+config="configs/staghunt_configs/staghunt_ippo.yaml"
  
 # model setting
 model="r-ippo"

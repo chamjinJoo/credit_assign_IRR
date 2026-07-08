@@ -9,6 +9,7 @@ import torch.optim as optim
 
 from .networks import NaivePredictor, OutcomeBridgeNetwork
 from .qmix import QMIXRNNAgent, rQMIXAgent, rQMIXAlgorithm
+from .qmix_preprocessing import qmix_extract_policy_hidden
 from .r_pci import RBFKernel
 
 
@@ -74,8 +75,13 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         mixing_embed_dim: int = 32,
         hypernet_layers: int = 2,
         hypernet_embed: int = 64,
+        mixer_init_scale: float = 1.0e-3,
+        reward_scale: float = 1.0,
+        standardize_rewards: bool = False,
         replay_buffer_size: int = 5000,
         train_batch_size: int = 32,
+        qmix_update_epochs: Optional[int] = None,
+        learning_starts: int = 0,
         device: str = "cpu",
         use_episode_buffer: bool = True,
         global_reward: bool = True,
@@ -120,8 +126,13 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             mixing_embed_dim=mixing_embed_dim,
             hypernet_layers=hypernet_layers,
             hypernet_embed=hypernet_embed,
+            mixer_init_scale=mixer_init_scale,
+            reward_scale=reward_scale,
+            standardize_rewards=standardize_rewards,
             replay_buffer_size=replay_buffer_size,
             train_batch_size=train_batch_size,
+            qmix_update_epochs=qmix_update_epochs,
+            learning_starts=learning_starts,
             device=device,
             use_episode_buffer=use_episode_buffer,
             gae_lambda=gae_lambda,
@@ -166,6 +177,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         self.clip_delta = clip_delta
         self.train_naivepredictor = train_naivepredictor
         self.agent_delta_td_coef = agent_delta_td_coef
+        self._other_agent_mask_cache = {}
 
         # Replace wrappers so rollout storage keeps h_{t-1}, not h_t.
         self.agents = {
@@ -334,21 +346,13 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         return actions_batch
 
     def _extract_policy_hidden(self, hidden_entry) -> torch.Tensor:
-        if isinstance(hidden_entry, (tuple, list)):
-            hidden_entry = hidden_entry[0] if hidden_entry else None
-        if hidden_entry is None:
-            return torch.zeros(self.hidden_dim, device=self.device)
-        hidden = hidden_entry.detach().to(self.device).float().reshape(-1)
-        if hidden.numel() == 0:
-            return torch.zeros(self.hidden_dim, device=self.device)
-        if hidden.numel() < self.hidden_dim:
-            padded = torch.zeros(self.hidden_dim, device=self.device)
-            padded[-hidden.numel():] = hidden
-            return padded
-        return hidden[-self.hidden_dim:]
+        return qmix_extract_policy_hidden(hidden_entry, self.hidden_dim)
 
     def _pad_and_stack(self, episodes: List[List[Dict]]) -> Dict[str, torch.Tensor]:
         batch = super()._pad_and_stack(episodes)
+        if all(key in batch for key in ("raw_agent_rewards", "prev_actions", "hidden_states")):
+            return batch
+
         batch_size, max_t = batch["rewards"].shape
 
         raw_agent_rewards = torch.zeros(
@@ -436,6 +440,21 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             te_idx = torch.arange(te_start, te_end, device=device)
             yield (te_idx.unsqueeze(1) * self.num_agents + agent_offsets.unsqueeze(0)).reshape(-1)
 
+    def _other_agent_mask(self, sample_count: int, feature_dim: int, device) -> torch.Tensor:
+        key = (sample_count, feature_dim, str(device))
+        cached = self._other_agent_mask_cache.get(key)
+        if cached is not None and cached.device == device:
+            return cached
+        mask = ~torch.eye(self.num_agents, dtype=torch.bool, device=device)
+        mask = mask.unsqueeze(0).unsqueeze(-1).expand(
+            sample_count,
+            -1,
+            -1,
+            feature_dim,
+        )
+        self._other_agent_mask_cache[key] = mask
+        return mask
+
     def _valid_transition_tensors(
         self,
         batch: Dict[str, torch.Tensor],
@@ -496,12 +515,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         Y_super = rewards.repeat_interleave(num_agents, dim=0)
 
         expanded_obs = obs.unsqueeze(1).expand(-1, num_agents, -1, -1)
-        obs_mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
-            sample_count,
-            -1,
-            -1,
-            self.policy_obs_dim,
-        )
+        obs_mask = self._other_agent_mask(sample_count, self.policy_obs_dim, device)
         W_super = expanded_obs[obs_mask].view(sample_count * num_agents, -1)
 
         prev_actions_onehot = F.one_hot(
@@ -514,12 +528,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             -1,
             -1,
         )
-        prev_action_mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
-            sample_count,
-            -1,
-            -1,
-            self.action_dim,
-        )
+        prev_action_mask = self._other_agent_mask(sample_count, self.action_dim, device)
         prev_action_others = expanded_prev_actions[prev_action_mask].view(
             sample_count * num_agents,
             -1,
@@ -527,12 +536,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
 
         H_all = hidden_states.reshape(sample_count, num_agents, self.hidden_dim)
         H_all_expanded = H_all.unsqueeze(1).expand(-1, num_agents, -1, -1)
-        hid_mask = ~torch.eye(num_agents, dtype=torch.bool, device=device).unsqueeze(0).unsqueeze(-1).expand(
-            sample_count,
-            -1,
-            -1,
-            self.hidden_dim,
-        )
+        hid_mask = self._other_agent_mask(sample_count, self.hidden_dim, device)
         H_others = H_all_expanded[hid_mask].view(sample_count * num_agents, -1)
 
         obs_super = obs.reshape(sample_count * num_agents, self.policy_obs_dim)
@@ -879,13 +883,11 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         delta_flat_all[valid_idx] = delta_samples
         return delta_flat_all.view(B, T, N)
 
-    def _train_step(self, completed_episodes: List[List[Dict]]) -> Dict[str, float]:
-        n_available = len(completed_episodes)
-        sample_size = min(self.train_batch_size, n_available)
-        indices = np.random.choice(n_available, sample_size, replace=False)
-        sampled_episodes = [completed_episodes[i] for i in indices]
-        batch = self._pad_and_stack(sampled_episodes)
-
+    def _train_step_from_batch(
+        self,
+        batch: Dict[str, torch.Tensor],
+        bridge_metrics: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, float]:
         actions = batch["actions"]
         terminated = batch["terminated"]
         masks = batch["masks"]
@@ -902,9 +904,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             index=actions[:, :-1].unsqueeze(-1),
         ).squeeze(3)
 
-        if self.training_steps % self.bridge_update_interval == 0:
-            bridge_metrics = self.update_causal_networks_from_batch(batch)
-        else:
+        if bridge_metrics is None:
             bridge_metrics = {
                 "outcome_bridge_loss": 0.0,
                 "Kz_offdiag_mean": 0.0,
@@ -1012,3 +1012,60 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         }
         metrics.update(bridge_metrics)
         return metrics
+
+    def _train_step(self, completed_episodes: List[Dict]) -> Dict[str, float]:
+        batch = self._sample_batch_from_replay(completed_episodes)
+        bridge_metrics = self.update_causal_networks_from_batch(batch)
+        return self._train_step_from_batch(batch, bridge_metrics=bridge_metrics)
+
+    def update(self, **kwargs) -> Dict[str, float]:
+        if not self.buffer_manager.has_completed_episodes():
+            return {}
+
+        completed_episodes = self.buffer_manager.get_completed_episodes()
+        if not completed_episodes:
+            return {}
+
+        n_available = len(completed_episodes)
+        if n_available < self.train_batch_size:
+            return {}
+
+        metadata = {
+            "epsilon": self.epsilon,
+            "total_env_steps": self.total_env_steps,
+            "replay_buffer_episodes": n_available,
+            "qmix_update_epochs": float(self.qmix_update_epochs or 0),
+            "learning_starts": float(self.learning_starts),
+            "learning_started": float(self.total_env_steps >= self.learning_starts),
+            "reward_scale": float(self.reward_scale),
+            "standardize_rewards": float(self.standardize_rewards),
+            "mixer_init_scale": float(self.mixer_init_scale),
+        }
+
+        bridge_batch = self._sample_batch_from_replay(completed_episodes)
+        bridge_metrics = self.update_causal_networks_from_batch(bridge_batch)
+
+        if self.total_env_steps < self.learning_starts:
+            skipped = dict(bridge_metrics)
+            skipped.update(metadata)
+            skipped["num_updates"] = 0
+            return skipped
+
+        num_updates = (
+            self.qmix_update_epochs
+            if self.qmix_update_epochs is not None
+            else max(1, kwargs.get("num_episodes_collected", 1))
+        )
+
+        accumulated = defaultdict(float)
+        for _ in range(num_updates):
+            batch = self._sample_batch_from_replay(completed_episodes)
+            step_metrics = self._train_step_from_batch(batch)
+            for key, value in step_metrics.items():
+                accumulated[key] += value
+
+        losses = {key: value / num_updates for key, value in accumulated.items()}
+        losses.update(bridge_metrics)
+        losses.update(metadata)
+        losses["num_updates"] = num_updates
+        return losses

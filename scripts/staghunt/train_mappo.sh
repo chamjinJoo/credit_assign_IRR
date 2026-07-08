@@ -2,7 +2,7 @@
 # env setting
 env="StagHunt"
 num_agents=3
-config="configs/stag_hunt.yaml"
+config="configs/staghunt_configs/staghunt_mappo.yaml"
 
 # model setting
 model="r-mappo" # [pci-rnn, pci-mappo, mappo, ippo, ippo-rnn, mappo-rnn]
