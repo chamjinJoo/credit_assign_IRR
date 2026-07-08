@@ -7,6 +7,7 @@ gs1_checkpoints/
 # runs (consolidated checkpoints/wandb/logs)
 runs/
 wandb/
+jobs.md
 
 # plots
 plots/
@@ -17,7 +18,6 @@ logs/
 
 # __pycache__
 __pycache__/
-.agents/
 
 # figures\
 figures/
@@ -38,6 +38,12 @@ not_for_submit/
 legacy/
 src/
 
-# vscode
+# IDE or Chatbot specific files
 .vscode/
 .claude/
+.idea/
+.agents/
+AGENT.md
+
+# others
+merge.sh

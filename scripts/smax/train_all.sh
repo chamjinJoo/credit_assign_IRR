@@ -247,7 +247,7 @@ run_training() {
     local lr_args=()
     local lr_delta_critic
     local causal_args=()
-    local causal_lambda_value=""
+    local causal_lambda_value="0.1"
     local rollout_threads="${n_rollout_threads}"
 
     config="$(get_config "${algorithm}")"
@@ -259,7 +259,7 @@ run_training() {
         causal_lambda_value="${PCI_CAUSAL_LAMBDA:-0.1}"
         causal_args=(--causal-lambda "${causal_lambda_value}" --lr-delta-critic "${lr_delta_critic}")
     elif [[ "${algorithm}" == "pci-qmix" || "${algorithm}" == "pci_qmix" ]]; then
-        causal_lambda_value="${PCI_QMIX_CAUSAL_LAMBDA:-1.0}"
+        causal_lambda_value="${PCI_QMIX_CAUSAL_LAMBDA:-0.1}"
         causal_args=(--causal-lambda "${causal_lambda_value}" --lr-bridge "${LR_BRIDGE:-0.002}")
     fi
     if [[ "${algorithm}" == "qmix" || "${algorithm}" == "pci-qmix" || "${algorithm}" == "pci_qmix" ]]; then
