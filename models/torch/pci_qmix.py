@@ -746,17 +746,23 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         batch: Dict[str, torch.Tensor],
         mac_out: torch.Tensor,
         baseline_type: str = "weighted",
+        return_valid_mask: bool = False,
     ) -> torch.Tensor:
         B, Tp1, N = batch["actions"].shape
         T = Tp1 - 1
         delta_flat_all = torch.zeros(B * T, N, device=self.device)
+        valid_delta_flat_all = torch.zeros(B * T, N, dtype=torch.bool, device=self.device)
 
         if self.get_current_causal_lambda() == 0.0:
+            if return_valid_mask:
+                return delta_flat_all.view(B, T, N), valid_delta_flat_all.view(B, T, N)
             return delta_flat_all.view(B, T, N)
 
         data = self._valid_transition_tensors(batch, mac_out=mac_out)
         valid_idx = data["valid_idx"]
         if valid_idx.numel() == 0:
+            if return_valid_mask:
+                return delta_flat_all.view(B, T, N), valid_delta_flat_all.view(B, T, N)
             return delta_flat_all.view(B, T, N)
 
         obs = data["obs"]
@@ -836,9 +842,10 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                     valid_cf = non_factual_mask
                     if avail_flat is not None:
                         valid_cf = valid_cf * avail_flat
-                    denom = valid_cf.sum(dim=1, keepdim=True).clamp_min(1.0)
+                    cf_count = valid_cf.sum(dim=1, keepdim=True)
+                    denom = cf_count.clamp_min(1.0)
                     baseline = (r_hat_all * valid_cf.unsqueeze(2)).sum(dim=1) / denom
-                    no_valid_cf = None
+                    no_valid_cf = cf_count <= 1e-10
                 elif baseline_type == "max":
                     valid_cf = non_factual_mask.bool()
                     if avail_flat is not None:
@@ -852,18 +859,19 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                 else:
                     raise ValueError(f"Invalid baseline type: {baseline_type}")
 
+                valid_effects = ~no_valid_cf.view(curr_bs, N)
+
                 if self.global_reward:
                     rewards_flat = rewards_b.unsqueeze(1).expand(-1, N, -1).reshape(
                         curr_bs * N,
                         reward_dim,
                     )
                     raw_effects = rewards_flat - baseline
-                    if no_valid_cf is not None:
-                        raw_effects = torch.where(
-                            no_valid_cf,
-                            torch.zeros_like(raw_effects),
-                            raw_effects,
-                        )
+                    raw_effects = torch.where(
+                        no_valid_cf,
+                        torch.zeros_like(raw_effects),
+                        raw_effects,
+                    )
                     delta_chunk = raw_effects.view(curr_bs, N, 1).squeeze(-1)
                 else:
                     rewards_flat = rewards_b.unsqueeze(1).expand(-1, N, -1).reshape(
@@ -871,12 +879,11 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                         reward_dim,
                     )
                     raw_effects = rewards_flat - baseline
-                    if no_valid_cf is not None:
-                        raw_effects = torch.where(
-                            no_valid_cf,
-                            torch.zeros_like(raw_effects),
-                            raw_effects,
-                        )
+                    raw_effects = torch.where(
+                        no_valid_cf,
+                        torch.zeros_like(raw_effects),
+                        raw_effects,
+                    )
                     C_chunk = raw_effects.view(curr_bs, N, N)
                     delta_chunk = C_chunk.sum(dim=2)
 
@@ -886,14 +893,19 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                     else:
                         alive = (avail_b.sum(dim=-1) > 0).float()
                     delta_chunk = delta_chunk * alive
+                    valid_effects = valid_effects & (alive > 0)
 
                 if self.clip_delta > 0.0:
-                    delta_chunk = delta_chunk.clone()
-                    delta_chunk[torch.abs(delta_chunk) < self.clip_delta] = 0.0
+                    keep_delta = torch.abs(delta_chunk) >= self.clip_delta
+                    delta_chunk = torch.where(keep_delta, delta_chunk, torch.zeros_like(delta_chunk))
+                    valid_effects = valid_effects & keep_delta
 
                 delta_samples[start:end] = delta_chunk
+                valid_delta_flat_all[valid_idx[start:end]] = valid_effects
 
         delta_flat_all[valid_idx] = delta_samples
+        if return_valid_mask:
+            return delta_flat_all.view(B, T, N), valid_delta_flat_all.view(B, T, N)
         return delta_flat_all.view(B, T, N)
 
     def _train_step_from_batch(
@@ -924,48 +936,42 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
                 "Kz_offdiag_std": 0.0,
             }
 
-        delta_agent = self.compute_causal_deltas_from_batch(batch, mac_out.detach())
+        delta_agent, valid_delta_mask = self.compute_causal_deltas_from_batch(
+            batch,
+            mac_out.detach(),
+            return_valid_mask=True,
+        )
         agent_masks = masks.unsqueeze(-1).expand(B, T, self.num_agents)
         valid_agent_mask = agent_masks > 0
-        delta_team_raw = delta_agent.sum(dim=-1)
-        valid_team_mask = masks > 0
-        valid_raw_delta_team = delta_team_raw[valid_team_mask]
-        if valid_raw_delta_team.numel() == 0:
-            delta_team_mean_tensor = torch.zeros((), device=self.device)
-            delta_team_std_tensor = torch.ones((), device=self.device)
-            delta_team = delta_team_raw
-        elif self.standardize_delta:
-            delta_team_mean_tensor = valid_raw_delta_team.mean()
-            delta_team_std_tensor = valid_raw_delta_team.std(unbiased=False).clamp_min(1e-8)
-            delta_team = (delta_team_raw - delta_team_mean_tensor) / delta_team_std_tensor
-            delta_team = torch.where(valid_team_mask, delta_team, torch.zeros_like(delta_team))
-        else:
-            delta_team_mean_tensor = valid_raw_delta_team.mean()
-            delta_team_std_tensor = valid_raw_delta_team.std(unbiased=False).clamp_min(1e-8)
-            delta_team = delta_team_raw
-        valid_delta_agent_flat = delta_agent[valid_agent_mask]
+        valid_delta_agent_mask = valid_agent_mask & valid_delta_mask
+        valid_delta_agent_flat = delta_agent[valid_delta_agent_mask]
+
         if valid_delta_agent_flat.numel() == 0:
-            delta_agent_mean_tensor = torch.zeros((), device=self.device)
-            delta_agent_std_tensor = torch.ones((), device=self.device)
-            delta_agent_for_target = delta_agent
+            delta_agent_for_target = torch.zeros_like(delta_agent)
         elif self.standardize_delta:
-            delta_agent_mean_tensor = valid_delta_agent_flat.mean()
-            delta_agent_std_tensor = valid_delta_agent_flat.std(unbiased=False).clamp_min(1e-8)
-            delta_agent_for_target = (delta_agent - delta_agent_mean_tensor) / delta_agent_std_tensor
+            delta_mean = valid_delta_agent_flat.mean()
+            delta_std = valid_delta_agent_flat.std(unbiased=False).clamp_min(1e-8)
+            delta_agent_for_target = (delta_agent - delta_mean) / delta_std
             delta_agent_for_target = torch.where(
-                valid_agent_mask,
+                valid_delta_agent_mask,
                 delta_agent_for_target,
                 torch.zeros_like(delta_agent_for_target),
             )
         else:
-            delta_agent_mean_tensor = valid_delta_agent_flat.mean()
-            delta_agent_std_tensor = valid_delta_agent_flat.std(unbiased=False).clamp_min(1e-8)
-            delta_agent_for_target = delta_agent
+            delta_agent_for_target = torch.where(
+                valid_delta_agent_mask,
+                delta_agent,
+                torch.zeros_like(delta_agent),
+            )
 
         causal_lambda = float(self.get_current_causal_lambda())
         env_team_reward = batch["rewards"]
-        shaped_team_reward = env_team_reward + causal_lambda * delta_team
-        agent_shaped_reward = env_team_reward.unsqueeze(-1) + causal_lambda * delta_agent_for_target
+        if "raw_agent_rewards" in batch:
+            agent_env_reward = batch["raw_agent_rewards"][:, :T]
+        else:
+            agent_env_reward = env_team_reward.unsqueeze(-1).expand(B, T, self.num_agents) / self.num_agents
+        agent_shaped_reward = agent_env_reward + causal_lambda * delta_agent_for_target
+        shaped_team_reward = agent_shaped_reward.sum(dim=-1)
 
         with torch.no_grad():
             target_mac_out = self._forward_agent_q_values(batch, self.target_q_network)

@@ -15,7 +15,7 @@ lr_bridge=0.001
 causal_lambda=1.0
 bridge_epoch=4
 causal_mini_batch_size=2000
-standardize_delta=true
+standardize_delta=false
 agent_delta_td_coef=1.0
 
 # training and logging
