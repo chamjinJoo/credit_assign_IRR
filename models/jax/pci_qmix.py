@@ -361,7 +361,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         centered = (delta_agent - delta_mean) * agent_masks
         delta_std = jnp.sqrt(jnp.sum(jnp.square(centered)) / denom)
         delta_abs_mean = jnp.sum(jnp.abs(delta_agent) * agent_masks) / denom
-        team_delta = jnp.sum(delta_agent, axis=-1)
+        team_delta = jnp.mean(delta_agent, axis=-1)
         team_denom = jnp.maximum(jnp.sum(masks), 1.0)
         delta_team_mean = jnp.sum(team_delta * masks) / team_denom
 
@@ -551,7 +551,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
                 masks = batch["masks"][..., None]
                 agent_masks = jnp.broadcast_to(batch["masks"][..., None], chosen_q.shape)
 
-                delta_team_raw = jnp.sum(delta_agent, axis=-1)
+                delta_team_raw = jnp.mean(delta_agent, axis=-1)
                 team_denom_stats = jnp.maximum(jnp.sum(batch["masks"]), 1.0)
                 delta_team_mean = jnp.sum(delta_team_raw * batch["masks"]) / team_denom_stats
                 delta_team_var = (
@@ -593,7 +593,6 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
                 denom = jnp.maximum(jnp.sum(masks), 1.0)
                 qmix_loss = jnp.sum(jnp.square(masked_td_error)) / denom
 
-                effective_agent_delta_td_coef = self.agent_delta_td_coef * causal_lambda
                 if self.agent_delta_td_coef > 0.0:
                     agent_targets = (
                         agent_shaped_reward
@@ -607,27 +606,16 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
                     agent_delta_td_loss = jnp.array(0.0, dtype=jnp.float32)
                     agent_td_error_abs = jnp.array(0.0, dtype=jnp.float32)
 
-                loss = qmix_loss + effective_agent_delta_td_coef * agent_delta_td_loss
+                loss = qmix_loss + self.agent_delta_td_coef * agent_delta_td_loss
                 metrics = {
                     "loss": loss,
                     "qmix_loss": qmix_loss,
                     "agent_delta_td_loss": agent_delta_td_loss,
                     "causal_lambda": causal_lambda,
-                    "effective_agent_delta_td_coef": effective_agent_delta_td_coef,
-                    "env_reward_mean": jnp.sum(env_rewards * masks) / denom,
-                    "delta_team_mean": jnp.sum(delta_rewards * masks) / denom,
-                    "shaped_reward_mean": jnp.sum(shaped_rewards * masks) / denom,
                     "td_error_abs": jnp.sum(jnp.abs(masked_td_error)) / denom,
                     "agent_td_error_abs": agent_td_error_abs,
                     "q_taken_mean": jnp.sum(chosen_tot * masks) / (denom * self.num_agents),
                     "target_mean": jnp.sum(targets * masks) / (denom * self.num_agents),
-                    "standardize_delta": jnp.asarray(float(self.standardize_delta), dtype=jnp.float32),
-                    "delta_standardization_mean": delta_team_mean,
-                    "delta_standardization_std": delta_team_std,
-                    "agent_delta_standardization_mean": delta_agent_mean,
-                    "agent_delta_standardization_std": delta_agent_std,
-                    "agent_shaped_reward_mean": jnp.sum(agent_shaped_reward * agent_masks)
-                    / agent_denom_stats,
                 }
                 metrics.update(delta_metrics)
                 return loss, metrics

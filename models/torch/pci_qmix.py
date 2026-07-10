@@ -1029,7 +1029,8 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         else:
             agent_env_reward = env_team_reward.unsqueeze(-1).expand(B, T, self.num_agents) / self.num_agents
         agent_shaped_reward = agent_env_reward + causal_lambda * delta_agent_for_target
-        shaped_team_reward = agent_shaped_reward.sum(dim=-1)
+        delta_team = delta_agent_for_target.mean(dim=-1)
+        shaped_team_reward = env_team_reward + causal_lambda * delta_team
 
         with torch.no_grad():
             target_mac_out = self._forward_agent_q_values(batch, self.target_q_network)
