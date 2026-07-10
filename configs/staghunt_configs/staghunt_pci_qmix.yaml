@@ -25,7 +25,7 @@ algorithm:
   hypernet_embed: 64
   mixer_init_scale: 1.0e-3
   reward_scale: 1.0
-  standardize_rewards: true
+  standardize_rewards: false
   replay_buffer_size: 5000
   train_batch_size: 32
   learning_starts: 0

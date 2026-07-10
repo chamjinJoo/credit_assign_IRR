@@ -2,6 +2,8 @@ from typing import Dict, List
 
 import torch
 
+from models.torch.common import classify_staghunt_delta_scenario
+
 
 _REWARD_STANDARDIZATION_EPS = 1e-8
 
@@ -34,6 +36,7 @@ def qmix_pack_episode(
     hidden_dim: int,
     reward_scale: float,
     standardize_rewards: bool = False,
+    env_required_agents=None,
 ) -> Dict[str, torch.Tensor]:
     t_len = len(episode)
     tp1 = t_len + 1
@@ -49,7 +52,26 @@ def qmix_pack_episode(
     available_actions = torch.ones(tp1, num_agents, action_dim, dtype=torch.float32)
     prev_actions = torch.zeros(t_len, num_agents, dtype=torch.long)
     hidden_states = torch.zeros(t_len, num_agents, hidden_dim, dtype=torch.float32)
+    staghunt_delta_categories = torch.zeros(t_len, num_agents, 4, dtype=torch.bool)
     has_available_actions = False
+
+    required_agents = env_required_agents
+    if required_agents is None and episode:
+        first_info = episode[0].get("info", {}) or {}
+        huntable_objects = first_info.get("huntable_objects", {}) or {}
+        huntable_stags = huntable_objects.get("huntable_stags", {}) or {}
+        required_agents = {
+            int(stag_id): list(stag_info.get("required_agents", []))
+            for stag_id, stag_info in huntable_stags.items()
+            if isinstance(stag_info, dict) and "required_agents" in stag_info
+        } or None
+
+    category_index = {
+        "stag_reward": 0,
+        "forage_reward": 1,
+        "focal_forage_reward": 2,
+        "no_reward": 3,
+    }
 
     for t, trans in enumerate(episode):
         obs_t = [_obs_tensor_cpu(trans["bold_o_t"][i]) for i in range(num_agents)]
@@ -66,6 +88,16 @@ def qmix_pack_episode(
         ) * float(reward_scale)
         raw_agent_rewards[t] = reward_t
         terminated[t] = 1.0 if any(trans["dones"].values()) else 0.0
+
+        if trans.get("info", {}).get("stag_hunts") is not None:
+            for agent_id in range(num_agents):
+                scenario = classify_staghunt_delta_scenario(
+                    trans,
+                    agent_id,
+                    num_agents,
+                    required_agents,
+                )
+                staghunt_delta_categories[t, agent_id, category_index[scenario]] = True
 
         prev_action_dict = trans.get("bold_a_t_minus_1", {})
         prev_actions[t] = torch.tensor(
@@ -130,6 +162,7 @@ def qmix_pack_episode(
         "has_available_actions": torch.tensor(1 if has_available_actions else 0, dtype=torch.bool),
         "prev_actions": prev_actions,
         "hidden_states": hidden_states,
+        "staghunt_delta_categories": staghunt_delta_categories,
     }
 
 
@@ -157,6 +190,8 @@ def qmix_stack_packed_episodes(
     available_actions = torch.ones(batch_size, tp1, num_agents, action_dim, device=device)
     prev_actions = torch.zeros(batch_size, max_t, num_agents, dtype=torch.long, device=device)
     hidden_states = torch.zeros(batch_size, max_t, num_agents, hidden_dim, device=device)
+    staghunt_delta_categories = torch.zeros(batch_size, max_t, num_agents, 4, dtype=torch.bool, device=device)
+    has_staghunt_delta_categories = False
     has_available_actions = False
 
     for b, episode in enumerate(episodes):
@@ -170,6 +205,9 @@ def qmix_stack_packed_episodes(
         masks[b, :t_len] = episode["masks"][:t_len].to(device)
         prev_actions[b, :t_len] = episode["prev_actions"][:t_len].to(device)
         hidden_states[b, :t_len] = episode["hidden_states"][:t_len].to(device)
+        if "staghunt_delta_categories" in episode:
+            staghunt_delta_categories[b, :t_len] = episode["staghunt_delta_categories"][:t_len].to(device)
+            has_staghunt_delta_categories = True
         if bool(episode["has_available_actions"].item()):
             has_available_actions = True
             available_actions[b, : t_len + 1] = episode["available_actions"][: t_len + 1].to(device)
@@ -185,6 +223,8 @@ def qmix_stack_packed_episodes(
         "prev_actions": prev_actions,
         "hidden_states": hidden_states,
     }
+    if has_staghunt_delta_categories:
+        result["staghunt_delta_categories"] = staghunt_delta_categories
     if has_available_actions:
         result["available_actions"] = available_actions
     return result

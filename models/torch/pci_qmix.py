@@ -457,6 +457,29 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         self._other_agent_mask_cache[key] = mask
         return mask
 
+    def _recompute_decision_hidden_states(
+        self,
+        batch: Dict[str, torch.Tensor],
+    ) -> torch.Tensor:
+        agent_obs = batch["agent_obs"]
+        actions = batch["actions"]
+        B, Tp1, N, _ = agent_obs.shape
+        decision_hidden = []
+        hidden = self.shared_q_network.init_hidden().expand(B * N, -1).contiguous()
+
+        with torch.no_grad():
+            for t in range(Tp1 - 1):
+                decision_hidden.append(hidden.view(B, N, self.hidden_dim).detach())
+                obs_t = agent_obs[:, t]
+                if t == 0:
+                    prev_act = torch.zeros(B, N, self.action_dim, device=self.device)
+                else:
+                    prev_act = F.one_hot(actions[:, t - 1], self.action_dim).float()
+                inputs = torch.cat([obs_t, prev_act], dim=-1).reshape(B * N, -1)
+                _, hidden = self.shared_q_network(inputs, hidden)
+
+        return torch.stack(decision_hidden, dim=1)
+
     def _valid_transition_tensors(
         self,
         batch: Dict[str, torch.Tensor],
@@ -473,12 +496,13 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         def select_time(tensor: torch.Tensor) -> torch.Tensor:
             return tensor.reshape(B * T, *tensor.shape[2:])[valid_idx]
 
+        decision_hidden = self._recompute_decision_hidden_states(batch)
         data = {
             "valid_idx": valid_idx,
             "obs": select_time(batch["agent_obs"][:, :-1]),
             "actions": select_time(batch["actions"][:, :-1]),
             "prev_actions": select_time(batch["prev_actions"]),
-            "hidden_states": select_time(batch["hidden_states"]),
+            "hidden_states": select_time(decision_hidden),
             "terminated": batch["terminated"].reshape(B * T)[valid_idx],
         }
         if self.global_reward:
@@ -739,6 +763,40 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         }
         if self.train_naivepredictor:
             metrics["naive_loss"] = avg_naive_loss / denom_updates
+        return metrics
+
+    def _staghunt_delta_debug_metrics(
+        self,
+        batch: Dict[str, torch.Tensor],
+        delta_agent: torch.Tensor,
+        valid_delta_mask: torch.Tensor,
+        masks: torch.Tensor,
+    ) -> Dict[str, float]:
+        categories = batch.get("staghunt_delta_categories")
+        if categories is None:
+            return {}
+
+        category_names = (
+            "delta_stag_reward",
+            "delta_others_hare",
+            "delta_forcal_hare",
+            "delta_null",
+        )
+        categories = categories[:, : delta_agent.size(1)].bool()
+        valid_mask = (masks.unsqueeze(-1) > 0) & valid_delta_mask
+
+        metrics = {}
+        for agent_id in range(self.num_agents):
+            agent_delta = delta_agent[:, :, agent_id]
+            agent_valid = valid_mask[:, :, agent_id]
+            for cat_idx, cat_name in enumerate(category_names):
+                cat_mask = categories[:, :, agent_id, cat_idx] & agent_valid
+                count = int(cat_mask.sum().item())
+                if count == 0:
+                    continue
+                key = f"delta_agent_{agent_id}_{cat_name}"
+                metrics[f"{key}_mean"] = agent_delta[cat_mask].mean().item()
+                metrics[f"{key}_count"] = float(count)
         return metrics
 
     def compute_causal_deltas_from_batch(
@@ -1017,8 +1075,7 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         masked_agent_td_error = agent_td_error * agent_masks
         agent_delta_td_loss = (masked_agent_td_error ** 2).sum() / agent_masks.sum().clamp(min=1.0)
 
-        effective_agent_delta_td_coef = self.agent_delta_td_coef * causal_lambda
-        loss = qmix_loss + effective_agent_delta_td_coef * agent_delta_td_loss
+        loss = qmix_loss + self.agent_delta_td_coef * agent_delta_td_loss
 
         self.optimizer.zero_grad()
         loss.backward()
@@ -1044,6 +1101,14 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             "target_mean": (targets * masks_expanded).sum().item()
             / (mask_sum * self.num_agents),
         }
+        metrics.update(
+            self._staghunt_delta_debug_metrics(
+                batch,
+                delta_agent,
+                valid_delta_mask,
+                masks,
+            )
+        )
         metrics.update(bridge_metrics)
         return metrics
 

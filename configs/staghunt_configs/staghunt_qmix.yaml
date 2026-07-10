@@ -55,9 +55,9 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0
   grid_observation: true
-  obs_noise_std: 0.1
+  obs_noise_std: 0.0
 
 wandb:
   use_wandb: false
-  project: "pci-marl-staghunt-noise"
+  project: "pci-marl-staghunt-vanilla"
   tags: ["torch", "staghunt", "qmix"]

@@ -611,6 +611,7 @@ class rQMIXAlgorithm:
             hidden_dim=self.hidden_dim,
             reward_scale=self.reward_scale,
             standardize_rewards=self.standardize_rewards,
+            env_required_agents=getattr(getattr(self, "env", None), "required_agents", None),
         )
 
     def _stack_packed_episodes(self, episodes: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:

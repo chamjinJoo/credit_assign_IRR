@@ -190,12 +190,22 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         self,
         batch: Dict[str, jnp.ndarray],
         mac_out: Optional[jnp.ndarray] = None,
+        agent_params: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, jnp.ndarray]:
+        actor_hidden = None
+        if agent_params is not None:
+            _, actor_hidden = self._forward_agent_q_values_and_hidden(
+                agent_params,
+                batch["agent_obs"],
+                batch["actions"],
+            )
+            actor_hidden = jax.lax.stop_gradient(actor_hidden[:, :-1])
         return qmix_batch_to_bridge_rollout(
             batch,
             action_dim=self.action_dim,
             masked_q_values=self._masked_q_values,
             mac_out=mac_out,
+            actor_hidden=actor_hidden,
         )
 
     def _masked_delta_metrics(
@@ -209,6 +219,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
     def _weighted_delta_from_batch(
         self,
         bridge_params: Dict[str, Any],
+        agent_params: Dict[str, Any],
         batch: Dict[str, jnp.ndarray],
         mac_out: jnp.ndarray,
     ):
@@ -224,7 +235,13 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
             (self.num_agents - 1) * self.policy_obs_dim,
         )
 
-        hidden_tm = jnp.swapaxes(batch["actor_hidden"], 0, 1)
+        _, actor_hidden = self._forward_agent_q_values_and_hidden(
+            agent_params,
+            batch["agent_obs"],
+            batch["actions"],
+        )
+        actor_hidden = jax.lax.stop_gradient(actor_hidden[:, :-1])
+        hidden_tm = jnp.swapaxes(actor_hidden, 0, 1)
         hidden_4d = hidden_tm.reshape(flat_batch, self.num_agents, self.actor_state_dim)
         hidden_others = gather_other_agent_obs(hidden_4d).reshape(-1, self.bridge_hidden_dim)
 
@@ -483,6 +500,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
                 )
                 delta_agent, _, delta_metrics = self._weighted_delta_from_batch(
                     bridge_params_value,
+                    params["agent"],
                     batch,
                     mac_out,
                 )
@@ -670,7 +688,10 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
         )
 
         bridge_batch = self._sample_batch(n_available)
-        bridge_rollout = self._batch_to_bridge_rollout(bridge_batch)
+        bridge_rollout = self._batch_to_bridge_rollout(
+            bridge_batch,
+            agent_params=self.train_state.params["agent"],
+        )
         bridge_metrics = self.update_causal_networks(bridge_rollout)
 
         if self.total_env_steps < self.learning_starts:

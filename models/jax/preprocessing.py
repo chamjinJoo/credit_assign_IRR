@@ -484,6 +484,7 @@ def qmix_batch_to_bridge_rollout(
     action_dim: int,
     masked_q_values,
     mac_out: jnp.ndarray | None = None,
+    actor_hidden: jnp.ndarray | None = None,
 ) -> Dict[str, jnp.ndarray]:
     obs = jnp.swapaxes(batch["agent_obs"][:, :-1], 0, 1)
     actions = jnp.swapaxes(batch["actions"][:, :-1], 0, 1)
@@ -491,7 +492,9 @@ def qmix_batch_to_bridge_rollout(
     masks = jnp.swapaxes(batch["masks"], 0, 1)
     dones = jnp.swapaxes(batch["terminated"], 0, 1)
     avail_actions = jnp.swapaxes(batch["available_actions"][:, :-1], 0, 1)
-    actor_hidden = jnp.swapaxes(batch["actor_hidden"], 0, 1)
+    if actor_hidden is None:
+        actor_hidden = batch["actor_hidden"]
+    actor_hidden = jnp.swapaxes(actor_hidden, 0, 1)
     prev_actions = jnp.swapaxes(batch["prev_actions"], 0, 1)
     agent_dones = jnp.swapaxes(batch["agent_dones"], 0, 1)
 

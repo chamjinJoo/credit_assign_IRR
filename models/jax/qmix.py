@@ -645,12 +645,12 @@ class JAXQMIXAlgorithm:
         return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *batches)
 
     @partial(jax.jit, static_argnums=0)
-    def _forward_agent_q_values(
+    def _forward_agent_q_values_and_hidden(
         self,
         agent_params: Dict[str, Any],
         agent_obs: jnp.ndarray,
         actions: jnp.ndarray,
-    ) -> jnp.ndarray:
+    ):
         batch_size, tp1, n_agents, _ = agent_obs.shape
         zero_prev = jnp.zeros(
             (batch_size, 1, n_agents, self.action_dim),
@@ -663,6 +663,7 @@ class JAXQMIXAlgorithm:
 
         def scan_fn(hidden, xs):
             obs_t, prev_actions_t = xs
+            decision_hidden = hidden.reshape(batch_size, n_agents, self.hidden_dim)
             inputs = jnp.concatenate([obs_t, prev_actions_t], axis=-1)
             inputs = inputs.reshape(batch_size * n_agents, -1)
             next_hidden, q_flat = self.agent_model.apply(
@@ -670,10 +671,11 @@ class JAXQMIXAlgorithm:
                 inputs,
                 hidden,
             )
-            return next_hidden, q_flat.reshape(batch_size, n_agents, self.action_dim)
+            q_values = q_flat.reshape(batch_size, n_agents, self.action_dim)
+            return next_hidden, (q_values, decision_hidden)
 
         init_hidden = jnp.zeros((batch_size * n_agents, self.hidden_dim), dtype=jnp.float32)
-        _, q_seq = jax.lax.scan(
+        _, (q_seq, hidden_seq) = jax.lax.scan(
             scan_fn,
             init_hidden,
             (
@@ -681,7 +683,21 @@ class JAXQMIXAlgorithm:
                 jnp.swapaxes(prev_actions, 0, 1),
             ),
         )
-        return jnp.swapaxes(q_seq, 0, 1)
+        return jnp.swapaxes(q_seq, 0, 1), jnp.swapaxes(hidden_seq, 0, 1)
+
+    @partial(jax.jit, static_argnums=0)
+    def _forward_agent_q_values(
+        self,
+        agent_params: Dict[str, Any],
+        agent_obs: jnp.ndarray,
+        actions: jnp.ndarray,
+    ) -> jnp.ndarray:
+        q_values, _ = self._forward_agent_q_values_and_hidden(
+            agent_params,
+            agent_obs,
+            actions,
+        )
+        return q_values
 
     @partial(jax.jit, static_argnums=0)
     def _train_step(
