@@ -272,7 +272,6 @@ class rQMIXAlgorithm:
         hypernet_embed: int = 64,
         mixer_init_scale: float = 1.0e-3,
         reward_scale: float = 1.0,
-        standardize_rewards: bool = False,
         replay_buffer_size: int = 5000,   # max episodes to keep in replay buffer
         train_batch_size: int = 32,       # number of episodes per training batch
         qmix_update_epochs: Optional[int] = None,
@@ -311,7 +310,6 @@ class rQMIXAlgorithm:
         self.qmix_update_epochs = qmix_update_epochs
         self.learning_starts = max(0, int(learning_starts))
         self.reward_scale = float(reward_scale)
-        self.standardize_rewards = bool(standardize_rewards)
         self.mixer_init_scale = float(mixer_init_scale)
         
         # Episode replay buffer (off-policy: episodes are kept across iterations)
@@ -610,7 +608,6 @@ class rQMIXAlgorithm:
             action_dim=self.action_dim,
             hidden_dim=self.hidden_dim,
             reward_scale=self.reward_scale,
-            standardize_rewards=self.standardize_rewards,
             env_required_agents=getattr(getattr(self, "env", None), "required_agents", None),
         )
 
@@ -645,7 +642,6 @@ class rQMIXAlgorithm:
             num_agents=self.num_agents,
             action_dim=self.action_dim,
             reward_scale=self.reward_scale,
-            standardize_rewards=self.standardize_rewards,
             device=self.device,
         )
     
@@ -825,7 +821,6 @@ class rQMIXAlgorithm:
             'learning_starts': float(self.learning_starts),
             'learning_started': float(self.total_env_steps >= self.learning_starts),
             'reward_scale': float(self.reward_scale),
-            'standardize_rewards': float(self.standardize_rewards),
             'mixer_init_scale': float(self.mixer_init_scale),
         }
 

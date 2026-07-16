@@ -77,7 +77,6 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
         hypernet_embed: int = 64,
         mixer_init_scale: float = 1.0e-3,
         reward_scale: float = 1.0,
-        standardize_rewards: bool = False,
         replay_buffer_size: int = 5000,
         train_batch_size: int = 32,
         qmix_update_epochs: Optional[int] = None,
@@ -129,7 +128,6 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             hypernet_embed=hypernet_embed,
             mixer_init_scale=mixer_init_scale,
             reward_scale=reward_scale,
-            standardize_rewards=standardize_rewards,
             replay_buffer_size=replay_buffer_size,
             train_batch_size=train_batch_size,
             qmix_update_epochs=qmix_update_epochs,
@@ -1138,7 +1136,6 @@ class rPCIQMIXAlgorithm(rQMIXAlgorithm):
             "learning_starts": float(self.learning_starts),
             "learning_started": float(self.total_env_steps >= self.learning_starts),
             "reward_scale": float(self.reward_scale),
-            "standardize_rewards": float(self.standardize_rewards),
             "standardize_delta": float(self.standardize_delta),
             "mixer_init_scale": float(self.mixer_init_scale),
         }

@@ -5,8 +5,6 @@ import torch
 from models.torch.common import classify_staghunt_delta_scenario
 
 
-_REWARD_STANDARDIZATION_EPS = 1e-8
-
 
 def qmix_extract_policy_hidden(hidden_entry, hidden_dim: int) -> torch.Tensor:
     if isinstance(hidden_entry, (tuple, list)):
@@ -35,7 +33,6 @@ def qmix_pack_episode(
     action_dim: int,
     hidden_dim: int,
     reward_scale: float,
-    standardize_rewards: bool = False,
     env_required_agents=None,
 ) -> Dict[str, torch.Tensor]:
     t_len = len(episode)
@@ -138,14 +135,6 @@ def qmix_pack_episode(
     if t_len > 1:
         masks[1:] *= 1.0 - terminated[:-1]
 
-    if standardize_rewards and t_len > 0:
-        valid_rewards = raw_agent_rewards[:t_len]
-        reward_mean = valid_rewards.mean()
-        reward_std = valid_rewards.std(unbiased=False).clamp(
-            min=_REWARD_STANDARDIZATION_EPS
-        )
-        raw_agent_rewards[:t_len] = (valid_rewards - reward_mean) / reward_std
-
     rewards[:t_len] = raw_agent_rewards[:t_len].sum(dim=-1)
 
     return {
@@ -238,7 +227,6 @@ def qmix_pad_and_stack_legacy(
     action_dim: int,
     reward_scale: float,
     device: torch.device,
-    standardize_rewards: bool = False,
 ) -> Dict[str, torch.Tensor]:
     batch_size = len(episodes)
     max_t = max(len(ep) for ep in episodes)
@@ -287,14 +275,6 @@ def qmix_pad_and_stack_legacy(
                 joint_obs[b, t + 1] = next_obs.reshape(-1)
 
         masks[b, :t_len] = 1.0
-
-        if standardize_rewards and t_len > 0:
-            valid_rewards = rewards[b, :t_len]
-            reward_mean = valid_rewards.mean()
-            reward_std = valid_rewards.std(unbiased=False).clamp(
-                min=_REWARD_STANDARDIZATION_EPS
-            )
-            rewards[b, :t_len] = (valid_rewards - reward_mean) / reward_std
 
     if max_t > 1:
         masks[:, 1:] = masks[:, 1:] * (1 - terminated[:, :-1])

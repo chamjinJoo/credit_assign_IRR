@@ -243,7 +243,7 @@ class JAXQMIXAlgorithm:
         self.target_params = copy.deepcopy(self.train_state.params)
 
     def _infer_episode_limit(self) -> Optional[int]:
-        for attr in ("max_steps", "episode_limit"):
+        for attr in ("max_steps", "episode_limit", "max_episode_steps"):
             value = getattr(self.env, attr, None)
             if value is not None:
                 try:
