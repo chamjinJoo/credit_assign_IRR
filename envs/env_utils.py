@@ -13,8 +13,20 @@ def create_environment(env_config) -> MultiAgentEnv:
     
     env_name = config_dict.get('env_name', 'null')
     normalized_env_name = str(env_name).lower().replace('-', '').replace('_', '')
+
+    if normalized_env_name in ('vote', 'voteenv'):
+        from .vote import VoteEnv
+        env_args = config_dict.get('env_args') or {}
+        return VoteEnv(
+            num_agents=env_args.get('n_agents', config_dict.get('num_agents', 4)),
+            episode_limit=env_args.get('episode_limit', config_dict.get('episode_limit', 3)),
+            observation_correct_prob=env_args.get(
+                'observation_correct_prob', config_dict.get('observation_correct_prob', 0.7)
+            ),
+            seed=env_args.get('seed', config_dict.get('seed', 0)),
+        )
     
-    if env_name == 'StagHunt' or env_name == 'StagHuntEnv':
+    elif env_name == 'StagHunt' or env_name == 'StagHuntEnv':
         from .stag_hunt import StagHuntEnv
         return StagHuntEnv(
             num_agents=config_dict.get('num_agents', 2),
@@ -104,6 +116,7 @@ def get_available_environments() -> Dict[str, str]:
     return {
         'StagHuntEnv': 'Stag-Hunt',
         'SMAX': 'JaxMARL SMAX',
+        'Vote': 'Cooperative Vote Dec-POMDP',
     }
 
 

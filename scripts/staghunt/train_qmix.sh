@@ -14,8 +14,7 @@ lr=0.0005
 n_rollout_threads=8
 device="cuda"
 seeds=(42 1 2 31 32)
-standardize_rewards=false
-run_name_postfix="no_standardize_rewards"
+run_name_postfix=""
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
@@ -23,7 +22,6 @@ for seed in "${seeds[@]}"; do
     echo "[seed=${seed}] start"
     python main.py --env ${env} --num-agents ${num_agents} \
         --config ${config} --model ${model} \
-        --standardize-rewards ${standardize_rewards} \
         --lr ${lr} \
         --n-rollout-threads ${n_rollout_threads} \
         --device ${device} \

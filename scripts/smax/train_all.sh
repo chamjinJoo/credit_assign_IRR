@@ -256,7 +256,7 @@ run_training() {
     lr_delta_critic="${DELTA_CRITIC_LR:-${lr}}"
 
     if [[ "${algorithm}" == "ipci" || "${algorithm}" == "mpci" ]]; then
-        causal_lambda_value="${PCI_CAUSAL_LAMBDA:-0.1}"
+        causal_lambda_value="${PCI_CAUSAL_LAMBDA:-1.0}"
         causal_args=(--causal-lambda "${causal_lambda_value}" --lr-delta-critic "${lr_delta_critic}")
     elif [[ "${algorithm}" == "pci-qmix" || "${algorithm}" == "pci_qmix" ]]; then
         causal_lambda_value="${PCI_QMIX_CAUSAL_LAMBDA:-1.0}"

@@ -11,7 +11,6 @@ model="pci-qmix"
 lr=0.0005
 
 # PCI-QMIX outcome bridge setting
-lr_bridge=0.001
 causal_lambda=1.0
 
 # training and logging
@@ -27,7 +26,6 @@ for seed in "${seeds[@]}"; do
     python main.py --env ${env} --num-agents ${num_agents} \
         --config ${config} --model ${model} \
         --lr ${lr} \
-        --lr-bridge ${lr_bridge} \
         --causal-lambda ${causal_lambda} \
         --n-rollout-threads ${n_rollout_threads} \
         --device ${device} \

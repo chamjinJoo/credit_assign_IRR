@@ -9,9 +9,9 @@ model="r-mappo" # [pci-rnn, pci-mappo, mappo, ippo, ippo-rnn, mappo-rnn]
 recurrent_N=1
 
 # training and logging
-n_rollout_threads=4
-device="cpu"
-seeds=(42 1 2 31 32)
+n_rollout_threads=16
+device="cuda"
+seeds=(31 32)
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8

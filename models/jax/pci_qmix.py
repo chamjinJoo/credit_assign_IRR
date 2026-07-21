@@ -551,22 +551,7 @@ class JAXPCIQMIXAlgorithm(JAXQMIXAlgorithm):
                 masks = batch["masks"][..., None]
                 agent_masks = jnp.broadcast_to(batch["masks"][..., None], chosen_q.shape)
 
-                delta_team_raw = jnp.mean(delta_agent, axis=-1)
-                team_denom_stats = jnp.maximum(jnp.sum(batch["masks"]), 1.0)
-                delta_team_mean = jnp.sum(delta_team_raw * batch["masks"]) / team_denom_stats
-                delta_team_var = (
-                    jnp.sum(jnp.square(delta_team_raw - delta_team_mean) * batch["masks"])
-                    / team_denom_stats
-                )
-                delta_team_std = jnp.clip(jnp.sqrt(delta_team_var), a_min=1e-8)
-                if self.standardize_delta:
-                    delta_team = jnp.where(
-                        batch["masks"] > 0,
-                        (delta_team_raw - delta_team_mean) / delta_team_std,
-                        jnp.zeros_like(delta_team_raw),
-                    )
-                else:
-                    delta_team = delta_team_raw
+                delta_team = jnp.mean(delta_agent, axis=-1)
                 delta_rewards = delta_team[..., None]
                 shaped_rewards = env_rewards + causal_lambda * delta_rewards
 

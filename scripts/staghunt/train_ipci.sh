@@ -7,7 +7,7 @@ config="configs/staghunt_configs/staghunt_pci_ippo.yaml"
 # model setting
 model="r-pci" 
 use_centralized_critic=false # false: i-pci / true m-pci
-train_naivepredictor=true
+train_naivepredictor=false
 recurrent_N=1
 
 causal_lambda=1.0
@@ -16,7 +16,7 @@ causal_lambda=1.0
 n_rollout_threads=8
 device="cuda"
 seeds=(42 1 2 31 32)
-run_name_postfix=""
+run_name_postfix="z_shuffle_p0.5"
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8

@@ -2,8 +2,8 @@
 
 network:
   hidden_dim: 128
-  lr_actor: 2.0e-3  # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
-  lr_critic: 2.0e-3 # 4.0e-3 for ippo | 2.0e-3 for mappo | 5.0e-4
+  lr_actor: 2.0e-3  # 4.0e-3 for ippo | 2.0e-3 for mappo
+  lr_critic: 2.0e-3 # 4.0e-3 for ippo | 2.0e-3 for mappo
   lr_bridge: 2.0e-3 # default: 2e-3
   lr_delta_critic: null
   recurrent_N: 1

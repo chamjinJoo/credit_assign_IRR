@@ -9,22 +9,21 @@ config="configs/smax_configs/smax_pci_qmix.yaml"
 model="jax-pci-qmix"
 
 # env settings
-map_name="2s3z"
-allowed_target_windows=(3 4 5)
+map_name="smacv2_10_units"
+allowed_target_windows=(10)
 
 # QMIX settings
 lr=5.0e-5
-qmix_update_epochs=8
 
 # Outcome bridge settings
-lr_bridge=2.0e-3
 causal_lambda=1.0
+agent_delta_td_coef=0.1
 
 # training settings
 seeds=(42 1 2 31 32)
 device="cuda"
 n_rollout_threads=16
-run_name_postfix="lr5e-5"
+run_name_postfix=""
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
@@ -46,9 +45,8 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
             --map-name "${map_name}" \
             --allowed-target-window ${allowed_target_window} \
             --lr ${lr} \
-            --lr-bridge ${lr_bridge} \
-            --qmix-update-epochs ${qmix_update_epochs} \
             --causal-lambda ${causal_lambda} \
+            --agent-delta-td-coef ${agent_delta_td_coef} \
             --n-rollout-threads ${n_rollout_threads} \
             --device ${device} \
             --seed ${seed} \

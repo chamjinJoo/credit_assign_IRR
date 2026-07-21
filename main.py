@@ -120,7 +120,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             # Buffer size limits for FIFO queue behavior
             max_buffer_size=getattr(algorithm_config, 'max_buffer_size', 10000),
@@ -167,6 +166,10 @@ def create_algorithm(env, config):
             rkhs_gamma=getattr(network_config, 'rkhs_gamma', 1.0),
             env_required_agents=env_required_agents,
             causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None),
+            proxy_shuffle_mode=getattr(algorithm_config, 'proxy_shuffle_mode', 'none'),
+            proxy_shuffle_prob=getattr(algorithm_config, 'proxy_shuffle_prob', 0.0),
+            proxy_shuffle_seed=getattr(config.training, 'seed', 0),
+            proxy_shuffle_strategy=getattr(algorithm_config, 'proxy_shuffle_strategy', 'episode_axis'),
             tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
             stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
             use_value_parameter_sharing=getattr(algorithm_config, 'use_value_parameter_sharing', False),
@@ -192,7 +195,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             global_reward=getattr(algorithm_config, 'global_reward', True),
@@ -214,7 +216,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
@@ -235,7 +236,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             use_centralized_critic=(algorithm_type == 'jax_mappo') or getattr(algorithm_config, 'use_centralized_critic', False),
@@ -265,7 +265,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             global_reward=(
@@ -321,7 +320,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
@@ -359,7 +357,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
@@ -381,7 +378,6 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
-            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
@@ -863,71 +859,7 @@ def main():
             eval_results = trainer.evaluate_policy()
             logger.info(f"Evaluation results: {eval_results}")
             return
-        
-        causal_eval_enabled = False
-        
-        if hasattr(args, 'test') and args.test:
-            if args.checkpoint:
-                logger.info(f"Loading checkpoint: {args.checkpoint}")
-                trainer.load_checkpoint(args.checkpoint)
-            else:
-                logger.info("No checkpoint provided, using random policy")
-            
-            logger.info("Running test...")
-            
-            # Ask user about animation saving
-            save_animation = input("Test episode들을 animation으로 저장하시겠습니까? (y/n): ").lower().strip()
-            save_animation = save_animation in ['y', 'yes', '예', 'ㅇ']
-            
-            if save_animation:
-                animation_dir = input("Animation 저장 디렉토리를 입력하세요 (기본값: ./animations): ").strip()
-                if not animation_dir:
-                    animation_dir = "./animations"
-                logger.info(f"Animation 저장 디렉토리: {animation_dir}")
-            
-            # Test 모드에서 advanced causal evaluation 결과를 저장하기 위해 임시 save_dir 설정
-            if args.checkpoint:
-                # checkpoint 파일이 있으면 그 디렉토리를 사용
-                checkpoint_dir = os.path.dirname(args.checkpoint)
-                temp_save_dir = checkpoint_dir
-            else:
-                # checkpoint가 없으면 현재 디렉토리에 test_results 폴더 생성
-                temp_save_dir = "./test_results"
-                os.makedirs(temp_save_dir, exist_ok=True)
-            
-            # Temporarily set save_dir for evaluation results only
-            original_save_dir = trainer.save_dir
-            trainer.save_dir = temp_save_dir
-            
-            test_results = trainer.test_policy(
-                num_episodes=10,
-                render=getattr(args, 'render', False),
-                save_animation=save_animation,
-                animation_dir=animation_dir if save_animation else "./animations",
-                evaluate_advanced_causal=False,
-                evaluate_policy_quality=False,
-                advanced_causal_steps=5000,
-            )
-            
-            # Restore original save_dir (None for test mode)
-            trainer.save_dir = original_save_dir
-            
-            logger.info(f"Test results: {test_results}")
-            logger.info(f"Advanced causal evaluation results saved to: {temp_save_dir}/advanced_causal_evaluation")
 
-            # SMAX replay GIF 저장 (JAXTrainer + SMAXBatchWrapper 조합일 때만)
-            if getattr(args, 'save_replay', False):
-                if hasattr(trainer, 'save_smax_replay') and hasattr(env, '_env'):
-                    replay_dir = getattr(args, 'replay_dir', './smax_replays')
-                    replay_episodes = getattr(args, 'replay_episodes', 3)
-                    trainer.save_smax_replay(replay_dir, num_episodes=replay_episodes)
-                else:
-                    logger.warning(
-                        "--save-replay는 JAXTrainer + SMAXBatchWrapper 조합에서만 지원됩니다."
-                    )
-
-            return
-        
         # Resume from checkpoint if provided
         if hasattr(args, 'checkpoint') and args.checkpoint:
             logger.info(f"Resuming from checkpoint: {args.checkpoint}")
@@ -943,22 +875,6 @@ def main():
             logger.info("Training interrupted by user")
             trainer.save_checkpoint()
             logger.info("Checkpoint saved before exit")
-            if causal_eval_enabled:
-                logger.info("Running causal effect evaluation after interruption...")
-                latest_checkpoint = trainer.get_latest_checkpoint_path()
-                if latest_checkpoint:
-                    logger.info(f"Loading checkpoint for causal evaluation: {latest_checkpoint}")
-                    trainer.load_checkpoint(latest_checkpoint)
-
-                    class MockArgs:
-                        def __init__(self, checkpoint_path, eval_episodes=50):
-                            self.checkpoint = checkpoint_path
-                            self.eval_episodes = eval_episodes
-                    
-                    mock_args = MockArgs(latest_checkpoint, eval_episodes=50)
-                    run_causal_evaluation(env, algorithm, mock_args, logger)
-                else:
-                    logger.warning("No checkpoint found for causal effect evaluation")
                     
         except Exception as e:
             logger.error(f"Training failed with error: {e}")
@@ -971,55 +887,6 @@ def main():
             if hasattr(env, 'close'):
                 env.close()
             logger.info("Environment closed")
-
-# unused:
-def run_causal_evaluation(env, algorithm, args, logger):
-    """
-    Causal effect 평가를 실행합니다.
-    
-    Args:
-        env: 환경 객체
-        algorithm: PCI-MAPPO 알고리즘 객체
-        args: 명령행 인자
-        logger: 로거 객체
-    """
-    # StagHunt 환경인지 확인
-    if not hasattr(env, '__class__') or 'StagHunt' not in env.__class__.__name__:
-        logger.error("Causal effect evaluation은 StagHunt 환경에서만 지원됩니다.")
-        return
-    
-    # Causal effect 평가자 생성
-    CausalEffectEvaluator = get_causal_evaluator()
-    evaluator = CausalEffectEvaluator(
-        algorithm=algorithm,
-        env=env,
-        num_eval_steps=1000,
-        device=algorithm.device
-    )
-    
-    # Causal effect 평가 실행
-    statistics = evaluator.evaluate_causal_effects()
-    
-    # 결과 저장 - training_summary.json과 같은 폴더에 저장
-    checkpoint_dir = os.path.dirname(args.checkpoint)
-    results_dir = checkpoint_dir  # training_summary.json과 같은 폴더
-    
-    # 통계 저장
-    evaluator.save_results(statistics, results_dir)
-    
-    # 플롯 생성 및 저장
-    plot_path = os.path.join(results_dir, 'causal_effect_plot.png')
-    evaluator.plot_causal_effects(statistics, save_path=plot_path)
-    
-    # t-SNE plot 생성
-    tsne_path = os.path.join(results_dir, 'observation_tsne.png')
-    logger.info("Observation t-SNE 분석 시작...")
-    evaluator.plot_tsne_observations(
-        save_path=tsne_path,
-        perplexity=30
-    )
-    
-    logger.info(f"Causal effect 평가 완료. 결과가 저장되었습니다: {results_dir}")
 
 if __name__ == "__main__":
     main()

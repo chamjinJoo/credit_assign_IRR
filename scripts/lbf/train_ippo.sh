@@ -3,17 +3,17 @@ set -euo pipefail
 
 # env
 env="JaxLBF"
-config="configs/lbforaging.yaml"
+config="configs/lbf_configs/lbf_ippo.yaml"
 
 # model setting
 model="jax-ippo"
 use_centralized_critic=false
 
 # training and logging 
-n_rollout_threads=8 # the number of parallel environments in JAX env.
+n_rollout_threads=16 # the number of parallel environments in JAX env.
 log_interval=2
 device="cuda"
-seeds=(42 1 2 31 32)
+seeds=(42)
 run_in_background=false
 
 # Conda 초기화 및 환경 활성화

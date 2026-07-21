@@ -1,0 +1,57 @@
+network:
+  hidden_dim: 32
+  lr_actor: 3.0e-4
+  lr_bridge: 5.0e-4
+  lr_critic: 3.0e-4
+  rkhs_gamma: 1.0
+  recurrent_N: 1
+  use_recurrent_policy: true
+
+algorithm:
+  type: r_pci
+  gamma: 0.99
+  gae_lambda: 0.95
+  rnn_chunk_length: 12
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 2
+  num_batches: 4
+  global_reward: true
+  add_agent_id: true
+  use_centralized_critic: false
+  use_value_parameter_sharing: true
+  use_delta_critic: true
+  bridge_epoch: 2
+  causal_lambda: 1.0
+  causal_mini_batch_size: 512
+  tikhonov_gamma: 1.0e-4
+  stabilizer_lambda: 1.0
+  train_naivepredictor: true
+  max_buffer_size: 10000
+
+training:
+  max_iterations: 2000 # ~1M steps
+  max_steps_per_iteration: 512
+  n_rollout_threads: 1
+  log_interval: 10
+  save_interval: 100
+  eval_interval: 25
+  eval_episodes: 20
+  save_dir: ./runs/checkpoints
+  device: cpu
+  seed: 42
+  deterministic: true
+
+environment:
+  env_name: vote
+  num_agents: 4
+  episode_limit: 3
+  observation_correct_prob: 0.7
+  seed: 42
+
+wandb:
+  use_wandb: false
+  project: pci-marl-vote
+  tags: [torch, vote, pci, ippo]

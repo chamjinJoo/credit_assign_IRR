@@ -1,0 +1,61 @@
+network:
+  hidden_dim: 32
+  lr: 5.0e-4
+  lr_bridge: 5.0e-4
+  use_recurrent_policy: true
+
+algorithm:
+  type: pci_qmix
+  gamma: 0.99
+  global_reward: true
+  max_grad_norm: 10.0
+  add_agent_id: true
+  target_update_interval: 100
+  qmix_update_epochs: 4
+  epsilon_start: 1.0
+  epsilon_finish: 0.05
+  epsilon_anneal_time: 5.0e+4
+  double_q: true
+  mixing_embed_dim: 16
+  hypernet_layers: 2
+  hypernet_embed: 32
+  mixer_init_scale: 1.0e-3
+  reward_scale: 1.0
+  replay_buffer_size: 5000
+  train_batch_size: 32
+  learning_starts: 0
+  bridge_epoch: 2
+  bridge_update_interval: 1
+  causal_lambda: 1.0
+  causal_mini_batch_size: 512
+  tikhonov_gamma: 1.0e-4
+  stabilizer_lambda: 1.0
+  clip_delta: 0.0
+  standardize_delta: false
+  train_naivepredictor: false
+  agent_delta_td_coef: 1.0
+
+training:
+  max_iterations: 2000 # ~1M steps
+  max_steps_per_iteration: 512
+  n_rollout_threads: 1
+  log_interval: 10
+  save_interval: 100
+  eval_interval: 25
+  eval_episodes: 20
+  save_dir: ./runs/checkpoints
+  device: cpu
+  seed: 42
+  deterministic: true
+
+environment:
+  env_name: vote
+  num_agents: 4
+  episode_limit: 3
+  observation_correct_prob: 0.7
+  seed: 42
+
+wandb:
+  use_wandb: false
+  project: pci-marl-vote
+  tags: [torch, vote, pci-qmix, qmix]

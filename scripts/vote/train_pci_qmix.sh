@@ -1,0 +1,55 @@
+#!/bin/bash
+set -euo pipefail
+
+# env
+env="Vote"
+config="configs/vote_configs/vote_pci_qmix.yaml"
+
+# model setting
+model="pci-qmix"
+causal_lambda=1.0
+
+# training and logging
+n_rollout_threads=1
+device="cpu"
+seeds=(42 1 2 31 32)
+run_in_background=false
+run_name_postfix="CL1.0"
+max_iterations=2000
+max_steps=512
+
+eval "$(conda shell.bash hook)"
+conda activate pcimarl
+
+wandb_args=(
+    --use-wandb
+    --wandb-project pci-marl-vote
+    --wandb-run-name-postfix "${run_name_postfix}"
+)
+
+run_training() {
+    local seed="$1"
+    echo "[seed=${seed}] start"
+    OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 python main.py \
+        --env ${env} --config ${config} \
+        --model ${model} \
+        --causal-lambda ${causal_lambda} \
+        --n-rollout-threads ${n_rollout_threads} \
+        --device ${device} \
+        --seed ${seed} \
+        --max-iterations ${max_iterations} \
+        --max-steps ${max_steps} \
+        "${wandb_args[@]}"
+}
+
+for seed in "${seeds[@]}"; do
+    if [ "${run_in_background}" = "true" ]; then
+        run_training "${seed}" &
+    else
+        run_training "${seed}"
+    fi
+done
+
+if [ "${run_in_background}" = "true" ]; then
+    wait
+fi

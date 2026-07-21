@@ -3,7 +3,7 @@ set -euo pipefail
 
 # env
 env="JaxLBF"
-config="configs/lbforaging.yaml"
+config="configs/lbf_configs/lbf_mappo.yaml"
 
 # model setting
 model="jax-mappo"

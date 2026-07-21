@@ -123,6 +123,10 @@ class EnvironmentConfig:
     
     # For toy causal env
     episode_length: int = 5
+
+    # For Vote environment
+    episode_limit: int = 3
+    observation_correct_prob: float = 0.7
     
     # For Dec-Tiger environment
     seed: int = 0
@@ -244,6 +248,8 @@ class EnvironmentConfig:
             return 'smac'
         if compact_env == 'smax':
             return 'smax'
+        if compact_env in {'vote', 'voteenv'}:
+            return 'vote'
         if 'foraging' in compact_env or compact_env in ('lbf', 'jaxlbf', 'jumanjilbf', 'jax_lbf', 'jumanji_lbf'):
             return 'lbforaging'
 
@@ -268,6 +274,7 @@ class EnvironmentConfig:
         env_specific_fields = {
             'simple_cooperative': {'num_agents', 'grid_size', 'max_steps', 'cooperation_bonus'},
             'toy_causal': {'num_agents', 'episode_length'},
+            'vote': {'num_agents', 'episode_limit', 'observation_correct_prob'},
             'dec_tiger': {'max_steps', 'failure_obs_prob', 'fully_observable'},
             'staghunt': {
                 'num_agents', 'max_steps', 'stag_follows', 'run_away_after_maul',
@@ -465,6 +472,16 @@ def parse_args() -> argparse.Namespace:
                         help='Map name for SMAC environment')
     parser.add_argument('--allowed-target-window', type=int, default=None,
                         help='Allowed target window for SMAX target allocation')
+    parser.add_argument('--field-size', type=int, default=None,
+                        help='LBForaging field size')
+    parser.add_argument('--max-food', type=int, default=None,
+                        help='LBForaging maximum number of food items')
+    parser.add_argument('--sight', type=int, default=None,
+                        help='LBForaging agent sight range')
+    parser.add_argument('--max-episode-steps', type=int, default=None,
+                        help='LBForaging maximum episode steps')
+    parser.add_argument('--force-coop', type=str, default=None,
+                        help='LBForaging force cooperation mode (true/false)')
     
     # Training
     parser.add_argument('--max-iterations', type=int, default=None,
@@ -623,6 +640,16 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         print(config.environment.map_name)
     if hasattr(args, 'allowed_target_window') and args.allowed_target_window is not None:
         config.environment.allowed_target_window = args.allowed_target_window
+    if hasattr(args, 'field_size') and args.field_size is not None:
+        config.environment.field_size = args.field_size
+    if hasattr(args, 'max_food') and args.max_food is not None:
+        config.environment.max_food = args.max_food
+    if hasattr(args, 'sight') and args.sight is not None:
+        config.environment.sight = args.sight
+    if hasattr(args, 'max_episode_steps') and args.max_episode_steps is not None:
+        config.environment.max_episode_steps = args.max_episode_steps
+    if hasattr(args, 'force_coop') and args.force_coop is not None:
+        config.environment.force_coop = args.force_coop.lower() in ('true', '1', 'yes', 'on')
         
     if hasattr(args, 'max_grad_norm') and args.max_grad_norm is not None:
         config.algorithm.max_grad_norm = args.max_grad_norm

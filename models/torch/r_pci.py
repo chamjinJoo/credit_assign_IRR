@@ -28,6 +28,11 @@ from models.torch.networks import (
     OutcomeBridgeNetwork,
     NaivePredictor,
 )
+from models.torch.proxy_shuffle import (
+    ProxyShuffleDiagnostics,
+    apply_episode_axis_proxy_shuffle,
+    assign_proxy_shuffle_metadata,
+)
 from utils.buffer import TransitionBuffer, EpisodeBuffer
 
 class RBFKernel(nn.Module):
@@ -116,6 +121,10 @@ class rPCIAlgorithm:
         use_causal_rff: bool = True,
         causal_rff_features: int = 512,
         causal_rff_seed: int = 0,
+        proxy_shuffle_mode: str = "none",
+        proxy_shuffle_prob: float = 0.0,
+        proxy_shuffle_seed: int = 0,
+        proxy_shuffle_strategy: str = "episode_axis",
         tikhonov_gamma: float = 1e-4,
         stabilizer_lambda: float = 1.0,
         train_naivepredictor: bool = False,
@@ -154,6 +163,16 @@ class rPCIAlgorithm:
         if self.causal_rff_features % 2 != 0:
             self.causal_rff_features += 1
         self.causal_rff_seed = int(causal_rff_seed)
+        self.proxy_shuffle_mode = str(proxy_shuffle_mode).lower()
+        self.proxy_shuffle_prob = float(proxy_shuffle_prob)
+        self.proxy_shuffle_seed = int(proxy_shuffle_seed)
+        self.proxy_shuffle_strategy = str(proxy_shuffle_strategy)
+        if self.proxy_shuffle_mode not in {"none", "w", "z", "wz"}:
+            raise ValueError(f"Unsupported proxy_shuffle_mode: {self.proxy_shuffle_mode}")
+        if self.proxy_shuffle_prob < 0.0 or self.proxy_shuffle_prob > 1.0:
+            raise ValueError(f"proxy_shuffle_prob must be in [0, 1], got {self.proxy_shuffle_prob}")
+        if self.proxy_shuffle_strategy != "episode_axis":
+            raise ValueError(f"Unsupported proxy_shuffle_strategy: {self.proxy_shuffle_strategy}")
         self._rff_omega = None
         self._rff_signature = None
         self.train_naivepredictor = train_naivepredictor
@@ -602,6 +621,25 @@ class rPCIAlgorithm:
         episode_done_t = torch.tensor(team_dones, dtype=torch.float32, device=device)  # (B,)
         loss_mask_super = (1.0 - episode_done_t).unsqueeze(1).expand(-1, num_agents).reshape(-1)  # (B*N,)
 
+        active_mask_t = torch.tensor(
+            [float(t.get('active_mask', 1.0)) for t in batch_data],
+            dtype=torch.float32,
+            device=device,
+        )
+        proxy_valid_super = ((1.0 - episode_done_t) * active_mask_t).unsqueeze(1).expand(
+            -1, num_agents
+        ).reshape(-1)
+        proxy_episode_ids = torch.tensor(
+            [int(t.get('_proxy_episode_id', idx)) for idx, t in enumerate(batch_data)],
+            dtype=torch.long,
+            device=device,
+        )
+        proxy_timesteps = torch.tensor(
+            [int(t.get('_proxy_timestep', idx)) for idx, t in enumerate(batch_data)],
+            dtype=torch.long,
+            device=device,
+        )
+
         # === 2. Mini-batch Training Loop ===
         # the per-agent Gram size is causal_mini_batch_size. 
         # Each chunk yields causal_mini_batch_size * N flat indices
@@ -621,12 +659,62 @@ class rPCIAlgorithm:
 
         sum_off_mean = 0.0
         sum_off_std = 0.0
+        proxy_shuffle_diagnostics = ProxyShuffleDiagnostics()
         num_updates = 0
 
         for idx in self._iterate_causal_minibatches(te_total, device):
             a_mb = A_super[idx]; w_mb = W_super[idx]; y_mb = Y_super[idx]
             z_mb = Z_super[idx]; x_mb = X_super[idx]; x_kernel_mb = X_kernel_super[idx]
             loss_mask_mb = loss_mask_super[idx]  # (B_n * N,)
+            proxy_valid_mb = proxy_valid_super[idx]
+            transition_idx_mb = idx // N
+
+            w_for_bridge = w_mb
+            z_for_kernel = z_mb
+            w_donors = {}
+            if self.proxy_shuffle_mode in {"w", "wz"} and self.proxy_shuffle_prob > 0.0:
+                w_for_bridge, w_diag, w_donors = apply_episode_axis_proxy_shuffle(
+                    w_mb,
+                    transition_idx_mb,
+                    proxy_episode_ids,
+                    proxy_timesteps,
+                    proxy_valid_mb,
+                    num_agents=N,
+                    mode=self.proxy_shuffle_mode,
+                    prob=self.proxy_shuffle_prob,
+                    base_seed=self.proxy_shuffle_seed,
+                    training_step=self.training_steps,
+                    proxy_type="w",
+                    strategy=self.proxy_shuffle_strategy,
+                )
+                proxy_shuffle_diagnostics.update(w_diag)
+            if self.proxy_shuffle_mode in {"z", "wz"} and self.proxy_shuffle_prob > 0.0:
+                z_for_kernel, z_diag, _ = apply_episode_axis_proxy_shuffle(
+                    z_mb,
+                    transition_idx_mb,
+                    proxy_episode_ids,
+                    proxy_timesteps,
+                    proxy_valid_mb,
+                    num_agents=N,
+                    mode=self.proxy_shuffle_mode,
+                    prob=self.proxy_shuffle_prob,
+                    base_seed=self.proxy_shuffle_seed,
+                    training_step=self.training_steps,
+                    proxy_type="z",
+                    strategy=self.proxy_shuffle_strategy,
+                    forbidden_donors=w_donors if self.proxy_shuffle_mode == "wz" else None,
+                )
+                proxy_shuffle_diagnostics.update(z_diag)
+
+            assert w_for_bridge.shape == w_mb.shape
+            assert z_for_kernel.shape == z_mb.shape
+            assert w_for_bridge.dtype == w_mb.dtype
+            assert z_for_kernel.dtype == z_mb.dtype
+            assert w_for_bridge.device == w_mb.device
+            assert z_for_kernel.device == z_mb.device
+            if self.proxy_shuffle_mode == "none" or self.proxy_shuffle_prob == 0.0:
+                assert torch.equal(w_for_bridge, w_mb)
+                assert torch.equal(z_for_kernel, z_mb)
 
             eps = 1e-6
             joint_obs_dim = self.policy_obs_dim * self.num_agents
@@ -634,8 +722,8 @@ class rPCIAlgorithm:
             # Reshape interleaved (B_n*N, ...) → per-agent slices without sorting.
             # idx layout: idx[b*N + n] = te_pair b, agent n, so reshape(B_n, N, *) is exact.
             a_by_agent  = a_mb.reshape(B_n, N)                   # (B_n, N)
-            z_by_agent  = z_mb.reshape(B_n, N, -1)               # (B_n, N, z_dim)
-            w_by_agent  = w_mb.reshape(B_n, N, -1)
+            z_by_agent  = z_for_kernel.reshape(B_n, N, -1)       # (B_n, N, z_dim)
+            w_by_agent  = w_for_bridge.reshape(B_n, N, -1)
             y_by_agent  = y_mb.reshape(B_n, N, -1)
             x_by_agent  = x_mb.reshape(B_n, N, -1)
             xk_by_agent = x_kernel_mb.reshape(B_n, N, -1)        # (B_n, N, kernel_dim)
@@ -793,6 +881,7 @@ class rPCIAlgorithm:
             'Kz_offdiag_mean': sum_off_mean / num_updates, # close to 0: Kernel is close to Identity I, close to 1: Kenrel is close to 11^\top
             'Kz_offdiag_std': sum_off_std / num_updates,
         }
+        return_dict.update(proxy_shuffle_diagnostics.as_metrics())
         
         if getattr(self, "train_naivepredictor", False):
             return_dict['naive_loss'] = avg_naive_loss / num_updates
@@ -1440,12 +1529,9 @@ class rPCIAlgorithm:
 
             # [Direction 2] Prepare PCI advantage batch with the same chunking as adv_batch
             pci_adv_normalized = normalize_advantages(agent_pci_advantages[agent_id])
-            if num_chunks > 0:
-                pci_adv_batch = chunk_sequence(
-                    pci_adv_normalized[:num_chunks * self.rnn_chunk_length], self.rnn_chunk_length
-                ).reshape(-1)
-            else:
-                pci_adv_batch = pci_adv_normalized
+            pci_adv_batch = chunk_sequence(
+                pci_adv_normalized[:num_chunks * self.rnn_chunk_length], self.rnn_chunk_length
+            ).reshape(-1)
 
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
@@ -1453,16 +1539,9 @@ class rPCIAlgorithm:
                     available_actions=avail_actions_batch_merged, prev_actions=prev_actions_batch
                 )
                 ratio = torch.exp(new_log_probs - old_log_probs)
-
-                # ── DIRECTION 2: Separate Actor Loss ─────────────────────────────
-                # surr1_env = ratio * adv_batch
-                # surr2_env = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
-                # surr1_pci = ratio * pci_adv_batch
-                # surr2_pci = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * pci_adv_batch
-                # policy_loss = -(torch.min(surr1_env, surr2_env) + causal_lambda * torch.min(surr1_pci, surr2_pci))
-                # policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
-                # ── DIRECTION 1: Simple Weighted Sum (uncomment to revert) ───────
+                
                 surr1 = ratio * adv_batch
+                # surr1 = ratio * pci_adv_batch # test \tilde r^i_t = delta^i_t
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
                 policy_loss = -torch.min(surr1, surr2)
                 policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
@@ -1626,6 +1705,8 @@ class rPCIAlgorithm:
                 env_trajectories[env_id].append(t)
             trajectories = list(env_trajectories.values())
   
+        assign_proxy_shuffle_metadata(trajectories)
+
         if not hasattr(self, '_update_call_count'):
             self._update_call_count = 0
         self._update_call_count += 1

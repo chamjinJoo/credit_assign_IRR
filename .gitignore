@@ -11,6 +11,7 @@ jobs.md
 
 # plots
 plots/
+result_analysis/
 figures/
 
 # logs
@@ -47,3 +48,4 @@ AGENTS.md
 
 # others
 merge.sh
+rebuttal.md

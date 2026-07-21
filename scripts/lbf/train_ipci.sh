@@ -3,7 +3,7 @@ set -euo pipefail
 
 # env
 env="JaxLBF"
-config="configs/lbforaging.yaml"
+config="configs/lbf_configs/lbf_pci_ippo.yaml"
 
 # model setting
 model="jax-pci-ippo"
