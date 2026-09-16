@@ -236,6 +236,7 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
+            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             use_centralized_critic=(algorithm_type == 'jax_mappo') or getattr(algorithm_config, 'use_centralized_critic', False),
@@ -265,6 +266,7 @@ def create_algorithm(env, config):
             value_coef=algorithm_config.value_coef,
             max_grad_norm=algorithm_config.max_grad_norm,
             ppo_epochs=algorithm_config.ppo_epochs,
+            batch_size=algorithm_config.batch_size,
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
             global_reward=(

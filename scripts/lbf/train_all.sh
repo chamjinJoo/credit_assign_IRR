@@ -169,14 +169,16 @@ run_training() {
     local lr_args=()
     local causal_args=()
     local causal_lambda_value=""
+    local train_naivepredictor="${TRAIN_NAIVEPREDICTOR:-false}"
+    local use_naive_predictor_for_delta="${USE_NAIVE_PREDICTOR_FOR_DELTA:-false}"
     local rollout_threads="${n_rollout_threads}"
 
     config="$(get_config "${algorithm}")"
     model="$(get_model "${algorithm}")"
 
     if [[ "${algorithm}" == "ipci" || "${algorithm}" == "mpci" ]]; then
-        causal_lambda_value="${PCI_CAUSAL_LAMBDA:-1.0}"
-        causal_args=(--causal-lambda "${causal_lambda_value}")
+        causal_lambda_value="${PCI_CAUSAL_LAMBDA:-0.1}"
+        causal_args=(--causal-lambda "${causal_lambda_value}" --train-naivepredictor "${train_naivepredictor}" --use-naive-predictor-for-delta "${use_naive_predictor_for_delta}")
     elif [[ "${algorithm}" == "pci-qmix" || "${algorithm}" == "pci_qmix" ]]; then
         causal_lambda_value="${PCI_QMIX_CAUSAL_LAMBDA:-1.0}"
         causal_args=(--causal-lambda "${causal_lambda_value}")

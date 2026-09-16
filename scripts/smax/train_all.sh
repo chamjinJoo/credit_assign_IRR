@@ -143,6 +143,15 @@ get_model() {
     esac
 }
 
+get_pci_causal_lambda() {
+    local map_name="$1"
+
+    case "${map_name}" in
+        3m|3m*) echo "1.0" ;;
+        *) echo "0.1" ;;
+    esac
+}
+
 get_lr() {
     local algorithm="$1"
     local map_name="$2"
@@ -247,7 +256,9 @@ run_training() {
     local lr_args=()
     local lr_delta_critic
     local causal_args=()
-    local causal_lambda_value="1.0"
+    local causal_lambda_value="" # causal lambda setting
+    local train_naivepredictor="${TRAIN_NAIVEPREDICTOR:-false}"
+    local use_naive_predictor_for_delta="${USE_NAIVE_PREDICTOR_FOR_DELTA:-false}"
     local rollout_threads="${n_rollout_threads}"
 
     config="$(get_config "${algorithm}")"
@@ -256,8 +267,8 @@ run_training() {
     lr_delta_critic="${DELTA_CRITIC_LR:-${lr}}"
 
     if [[ "${algorithm}" == "ipci" || "${algorithm}" == "mpci" ]]; then
-        causal_lambda_value="${PCI_CAUSAL_LAMBDA:-1.0}"
-        causal_args=(--causal-lambda "${causal_lambda_value}" --lr-delta-critic "${lr_delta_critic}")
+        causal_lambda_value="${PCI_CAUSAL_LAMBDA:-$(get_pci_causal_lambda "${map_name}")}"
+        causal_args=(--causal-lambda "${causal_lambda_value}" --lr-delta-critic "${lr_delta_critic}" --train-naivepredictor "${train_naivepredictor}" --use-naive-predictor-for-delta "${use_naive_predictor_for_delta}")
     elif [[ "${algorithm}" == "pci-qmix" || "${algorithm}" == "pci_qmix" ]]; then
         causal_lambda_value="${PCI_QMIX_CAUSAL_LAMBDA:-1.0}"
         causal_args=(--causal-lambda "${causal_lambda_value}" --lr-bridge "${LR_BRIDGE:-0.002}")

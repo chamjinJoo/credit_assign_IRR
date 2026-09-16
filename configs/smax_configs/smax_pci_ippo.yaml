@@ -26,7 +26,7 @@ algorithm:
   anneal_lr: true # a liitle degradation if false in smax
   
   bridge_epoch: 2
-  causal_mini_batch_size: 3200
+  causal_mini_batch_size: 3200 # 1600 for smacv2_20_units
   causal_lambda: 1.0
   clip_delta: 0.0
   
@@ -41,8 +41,8 @@ algorithm:
   bridge_prediction_batch_size: 2048
   
 training:
-  max_iterations: 6400
-  max_steps_per_iteration: 1600
+  max_iterations: 1600
+  max_steps_per_iteration: 6400
   log_interval: 2
   save_interval: 500
   eval_interval: 25

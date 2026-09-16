@@ -32,7 +32,7 @@ class AlgorithmConfig:
     ppo_epochs: int = 4
     batch_size: int = 64
 
-    clip_delta: float = 0.2
+    clip_delta: float = 0.0
     causal_lambda: float = 0.1
     causal_lambda_schedule: bool = False
     causal_lambda_adaptive_per_agent: bool = False
@@ -53,6 +53,7 @@ class AlgorithmConfig:
     use_value_parameter_sharing: bool = True  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
     train_naivepredictor: bool = False  # Train naive predictor for causal baseline
+    use_naive_predictor_for_delta: bool = False  # If True, use naive predictor instead of outcome bridge for delta computation
     print_bridge_predictions: bool = False  # Print console-only bridge predictions during training
     bridge_prediction_print_samples: int = 10  # Number of rollout states to average per log event
     bridge_prediction_print_interval: int = 50  # Print bridge predictions every N iterations
@@ -66,12 +67,18 @@ class AlgorithmConfig:
     lse_temperature: float = 1.0  # Temperature for LSE-style bridge potential shaping
     normalize_returns: bool = True  # Normalize return targets when supported
 
+
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
     use_delta_critic: bool = False     # True: per-agent V^i_delta critic for TD-style PCI advantages
     anneal_lr: bool = False             # True: iteration-based linear LR annealing from init_value to 0
 
     # Agent ID feature
     add_agent_id: bool = False  # If True, concatenate agent_id one-hot vector to observations
+
+    # Proxy shuffle ablation for Torch r_pci
+    proxy_shuffle_mode: str = "none"  # "none", "w", "z", or "wz"
+    proxy_shuffle_prob: float = 0.0
+    proxy_shuffle_strategy: str = "episode_axis"
 
     # QMIX-specific parameters
     target_update_interval: int = 50  # Update target network every N iterations
@@ -124,10 +131,6 @@ class EnvironmentConfig:
     # For toy causal env
     episode_length: int = 5
 
-    # For Vote environment
-    episode_limit: int = 3
-    observation_correct_prob: float = 0.7
-    
     # For Dec-Tiger environment
     seed: int = 0
     failure_obs_prob: float = 0.15
@@ -248,8 +251,6 @@ class EnvironmentConfig:
             return 'smac'
         if compact_env == 'smax':
             return 'smax'
-        if compact_env in {'vote', 'voteenv'}:
-            return 'vote'
         if 'foraging' in compact_env or compact_env in ('lbf', 'jaxlbf', 'jumanjilbf', 'jax_lbf', 'jumanji_lbf'):
             return 'lbforaging'
 
@@ -274,7 +275,6 @@ class EnvironmentConfig:
         env_specific_fields = {
             'simple_cooperative': {'num_agents', 'grid_size', 'max_steps', 'cooperation_bonus'},
             'toy_causal': {'num_agents', 'episode_length'},
-            'vote': {'num_agents', 'episode_limit', 'observation_correct_prob'},
             'dec_tiger': {'max_steps', 'failure_obs_prob', 'fully_observable'},
             'staghunt': {
                 'num_agents', 'max_steps', 'stag_follows', 'run_away_after_maul',
@@ -535,8 +535,16 @@ def parse_args() -> argparse.Namespace:
                         help='Use recurrent actor/critic instead of feedforward (true/false)')
     parser.add_argument('--global-reward', type=str, default=None,
                         help='Use global reward (true/false)')
-    parser.add_argument('--train-naivepredictor', type=str, default=None,
+    parser.add_argument('--train-naivepredictor', '--train-naive-predictor', dest='train_naivepredictor', type=str, default=None,
                         help='Train naive predictor for causal baseline (true/false)')
+    parser.add_argument('--use-naive-predictor-for-delta', type=str, default=None,
+                        help='Use naive predictor instead of outcome bridge for delta computation (true/false)')
+    parser.add_argument('--proxy-shuffle-mode', type=str, default=None,
+                        help="Proxy shuffle mode for r_pci: none, w, z, or wz")
+    parser.add_argument('--proxy-shuffle-prob', type=float, default=None,
+                        help='Probability of applying proxy shuffle')
+    parser.add_argument('--proxy-shuffle-strategy', type=str, default=None,
+                        help='Proxy shuffle strategy')
 
     # QMIX-specific parameters
     parser.add_argument('--target-update-interval', type=int, default=None,
@@ -726,6 +734,14 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         # Convert string to boolean
         use_naive = args.train_naivepredictor.lower() in ('true', '1', 'yes', 'on')
         config.algorithm.train_naivepredictor = use_naive
+    if hasattr(args, 'use_naive_predictor_for_delta') and args.use_naive_predictor_for_delta is not None:
+        config.algorithm.use_naive_predictor_for_delta = args.use_naive_predictor_for_delta.lower() in ('true', '1', 'yes', 'on')
+    if hasattr(args, 'proxy_shuffle_mode') and args.proxy_shuffle_mode is not None:
+        config.algorithm.proxy_shuffle_mode = args.proxy_shuffle_mode
+    if hasattr(args, 'proxy_shuffle_prob') and args.proxy_shuffle_prob is not None:
+        config.algorithm.proxy_shuffle_prob = args.proxy_shuffle_prob
+    if hasattr(args, 'proxy_shuffle_strategy') and args.proxy_shuffle_strategy is not None:
+        config.algorithm.proxy_shuffle_strategy = args.proxy_shuffle_strategy
 
     # QMIX-specific parameters
     if hasattr(args, 'target_update_interval') and args.target_update_interval is not None:

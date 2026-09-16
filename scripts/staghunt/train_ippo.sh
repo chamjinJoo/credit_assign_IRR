@@ -10,8 +10,8 @@ recurrent_N=1
 
 # training and logging 
 n_rollout_threads=16
-device="cuda"
-seeds=(31 32)
+device="cpu"
+seeds=(1)
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8

@@ -29,6 +29,7 @@ algorithm:
   causal_lambda: 1.0
   causal_mini_batch_size: 2048
   train_naivepredictor: false
+  use_naive_predictor_for_delta: false
   bridge_epoch: 4
 
 training:

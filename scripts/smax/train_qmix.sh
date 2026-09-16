@@ -9,8 +9,8 @@ config="configs/smax_configs/smax_qmix.yaml"
 model="jax-qmix"
 
 # env settings
-map_name="smacv2_10_units"
-allowed_target_windows=(6 8 10)
+map_name="smacv2_20_units"
+allowed_target_windows=(20)
 
 # QMIX settings
 lr=5.0e-5

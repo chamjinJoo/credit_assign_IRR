@@ -3,6 +3,8 @@ save_checkpoints/
 save_animations/
 checkpoints_for_eval/
 gs1_checkpoints/
+SMAX_checkpts/
+checkpoints/
 
 # runs (consolidated checkpoints/wandb/logs)
 runs/
@@ -11,8 +13,52 @@ jobs.md
 
 # plots
 plots/
-result_analysis/
 figures/
+sh_smax_lbf_table.tex
+
+# Analysis sources: include gradient analysis, exclude performance evaluation
+# and all generated results. Keep the parent directory traversable for exceptions.
+/result_analysis/*
+!/result_analysis/run_gradient_geometry_followups*.py
+!/result_analysis/run_staghunt_policy_gradient_decomposition.py
+!/result_analysis/run_smax_policy_gradient_decomposition.py
+!/result_analysis/run_staghunt_gradient_null_controls.py
+
+# Shared dependencies required by SMAX gradient analysis.
+!/result_analysis/utils/
+/result_analysis/utils/*
+!/result_analysis/utils/__init__.py
+!/result_analysis/utils/tab2_smax_checkpoint_eval_utils.py
+!/result_analysis/utils/tab2_smax_eval_subprocess_worker.py
+
+# Oracle validation sources only; exclude reports, backups and generated assets.
+# Notebook cell outputs must be cleared separately before committing.
+/oracle/*
+!/oracle/*.py
+!/oracle/*.ipynb
+
+# Model checkpoints, cached arrays and output bundles, wherever they are saved.
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.ckpt
+*.safetensors
+*.npy
+*.npz
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.gif
+*.mp4
+*.log
+
+# Editor backups and notebook autosaves.
+*.orig
+*.bak
+*~
+.ipynb_checkpoints/
 
 # logs
 logs/

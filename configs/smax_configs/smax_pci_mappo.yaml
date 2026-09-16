@@ -26,7 +26,7 @@ algorithm:
   anneal_lr: true # a liitle degradation if false in smax
   
   bridge_epoch: 2
-  causal_mini_batch_size: 3200
+  causal_mini_batch_size: 3200 # smacv2_20_units: 1600
   causal_lambda: 1.0
   clip_delta: 0.0
 

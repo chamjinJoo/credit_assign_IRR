@@ -10,8 +10,8 @@ model="jax-mappo"
 use_recurrent_policy=true # true: RNN-agent, false: FF-agent
 
 # env settings
-map_name="smacv2_5_units"  # empty string keeps the YAML value; set to override the SMAX map
-allowed_target_windows=(3)
+map_name="smacv2_10_units"  # empty string keeps the YAML value; set to override the SMAX map
+allowed_target_windows=(8)
 # training settings
 lr_actor=0.002
 lr_critic=0.002
@@ -20,6 +20,7 @@ seeds=(42 1 2 31 32)
 device="cuda"  # recommended to use cuda if available, but default to cpu for safety
 n_rollout_threads=8
 run_in_background=false
+run_name_postfix="w=8_medium_lr0.002"
 
 # reproducibility settings for JAX
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -33,6 +34,7 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
         wandb_args=(
             --use-wandb
             --wandb-group "${wandb_group}"
+            --wandb-run-name-postfix "${run_name_postfix}"
         )
         echo "[seed=${seed}] start]"
         python main.py --env SMAX \

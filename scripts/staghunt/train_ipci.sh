@@ -10,13 +10,13 @@ use_centralized_critic=false # false: i-pci / true m-pci
 train_naivepredictor=false
 recurrent_N=1
 
-causal_lambda=1.0
+causal_lambda=0.1
 
 # training and logging 
-n_rollout_threads=8
-device="cuda"
+n_rollout_threads=16
+device="cpu"
 seeds=(42 1 2 31 32)
-run_name_postfix="z_shuffle_p0.5"
+run_name_postfix="r-0.1b"
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8

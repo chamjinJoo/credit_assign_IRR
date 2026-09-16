@@ -118,7 +118,7 @@ class rPCIAlgorithm:
         env_required_agents: Optional[Dict[int, List[int]]] = None,
         # Optimization parameter
         causal_mini_batch_size: Optional[int] = 1000,
-        use_causal_rff: bool = True,
+        use_causal_rff: bool = False,
         causal_rff_features: int = 512,
         causal_rff_seed: int = 0,
         proxy_shuffle_mode: str = "none",
@@ -304,7 +304,7 @@ class rPCIAlgorithm:
             num_agents=num_agents,
             w_dim=self.policy_obs_dim * (num_agents-1), # W^i_t = others' observations
             outcome_dim=1 if global_reward else num_agents,
-            hidden_dim=hidden_dim, # 128 for SMAC -> 64 is enough?
+            hidden_dim=hidden_dim,
             action_embedding_dim=8,
             x_dim=x_dim
         )
@@ -425,37 +425,6 @@ class rPCIAlgorithm:
             return torch.cat([z_obs_n, z_rew_n], dim=1)
         return self._standardize_kernel_block(z, eps=eps)
 
-    def _rff_features(self, features: torch.Tensor, gamma_by_dim: torch.Tensor) -> torch.Tensor:
-        if features.size(1) == 0:
-            raise ValueError("RFF kernel input must have at least one feature dimension")
-
-        num_freq = self.causal_rff_features // 2
-        gamma_signature = tuple(float(v) for v in gamma_by_dim.detach().cpu())
-        signature = (
-            features.size(1),
-            num_freq,
-            features.device.type,
-            features.device.index,
-            features.dtype,
-            gamma_signature,
-        )
-        if self._rff_omega is None or self._rff_signature != signature:
-            seed_key = repr((self.causal_rff_seed, features.size(1), num_freq, gamma_signature)).encode("utf-8")
-            seed = int.from_bytes(hashlib.sha256(seed_key).digest()[:8], "little") % (2**31)
-            generator = torch.Generator(device="cpu")
-            generator.manual_seed(seed)
-            omega = torch.randn(features.size(1), num_freq, generator=generator, dtype=torch.float32)
-            omega = omega.to(device=features.device, dtype=features.dtype)
-            omega = omega * torch.sqrt(2.0 * gamma_by_dim).unsqueeze(1)
-            self._rff_omega = omega
-            self._rff_signature = signature
-
-        projection = features @ self._rff_omega
-        scale = math.sqrt(1.0 / num_freq)
-        return scale * torch.cat([torch.cos(projection), torch.sin(projection)], dim=-1)
-
-    def _should_use_rff_for_block(self, block_size: int) -> bool:
-        return self.use_causal_rff and self.causal_rff_features < 0.75 * block_size
 
     def _rff_kernel_weighted_residual(self, phi: torch.Tensor, residuals: torch.Tensor) -> torch.Tensor:
         feature_dim = phi.size(1)
@@ -814,13 +783,13 @@ class rPCIAlgorithm:
                 all_off = torch.cat(off_vals_list)
                 sum_off_mean += all_off.mean().item()
                 sum_off_std  += all_off.std(unbiased=False).item()
-
             # --- Update Outcome Bridge h_φ for bridge_epoch times ---
             # Forward pass on full interleaved chunk; per-agent solve on B_n×B_n blocks.
             a_flat = a_by_agent.reshape(-1)
             w_flat = w_by_agent.reshape(B_n * N, -1)
             x_flat = x_by_agent.reshape(B_n * N, -1)
             epoch_outcome_loss = 0.0
+            epoch_naive_loss = 0.0
             for _ in range(self.bridge_epoch):
                 y_hat = self.outcome_bridge_net(a_flat, w_flat, x=x_flat)  # (B_n*N, d_y)
                 y_hat_by_agent = y_hat.reshape(B_n, N, -1)                 # (B_n, N, d_y)
@@ -862,17 +831,19 @@ class rPCIAlgorithm:
 
                 epoch_outcome_loss += loss_h.item()
 
+                # --- Update Naive Predictor ---
+                if getattr(self, "train_naivepredictor", False):
+                    naive_output = self.naive_predictor(a_mb, w_mb, x_mb) # (B, N)
+                    naive_loss = F.mse_loss(naive_output, y_mb)
+                    self.naive_optimizer.zero_grad()
+                    naive_loss.backward()
+                    self.naive_optimizer.step()
+                    epoch_naive_loss += naive_loss.item()
+
             avg_outcome_loss += epoch_outcome_loss / self.bridge_epoch
             avg_action_loss += loss_q.item()
-            
-            # --- Update Naive Predictor ---
             if getattr(self, "train_naivepredictor", False):
-                naive_output = self.naive_predictor(a_mb, w_mb, x_mb) # (B, N)
-                naive_loss = F.mse_loss(naive_output, y_mb)
-                self.naive_optimizer.zero_grad()
-                naive_loss.backward()
-                self.naive_optimizer.step()
-                avg_naive_loss += naive_loss.item()
+                avg_naive_loss += epoch_naive_loss / self.bridge_epoch
                 
             num_updates += 1
 
@@ -924,7 +895,7 @@ class rPCIAlgorithm:
                 }
         # Track done status for each agent in each environment
         self.last_dones_batch = {i: [False] * n_envs for i in range(self.num_agents)}
-   
+
     def get_actions(self, observations: Dict[int, torch.Tensor], available_actions: Optional[Dict[int, List[int]]] = None) -> Dict[int, Tuple[int, float]]:
         actions = {}
         self.temp_hidden_states = {} # Store current states for store_transition
@@ -1311,6 +1282,7 @@ class rPCIAlgorithm:
                 x_expanded = x_flat.repeat_interleave(action_dim, dim=0)
                 
                 reg_estimates_cf = self.outcome_bridge_net(actions_range, w_t_expanded, x=x_expanded) 
+                # reg_estimates_cf = self.naive_predictor(actions_range, w_t_expanded, x_expanded) # NOTE: use naive predictor for inteventional mean (~ outcome bridge with MSE loss)
                 r_hat_all = reg_estimates_cf.view(curr_bs * num_agents, action_dim, reward_dim) # no q
 
                 # collect r_hat by factual actions
@@ -1375,10 +1347,12 @@ class rPCIAlgorithm:
                     probs_counterfactual = action_probs_flat * non_factual_mask
                     if avail_mask_flat is not None:
                         probs_counterfactual = probs_counterfactual * avail_mask_flat
-                    
-                    renormalized_probs = probs_counterfactual / (probs_counterfactual.sum(dim=1, keepdim=True) + 1e-10) # NOTE: renormalization
+
+                    # NOTE: renormalization
+                    renormalized_probs = probs_counterfactual / (probs_counterfactual.sum(dim=1, keepdim=True) + 1e-10) 
                     baseline = (renormalized_probs.unsqueeze(2) * r_hat_all).sum(dim=1)
-                    # if want to include factual action, active the below line
+
+                    # NOTE: non-renorm ver. COMA-style. if want to include factual action, active the below line
                     # baseline = (action_probs_flat.unsqueeze(2) * r_hat_all).sum(dim=1)
 
                 elif baseline_type == 'max':
@@ -1409,7 +1383,7 @@ class rPCIAlgorithm:
 
                 r_factual = rewards_flat
                 raw_effects = r_factual - baseline
-
+                
                 if self.global_reward:
                     actor_team_effects = raw_effects.view(curr_bs, num_agents, 1)
                 else:
@@ -1527,12 +1501,6 @@ class rPCIAlgorithm:
             old_log_probs = prepared['old_log_probs']
             delta_v_h0_batch = prepared.get('delta_v_h0_batch')
 
-            # [Direction 2] Prepare PCI advantage batch with the same chunking as adv_batch
-            pci_adv_normalized = normalize_advantages(agent_pci_advantages[agent_id])
-            pci_adv_batch = chunk_sequence(
-                pci_adv_normalized[:num_chunks * self.rnn_chunk_length], self.rnn_chunk_length
-            ).reshape(-1)
-
             for epoch in range(self.ppo_epochs):
                 new_log_probs, entropy = self.agents[agent_id].policy_net.evaluate_actions(
                     rnn_obs_batch, p_h0_batch, my_actions_batch, rnn_masks_batch,
@@ -1541,7 +1509,6 @@ class rPCIAlgorithm:
                 ratio = torch.exp(new_log_probs - old_log_probs)
                 
                 surr1 = ratio * adv_batch
-                # surr1 = ratio * pci_adv_batch # test \tilde r^i_t = delta^i_t
                 surr2 = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon) * adv_batch
                 policy_loss = -torch.min(surr1, surr2)
                 policy_loss = (policy_loss * active_masks_batch).sum() / (active_masks_batch.sum() + 1e-8)
@@ -1736,8 +1703,7 @@ class rPCIAlgorithm:
                 )
             
                 delta = C_matrix.sum(dim=2)
-                # delta = torch.clamp(delta, min=0.0) # same as ReLU
-                delta[torch.abs(delta) < self.clip_delta] = 0.0
+                # delta[torch.abs(delta) < self.clip_delta] = 0.0 # NOTE: clip delta
                 
                 # Store delta for later advantage-level PCI construction
                 for t_idx, t in enumerate(traj):
@@ -2540,8 +2506,8 @@ class rPCIAlgorithm:
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         env_norm = self._normalize_advantage_signal(env_advantages)
         pci_norm = self._normalize_advantage_signal(pci_signal)
-        combined = env_norm + causal_lambda * pci_norm
-        combined = env_advantages + causal_lambda * pci_signal # no normalization
+        combined = env_norm + causal_lambda * pci_norm # NOTE: 1st normalization
+        # combined = env_advantages + causal_lambda * pci_signal # test no normalization
         return combined, env_norm, pci_norm
     
     def _ensure_advantage_storage(self, transition: Dict):
@@ -2909,7 +2875,7 @@ class rPCIAlgorithm:
         init_hidden_states: Dict[int, Tuple[torch.Tensor, torch.Tensor]],
         available_actions_all: Optional[torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
-        adv = normalize_advantages(agent_advantage)
+        adv = normalize_advantages(agent_advantage) # NOTE: 2nd normalization
         if agent_delta_return is None:
             agent_delta_return = torch.zeros_like(agent_return)
 

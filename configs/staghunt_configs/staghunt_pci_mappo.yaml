@@ -21,10 +21,11 @@ algorithm:
   max_grad_norm: 0.5
   ppo_epochs: 4
   num_batches: 2
-  add_agent_id: true
+  add_agent_id: false
   use_centralized_critic: true
   use_value_parameter_sharing: true
   use_delta_critic: true
+
   bridge_epoch: 4
   tikhonov_gamma: 1.0e-4
   stabilizer_lambda: 1.0
@@ -58,9 +59,9 @@ environment:
   stag_reward: 5.0
   mauling_punishment: 0.0
   grid_observation: true
-  obs_noise_std: 0.1
+  obs_noise_std: 0.0
 
 wandb:
   use_wandb: false
-  project: "pci-marl-staghunt-noise"
+  project: "pci-marl-staghunt-vanilla"
   tags: ["torch", "staghunt", "pci", "mappo"]

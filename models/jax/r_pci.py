@@ -72,6 +72,9 @@ class JAXRPCIAlgorithm:
         stabilizer_lambda: float = 1.0,
         use_recurrent_policy: bool = True,
         bridge_prediction_batch_size: int = 64,
+        train_naive_predictor: Optional[bool] = None,
+        train_naivepredictor: Optional[bool] = None,
+        use_naive_predictor_for_delta: bool = False,
         use_delta_critic: bool = True,
         anneal_lr: bool = True,
         total_iterations: int = 0,
@@ -102,6 +105,10 @@ class JAXRPCIAlgorithm:
         self.num_batches = max(1, num_batches)
         self.use_recurrent_policy = use_recurrent_policy
         self.bridge_prediction_batch_size = max(1, int(bridge_prediction_batch_size))
+        if train_naive_predictor is None:
+            train_naive_predictor = train_naivepredictor
+        self.train_naive_predictor = bool(train_naive_predictor) if train_naive_predictor is not None else False
+        self.use_naive_predictor_for_delta = bool(use_naive_predictor_for_delta)
         self.attack_action_threshold = self._infer_attack_action_threshold(action_dim)
  
         allowed_target_matrix = getattr(self.env, "_allowed_target_matrix_jax", None)
@@ -156,6 +163,15 @@ class JAXRPCIAlgorithm:
             if causal_lambda > 0.0
             else None
         )
+        self.naive_predictor_model = (
+            CausalBridgeNetwork(
+                hidden_dim=hidden_dim,
+                action_dim=action_dim,
+                num_agents=self.bridge_output_dim,
+            )
+            if self.train_naive_predictor and causal_lambda > 0.0
+            else None
+        )
 
 
         self.anneal_lr = bool(anneal_lr)
@@ -188,6 +204,7 @@ class JAXRPCIAlgorithm:
         self.lr_bridge = float(lr_bridge)
 
         init_rng, actor_key, critic_key, bridge_key = jax.random.split(init_rng, 4)
+        naive_key = jax.random.fold_in(base_rng, 3)
 
         self.actor_state = make_train_state(
             self.actor_model,
@@ -224,6 +241,22 @@ class JAXRPCIAlgorithm:
             self.bridge_state = make_dynamic_lr_train_state(
                 self.bridge_model,
                 bridge_key,
+                (
+                    jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, bridge_others_obs_dim), dtype=jnp.float32),
+                    jnp.zeros((1, self.bridge_context_dim), dtype=jnp.float32),
+                    jnp.zeros((1,), dtype=jnp.int32),
+                ),
+                lr_bridge,
+                max_grad_norm,
+            )
+
+        self.naive_predictor_state = None
+        if self.naive_predictor_model is not None:
+            bridge_others_obs_dim = (num_agents - 1) * self.policy_obs_dim
+            self.naive_predictor_state = make_dynamic_lr_train_state(
+                self.naive_predictor_model,
+                naive_key,
                 (
                     jnp.zeros((1, self.policy_obs_dim), dtype=jnp.float32),
                     jnp.zeros((1, bridge_others_obs_dim), dtype=jnp.float32),
@@ -376,7 +409,7 @@ class JAXRPCIAlgorithm:
         env_flat = env_for_actor.reshape(-1, self.num_agents)   # (T*E, N)
         pci_flat = pci_advantages.reshape(-1, self.num_agents)
 
-        # normalize both adv before combining. 
+        # NOTE: 1st adv norm: normalize both adv before combining. 
         env_flat = self._normalize_actor_advantages(env_flat)
         pci_flat = self._normalize_actor_advantages(pci_flat)
 
@@ -890,9 +923,10 @@ class JAXRPCIAlgorithm:
             global_reward=self.global_reward,
         )
 
-    @partial(jax.jit, static_argnums=0)
+    @partial(jax.jit, static_argnums=(0, 1))
     def _bridge_predictions_chunk(
         self,
+        use_naive_predictor: bool,
         bridge_params: Dict[str, Any],
         local_obs: jnp.ndarray,
         others_obs: jnp.ndarray,
@@ -901,7 +935,8 @@ class JAXRPCIAlgorithm:
         actions: jnp.ndarray,
         avail_actions: jnp.ndarray,
     ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-        actual_pred = self.bridge_state.apply_fn(
+        apply_fn = self.naive_predictor_state.apply_fn if use_naive_predictor else self.bridge_state.apply_fn
+        actual_pred = apply_fn(
             {"params": bridge_params},
             local_obs,
             others_obs,
@@ -913,7 +948,7 @@ class JAXRPCIAlgorithm:
 
         def predict_one_action(action_id: jnp.ndarray):
             tiled = jnp.full((local_obs.shape[0],), action_id, dtype=jnp.int32)
-            return self.bridge_state.apply_fn(
+            return apply_fn(
                 {"params": bridge_params},
                 local_obs,
                 others_obs,
@@ -937,6 +972,7 @@ class JAXRPCIAlgorithm:
 
     def _bridge_predictions(
         self,
+        use_naive_predictor: bool,
         bridge_params: Dict[str, Any],
         local_obs: jnp.ndarray,
         others_obs: jnp.ndarray,
@@ -954,6 +990,7 @@ class JAXRPCIAlgorithm:
         for start in range(0, local_obs.shape[0], chunk_size):
             end = min(start + chunk_size, local_obs.shape[0])
             actual_pred, baseline, all_preds, no_valid_cf = self._bridge_predictions_chunk(
+                use_naive_predictor,
                 bridge_params,
                 local_obs[start:end],
                 others_obs[start:end],
@@ -1308,6 +1345,25 @@ class JAXRPCIAlgorithm:
         grads, metrics = jax.grad(loss_fn, has_aux=True)(params)
         return grads, metrics
 
+    @partial(jax.jit, static_argnums=0)
+    def _naive_predictor_grad_step(
+        self,
+        params: Any,
+        batch: Dict[str, jnp.ndarray],
+    ):
+        def loss_fn(params):
+            preds = self.naive_predictor_state.apply_fn(
+                {"params": params},
+                batch["x_obs"], batch["w"], batch["x_hid"], batch["actions"],
+            )
+            per_sample = jnp.mean(jnp.square(batch["targets"] - preds), axis=-1)
+            mask = batch["loss_mask"]
+            naive_loss = jnp.sum(per_sample * mask) / jnp.maximum(jnp.sum(mask), 1.0)
+            return naive_loss, {"naive_loss": naive_loss}
+
+        grads, metrics = jax.grad(loss_fn, has_aux=True)(params)
+        return grads, metrics
+
     def _slice_batch(self, batch: Dict[str, jnp.ndarray], idx: jnp.ndarray) -> Dict[str, jnp.ndarray]:
         return slice_batch(batch, idx)
 
@@ -1350,6 +1406,8 @@ class JAXRPCIAlgorithm:
 
         loss_metric_entries = []
         grad_norms = []
+        naive_metric_entries = []
+        naive_grad_norms = []
         for _ in range(self.bridge_epoch):
             base_params = self.bridge_state.params
             grads_sum = None
@@ -1362,9 +1420,29 @@ class JAXRPCIAlgorithm:
             self.bridge_state = self.bridge_state.apply_gradients(grads=grads_avg)
             grad_norms.append(float(global_norm(grads_avg)))
 
+            if self.naive_predictor_state is not None:
+                naive_params = self.naive_predictor_state.params
+                naive_grads_sum = None
+                for batch, _, _ in chunks:
+                    naive_grads, naive_metrics = self._naive_predictor_grad_step(naive_params, batch)
+                    naive_grads_sum = (
+                        naive_grads
+                        if naive_grads_sum is None
+                        else jax.tree_util.tree_map(jnp.add, naive_grads_sum, naive_grads)
+                    )
+                    naive_metric_entries.append({key: float(value) for key, value in tree_to_host(naive_metrics).items()})
+
+                naive_grads_avg = jax.tree_util.tree_map(lambda g: g / len(chunks), naive_grads_sum)
+                self.naive_predictor_state = self.naive_predictor_state.apply_gradients(grads=naive_grads_avg)
+                naive_grad_norms.append(float(global_norm(naive_grads_avg)))
+
         stacked = stack_metrics(loss_metric_entries)
         stacked.update(stack_metrics(gram_metric_entries))
+        if naive_metric_entries:
+            stacked.update(stack_metrics(naive_metric_entries))
         stacked["bridge_grad_norm"] = float(sum(grad_norms) / len(grad_norms))
+        if naive_grad_norms:
+            stacked["naive_grad_norm"] = float(sum(naive_grad_norms) / len(naive_grad_norms))
         stacked.setdefault("outcome_bridge_loss", 0.0)
         stacked.setdefault("action_bridge_loss", 0.0)
         stacked.setdefault("Kz_offdiag_mean", 0.0)
@@ -1405,7 +1483,7 @@ class JAXRPCIAlgorithm:
         rollout: Dict[str, jnp.ndarray],
         baseline_type: str = "weighted",
     ) -> tuple[jnp.ndarray, Dict[str, float]]:
-        if baseline_type not in ("weighted", "averaged", "max"):
+        if baseline_type not in ("weighted", "full_weighted", "averaged", "max"):
             raise ValueError(f"Unsupported baseline_type for JAXRPCIAlgorithm: {baseline_type}")
         if self.bridge_state is None or self.get_current_causal_lambda() == 0.0:
             zeros = jnp.zeros(rollout["actions"].shape + (self.num_agents,), dtype=jnp.float32)
@@ -1416,8 +1494,16 @@ class JAXRPCIAlgorithm:
             }
 
         local_obs, others_obs, hidden_others, actions, reward_targets, probs, avail_actions = self._bridge_inputs(rollout)
+        use_naive_predictor = self.use_naive_predictor_for_delta
+        if use_naive_predictor and self.naive_predictor_state is None:
+            raise RuntimeError(
+                "use_naive_predictor_for_delta=True requires train_naivepredictor=True "
+                "and causal_lambda > 0.0."
+            )
+        prediction_state = self.naive_predictor_state if use_naive_predictor else self.bridge_state
         actual_pred, baseline_weighted, all_preds, no_valid_cf_rate, no_valid_cf = self._bridge_predictions(
-            self.bridge_state.params,
+            use_naive_predictor,
+            prediction_state.params,
             local_obs,
             others_obs,
             hidden_others,
@@ -1428,8 +1514,10 @@ class JAXRPCIAlgorithm:
 
         if baseline_type == "weighted":
             baseline = baseline_weighted
-            # no_valid_cf: policy concentrates prob on factual action → renorm ≈ 0
-            effective_no_valid_cf = no_valid_cf
+            effective_no_valid_cf = no_valid_cf # no_valid_cf: policy concentrates prob on factual action → renorm ≈ 0
+        elif baseline_type == "full_weighted":
+            baseline = jnp.sum(probs[..., None] * all_preds, axis=1)
+            effective_no_valid_cf = jnp.zeros(actions.shape, dtype=jnp.bool_)
         elif baseline_type == "averaged":
             factual_mask = 1.0 - jax.nn.one_hot(actions.astype(jnp.int32), self.action_dim, dtype=jnp.float32)
             
@@ -1483,6 +1571,7 @@ class JAXRPCIAlgorithm:
             "causal_lambda": self.get_current_causal_lambda(),
             "delta_mean": float(jnp.mean(delta)),
             "delta_std": float(jnp.std(delta)),
+            "use_naive_predictor_for_delta": float(use_naive_predictor),
             "no_valid_cf_rate": float(no_valid_cf_rate),
             "no_valid_cf_rate_alive": no_valid_cf_rate_alive,   # Policy entropy metric.
             "no_valid_cf_rate_dead": no_valid_cf_rate_dead,     # Usually ~= 1.0 as a sanity check.
@@ -1545,6 +1634,10 @@ class JAXRPCIAlgorithm:
             self.bridge_state = self.bridge_state.replace(
                 learning_rate=jnp.asarray(bridge_lr, dtype=jnp.float32)
             )
+            if self.naive_predictor_state is not None:
+                self.naive_predictor_state = self.naive_predictor_state.replace(
+                    learning_rate=jnp.asarray(bridge_lr, dtype=jnp.float32)
+                )
             metrics["lr_bridge"] = bridge_lr
 
         # Current actor/critic LR, for monitoring the anneal_lr schedule in wandb.
@@ -1557,7 +1650,7 @@ class JAXRPCIAlgorithm:
         bridge_metrics = self.update_causal_networks(rollout)
         metrics.update(bridge_metrics)
 
-        c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="weighted")
+        c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="full_weighted")
         delta = c_matrix.sum(axis=-1)
         metrics.update(pci_metrics)
 
@@ -1659,6 +1752,7 @@ class JAXRPCIAlgorithm:
             "actor_state": serialization.to_state_dict(self.actor_state),
             "critic_state": serialization.to_state_dict(self.critic_state),
             "bridge_state": serialization.to_state_dict(self.bridge_state) if self.bridge_state is not None else None,
+            "naive_predictor_state": serialization.to_state_dict(self.naive_predictor_state) if self.naive_predictor_state is not None else None,
             "delta_critic_state": serialization.to_state_dict(self.delta_critic_state) if self.delta_critic_state is not None else None,
             "rng": tree_to_host(self.rng),
             "bridge_rng": tree_to_host(self.bridge_rng),
@@ -1670,6 +1764,11 @@ class JAXRPCIAlgorithm:
         self.critic_state = serialization.from_state_dict(self.critic_state, state_dict["critic_state"])
         if self.bridge_state is not None and state_dict.get("bridge_state") is not None:
             self.bridge_state = serialization.from_state_dict(self.bridge_state, state_dict["bridge_state"])
+        if self.naive_predictor_state is not None and state_dict.get("naive_predictor_state") is not None:
+            self.naive_predictor_state = serialization.from_state_dict(
+                self.naive_predictor_state,
+                state_dict["naive_predictor_state"],
+            )
         if self.delta_critic_state is not None and state_dict.get("delta_critic_state") is not None:
             self.delta_critic_state = serialization.from_state_dict(self.delta_critic_state, state_dict["delta_critic_state"])
         self.rng = jnp.asarray(state_dict["rng"])

@@ -9,12 +9,14 @@ config="configs/smax_configs/smax_pci_mappo.yaml"
 
 # rpci settings
 causal_lambda=1.0
+train_naivepredictor=true
+use_naive_predictor_for_delta=true
 model="jax-pci-mappo"
 
 # env settings
 map_name="3m"  # empty string keeps the YAML value; set to override the SMAX map
 # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
-allowed_target_windows=(2 3)
+allowed_target_windows=(2)
 
 # training settings
 seeds=(42 1 2 31 32)
@@ -24,7 +26,7 @@ lr_critic=0.0005
 device="cuda"
 n_rollout_threads=8
 run_in_background=false
-run_name_postfix="bridgeNoMASk2_CB3200"
+run_name_postfix="naive_no_renorm"
 
 # reproducibility settings for JAX
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -48,6 +50,8 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
             --model ${model} \
             --map-name "${map_name}" \
             --causal-lambda ${causal_lambda} \
+            --train-naivepredictor ${train_naivepredictor} \
+            --use-naive-predictor-for-delta ${use_naive_predictor_for_delta} \
             --allowed-target-window ${allowed_target_window} \
             --lr-actor ${lr_actor} \
             --lr-critic ${lr_critic} \

@@ -415,6 +415,7 @@ class Trainer:
                 # Data Collection Phase
                 rollout_data = self.collect_rollouts()
                 self.total_steps += rollout_data['step_count']
+
                 # Training Phase
                 update_info = self.algorithm.update(
                     num_episodes_collected=rollout_data.get('episode_count', 1)
@@ -594,7 +595,6 @@ class Trainer:
                 observations = next_observations
                 episode_length += 1
                 step_count += 1
-                self.total_steps += 1
                 
                 # Check if episode is done
                 done = any(dones.values()) or episode_length >= 1000
