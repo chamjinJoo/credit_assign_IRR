@@ -52,8 +52,10 @@ class AlgorithmConfig:
     stabilizer_lambda: float = 1.0  # Gram matrix scaling in RKHS loss
     use_value_parameter_sharing: bool = True  # If True, use single shared value network for all agents
     use_centralized_critic: bool = False  # If True, use MAPPO-style centralized critic (obs_dim * num_agents input)
-    train_naivepredictor: bool = False  # Train naive predictor for causal baseline
-    use_naive_predictor_for_delta: bool = False  # If True, use naive predictor instead of outcome bridge for delta computation
+    # Legacy identifiers retained for checkpoint compatibility. The paper refers
+    # to this MSE-trained model as the observational regressor.
+    train_naivepredictor: bool = False
+    use_naive_predictor_for_delta: bool = False
     print_bridge_predictions: bool = False  # Print console-only bridge predictions during training
     bridge_prediction_print_samples: int = 10  # Number of rollout states to average per log event
     bridge_prediction_print_interval: int = 50  # Print bridge predictions every N iterations
@@ -69,7 +71,6 @@ class AlgorithmConfig:
 
 
     normalize_pci_signal: bool = False  # True: per-agent normalize PCI signal before combining with env_adv
-    use_delta_critic: bool = False     # True: per-agent V^i_delta critic for TD-style PCI advantages
     anneal_lr: bool = False             # True: iteration-based linear LR annealing from init_value to 0
 
     # Agent ID feature
@@ -95,8 +96,6 @@ class AlgorithmConfig:
     train_batch_size: int = 40  # Number of episodes to sample for training
     qmix_update_epochs: Optional[int] = None  # None: legacy episode_count-based QMIX updates
     learning_starts: int = 0  # Environment steps before starting QMIX TD updates
-    agent_delta_td_coef: float = 1.0  # PCI-QMIX auxiliary per-agent delta TD coefficient
-    standardize_delta: bool = False  # PCI-QMIX standardize team delta before TD targets
 
 @dataclass
 class TrainingConfig:
@@ -347,8 +346,6 @@ class WandbConfig:
     use_wandb: bool = False
     project: str = "pci-mappo"
     run_name: Optional[str] = None
-    run_name_postfix: Optional[str] = None
-    group: Optional[str] = None
     tags: Optional[list] = None
 
 
@@ -372,6 +369,7 @@ class Config:
         if 'algorithm' in config_dict:
             algorithm_dict = dict(config_dict['algorithm'])
             legacy_use_recurrent = algorithm_dict.pop('use_recurrent_policy', None)
+            algorithm_dict.pop('use_delta_critic', None)
             config.algorithm = AlgorithmConfig(**algorithm_dict)
             if legacy_use_recurrent is not None and 'network' not in config_dict:
                 config.network.use_recurrent_policy = legacy_use_recurrent
@@ -425,7 +423,10 @@ class Config:
             config.environment = env_conf_obj
         
         if 'wandb' in config_dict:
-            config.wandb = WandbConfig(**config_dict['wandb'])
+            wandb_dict = dict(config_dict['wandb'])
+            wandb_dict.pop('run_name_postfix', None)
+            wandb_dict.pop('group', None)
+            config.wandb = WandbConfig(**wandb_dict)
         
         return config
     
@@ -536,9 +537,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--global-reward', type=str, default=None,
                         help='Use global reward (true/false)')
     parser.add_argument('--train-naivepredictor', '--train-naive-predictor', dest='train_naivepredictor', type=str, default=None,
-                        help='Train naive predictor for causal baseline (true/false)')
+                        help='Train the MSE observational regressor ablation (true/false)')
     parser.add_argument('--use-naive-predictor-for-delta', type=str, default=None,
-                        help='Use naive predictor instead of outcome bridge for delta computation (true/false)')
+                        help='Use the observational regressor instead of the outcome bridge for delta computation (true/false)')
     parser.add_argument('--proxy-shuffle-mode', type=str, default=None,
                         help="Proxy shuffle mode for r_pci: none, w, z, or wz")
     parser.add_argument('--proxy-shuffle-prob', type=float, default=None,
@@ -569,10 +570,6 @@ def parse_args() -> argparse.Namespace:
                         help='Fixed number of QMIX replay updates per training iteration')
     parser.add_argument('--learning-starts', type=int, default=None,
                         help='Environment steps before starting QMIX replay TD updates')
-    parser.add_argument('--agent-delta-td-coef', type=float, default=None,
-                        help='PCI-QMIX auxiliary per-agent delta TD loss coefficient')
-    parser.add_argument('--standardize-delta', type=str, default=None,
-                        help='Standardize PCI-QMIX team delta before TD targets (true/false)')
 
     # Logging
     parser.add_argument('--save-dir', type=str, default=None,
@@ -587,10 +584,6 @@ def parse_args() -> argparse.Namespace:
                         help='Wandb project name')
     parser.add_argument('--wandb-run-name', type=str, default=None,
                         help='Wandb run name')
-    parser.add_argument('--wandb-run-name-postfix', type=str, default=None,
-                        help='Append postfix to wandb run name')
-    parser.add_argument('--wandb-group', type=str, default=None,
-                        help='Wandb group name')
     
     # Reproducibility
     parser.add_argument('--seed', type=int, default=None,
@@ -615,8 +608,8 @@ def parse_args() -> argparse.Namespace:
                         help='Directory to save replay GIFs')
     parser.add_argument('--replay-episodes', type=int, default=3,
                         help='Number of episodes to record as replay')
-    parser.add_argument('--eval-episodes', type=int, default=32,
-                        help='Number of episodes for evaluation')
+    parser.add_argument('--eval-episodes', type=int, default=None,
+                        help='Number of episodes for evaluation (defaults to the config value)')
     
     return parser.parse_args()
 
@@ -671,6 +664,8 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.training.save_dir = args.save_dir
     if hasattr(args, 'log_interval') and args.log_interval:
         config.training.log_interval = args.log_interval
+    if hasattr(args, 'eval_episodes') and args.eval_episodes is not None:
+        config.training.eval_episodes = args.eval_episodes
     if hasattr(args, 'n_rollout_threads') and args.n_rollout_threads:  # [ADDED]
         config.training.n_rollout_threads = args.n_rollout_threads
     if hasattr(args, 'episodes_per_iteration') and args.episodes_per_iteration:  # [ADDED]
@@ -764,10 +759,6 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.algorithm.qmix_update_epochs = None if args.qmix_update_epochs <= 0 else args.qmix_update_epochs
     if hasattr(args, 'learning_starts') and args.learning_starts is not None:
         config.algorithm.learning_starts = max(0, args.learning_starts)
-    if hasattr(args, 'agent_delta_td_coef') and args.agent_delta_td_coef is not None:
-        config.algorithm.agent_delta_td_coef = args.agent_delta_td_coef
-    if hasattr(args, 'standardize_delta') and args.standardize_delta is not None:
-        config.algorithm.standardize_delta = args.standardize_delta.lower() in ('true', '1', 'yes', 'on')
 
     if hasattr(args, 'use_wandb') and args.use_wandb:
         config.wandb.use_wandb = args.use_wandb
@@ -775,10 +766,6 @@ def create_config_from_args(args: argparse.Namespace) -> Config:
         config.wandb.project = args.wandb_project
     if hasattr(args, 'wandb_run_name') and args.wandb_run_name:
         config.wandb.run_name = args.wandb_run_name
-    if hasattr(args, 'wandb_run_name_postfix') and args.wandb_run_name_postfix:
-        config.wandb.run_name_postfix = args.wandb_run_name_postfix
-    if hasattr(args, 'wandb_group') and args.wandb_group:
-        config.wandb.group = args.wandb_group
     # Reproducibility settings
     if hasattr(args, 'seed') and args.seed is not None:
         config.training.seed = args.seed

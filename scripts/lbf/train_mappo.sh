@@ -14,7 +14,6 @@ n_rollout_threads=8 # the number of parallel environments in JAX env.
 log_interval=2
 device="cuda"
 seeds=(42 1 2 31 32)
-run_in_background=false
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
@@ -30,18 +29,9 @@ run_training() {
         --log-interval ${log_interval} \
         --device ${device} \
         --seed ${seed} \
-        --use-wandb \
-        --wandb-project pci-marl-lbf
+        --use-wandb
 }
 
 for seed in "${seeds[@]}"; do
-    if [ "${run_in_background}" = "true" ]; then
-        run_training "${seed}" &
-    else
-        run_training "${seed}"
-    fi
+    run_training "${seed}"
 done
-
-if [ "${run_in_background}" = "true" ]; then
-    wait
-fi

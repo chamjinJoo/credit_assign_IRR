@@ -24,19 +24,18 @@ algorithm:
   add_agent_id: false
   use_centralized_critic: true
   use_value_parameter_sharing: true
-  use_delta_critic: true
 
   bridge_epoch: 4
   tikhonov_gamma: 1.0e-4
   stabilizer_lambda: 1.0
   causal_lambda: 1.0
   causal_mini_batch_size: 2000
-  train_naivepredictor: true
+  train_naivepredictor: false
   max_buffer_size: 10000
   anneal_lr: false
 
 training:
-  max_iterations: 4000
+  max_iterations: 2500
   max_steps_per_iteration: 2000
   episodes_per_iteration: null
   n_rollout_threads: 8

@@ -17,17 +17,10 @@ n_rollout_threads=8
 log_interval=2
 device="cuda"
 seeds=(42 1 2 31 32)
-run_in_background=false
-run_name_postfix="CL0.1"
 
 # Conda 초기화 및 환경 활성화
 eval "$(conda shell.bash hook)"
 conda activate pcimarl
-
-wandb_args=(
-    --use-wandb
-    --wandb-run-name-postfix "${run_name_postfix}"
-)
 
 run_training() {
     local seed="$1"
@@ -43,17 +36,9 @@ run_training() {
         --log-interval ${log_interval} \
         --device ${device} \
         --seed ${seed} \
-        "${wandb_args[@]}"
+        --use-wandb
 }
 
 for seed in "${seeds[@]}"; do
-    if [ "${run_in_background}" = "true" ]; then
-        run_training "${seed}" &
-    else
-        run_training "${seed}"
-    fi
+    run_training "${seed}"
 done
-
-if [ "${run_in_background}" = "true" ]; then
-    wait
-fi

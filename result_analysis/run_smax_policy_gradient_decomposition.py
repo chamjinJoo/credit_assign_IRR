@@ -32,6 +32,8 @@ METRICS = (
     "global_grad_norm",
     "delta_grad_norm",
     "combined_grad_norm",
+    "bias_free_grad_norm",
+    "gradient_gain",
     "delta_to_global_norm_ratio",
     "delta_to_combined_norm_ratio",
     "global_delta_cosine",
@@ -63,6 +65,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--limit-seeds", type=int, nargs="*", default=None)
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--baseline-mode",
+        choices=("leave_one_out_renorm", "full_weighted"),
+        default="leave_one_out_renorm",
+        help="Counterfactual baseline used to reconstruct the auxiliary reward.",
+    )
     return parser.parse_args()
 
 
@@ -139,8 +147,15 @@ def collect_training_rollout(trainer: Any, rollout_seed: int) -> Dict[str, jnp.n
 def actor_advantage_components(
     algorithm: Any,
     rollout: Dict[str, jnp.ndarray],
+    baseline_mode: str,
 ) -> tuple[Dict[str, jnp.ndarray], Dict[str, jnp.ndarray]]:
-    c_matrix, causal_info = algorithm.compute_causal_rewards(rollout, baseline_type="weighted")
+    baseline_type = {
+        "leave_one_out_renorm": "weighted",
+        "full_weighted": "full_weighted",
+    }[baseline_mode]
+    c_matrix, causal_info = algorithm.compute_causal_rewards(
+        rollout, baseline_type=baseline_type
+    )
     delta = c_matrix.sum(axis=-1)
 
     raw_team_rewards = rollout["rewards"].sum(axis=-1) / algorithm.num_agents
@@ -160,7 +175,7 @@ def actor_advantage_components(
         algorithm.gamma,
         algorithm.gae_lambda,
     )
-    if algorithm.use_delta_critic and algorithm.delta_critic_state is not None:
+    if algorithm.delta_critic_state is not None:
         pci_advantages, _ = compute_gae(
             delta,
             rollout["delta_values"],
@@ -265,11 +280,17 @@ def policy_gradient_components(
     return result
 
 
-def vector_metrics(global_grad: np.ndarray, delta_grad: np.ndarray, combined_grad: np.ndarray) -> Dict[str, float]:
+def vector_metrics(
+    global_grad: np.ndarray,
+    delta_grad: np.ndarray,
+    combined_grad: np.ndarray,
+    causal_lambda: float,
+) -> Dict[str, float]:
     eps = 1.0e-12
     global_norm = float(np.linalg.norm(global_grad))
     delta_norm = float(np.linalg.norm(delta_grad))
     combined_norm = float(np.linalg.norm(combined_grad))
+    bias_free_norm = (1.0 + float(causal_lambda)) * global_norm
     cosine = float(np.clip(np.dot(global_grad, delta_grad) / max(global_norm * delta_norm, eps), -1.0, 1.0))
     combined_cosine = float(
         np.clip(np.dot(global_grad, combined_grad) / max(global_norm * combined_norm, eps), -1.0, 1.0)
@@ -281,6 +302,8 @@ def vector_metrics(global_grad: np.ndarray, delta_grad: np.ndarray, combined_gra
         "global_grad_norm": global_norm,
         "delta_grad_norm": delta_norm,
         "combined_grad_norm": combined_norm,
+        "bias_free_grad_norm": bias_free_norm,
+        "gradient_gain": combined_norm / max(bias_free_norm, eps),
         "delta_to_global_norm_ratio": delta_norm / max(global_norm, eps),
         "delta_to_combined_norm_ratio": delta_norm / max(combined_norm, eps),
         "global_delta_cosine": cosine,
@@ -340,9 +363,12 @@ def summarize_checkpoint(
     checkpoint_path: Path,
     trainer: Any,
     rollout: Dict[str, jnp.ndarray],
+    baseline_mode: str,
 ) -> list[Dict[str, Any]]:
     algorithm = trainer.algorithm
-    advantages, diagnostics = actor_advantage_components(algorithm, rollout)
+    advantages, diagnostics = actor_advantage_components(
+        algorithm, rollout, baseline_mode
+    )
     gradients = policy_gradient_components(algorithm, rollout, advantages)
     episodes = episode_metrics(rollout, algorithm.num_agents)
     delta_values = np.asarray(jax.device_get(diagnostics["delta"]))
@@ -388,7 +414,12 @@ def summarize_checkpoint(
             {
                 **common,
                 "agent_id": agent_id,
-                **vector_metrics(global_grad, delta_grad, combined_grad),
+                **vector_metrics(
+                    global_grad,
+                    delta_grad,
+                    combined_grad,
+                    common["causal_lambda"],
+                ),
                 **advantage_metrics(advantages, agent_id),
                 "gradient_additivity_relative_error": residual,
             }
@@ -405,7 +436,12 @@ def summarize_checkpoint(
         {
             **common,
             "agent_id": -1,
-            **vector_metrics(global_joint, delta_joint, combined_joint),
+            **vector_metrics(
+                global_joint,
+                delta_joint,
+                combined_joint,
+                common["causal_lambda"],
+            ),
             **advantage_metrics(advantages, None),
             "gradient_additivity_relative_error": max(joint_residual, max(residuals)),
         }
@@ -499,7 +535,12 @@ def main() -> None:
             trainer.load_checkpoint(str(checkpoint_path), actor_only=False)
             rollout = collect_training_rollout(trainer, args.rollout_seed)
             rows = summarize_checkpoint(
-                run, checkpoint_choice, checkpoint_path, trainer, rollout
+                run,
+                checkpoint_choice,
+                checkpoint_path,
+                trainer,
+                rollout,
+                args.baseline_mode,
             )
             all_rows.extend(rows)
             components_path = args.result_dir / f"{args.experiment_name}_checkpoint_gradient_components.csv"
@@ -533,7 +574,7 @@ def main() -> None:
         "device": args.device,
         "training_seeds": [int(seed) for seed in runs["seed"].tolist()],
         "gradient_target": "first PPO epoch at behavior=current policy",
-        "counterfactual_baseline": "weighted non-factual available actions",
+        "counterfactual_baseline": args.baseline_mode,
         "shared_actor_parameters": True,
         "max_gradient_additivity_relative_error": max_error,
     }

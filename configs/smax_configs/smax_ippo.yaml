@@ -21,7 +21,6 @@ algorithm:
   use_centralized_critic: false
   global_reward: true
   add_agent_id: true
-  use_delta_critic: false
   anneal_lr: true
   
 training:

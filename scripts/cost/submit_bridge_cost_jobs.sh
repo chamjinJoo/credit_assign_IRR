@@ -14,7 +14,6 @@ N_ROLLOUT_THREADS=${COST_N_ROLLOUT_THREADS:-8}
 LOG_INTERVAL=${COST_LOG_INTERVAL:-2}
 DEVICE=${COST_DEVICE:-cuda}
 WANDB_PROJECT=${COST_WANDB_PROJECT:-pci-marl-bridge-cost}
-WANDB_GROUP_PREFIX=${COST_WANDB_GROUP_PREFIX:-bridge_cost}
 USE_WANDB=${COST_USE_WANDB:-true}
 SBATCH_TEMPLATE=${COST_SBATCH_TEMPLATE:-slurms/templates/slurm_train_staghunt.sbatch}
 WRAPPER=${COST_SBATCH_WRAPPER:-scripts/sbatch_after_sync_job_outputs.sh}
@@ -36,7 +35,6 @@ for env_key in "${ENVS[@]}"; do
                     "COST_DEVICE=${DEVICE}"
                     "COST_USE_WANDB=${USE_WANDB}"
                     "COST_WANDB_PROJECT=${WANDB_PROJECT}"
-                    "COST_WANDB_GROUP_PREFIX=${WANDB_GROUP_PREFIX}"
                 )
                 if [[ -n "${MAX_ITERATIONS}" ]]; then
                     export_vars+=("COST_MAX_ITERATIONS=${MAX_ITERATIONS}")

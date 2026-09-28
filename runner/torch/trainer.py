@@ -35,7 +35,6 @@ class Trainer:
         use_wandb: bool = False,
         wandb_project: str = "pci-mappo",
         wandb_run_name: Optional[str] = None,
-        wandb_group: Optional[str] = None,
         device: str = "cpu",
         n_rollout_threads: int = 1,  # Number of parallel environments
         env_fn: Optional[callable] = None,  # Function to create environment (for parallel)
@@ -122,7 +121,6 @@ class Trainer:
             wandb.init(
                 project=wandb_project,
                 name=wandb_run_name,
-                group=wandb_group,
                 config=serialized_config
             )
             
@@ -1218,7 +1216,7 @@ class Trainer:
             best_path = os.path.join(self.save_dir, 'best_model.pt')
             torch.save(checkpoint, best_path, _use_new_zipfile_serialization=False)
             
-        # Save naivepredictor checkpoint separately
+        # Save the observational-regressor checkpoint separately.
         if getattr(self.algorithm, "train_naivepredictor", False) and hasattr(self.algorithm, "naive_predictor"):
             naive_dir = self.save_dir + "_naivepredictor"
             os.makedirs(naive_dir, exist_ok=True)
@@ -1291,6 +1289,10 @@ class Trainer:
                 state['action_embedding_for_kernel'] = self.algorithm.action_embedding_for_kernel.state_dict()
             if hasattr(self.algorithm, 'kernel_action_embed_optimizer'):
                 state['kernel_action_embed_optimizer'] = self.algorithm.kernel_action_embed_optimizer.state_dict()
+            if getattr(self.algorithm, 'delta_value_net', None) is not None:
+                state['delta_value_net'] = self.algorithm.delta_value_net.state_dict()
+            if getattr(self.algorithm, 'delta_value_optimizer', None) is not None:
+                state['delta_value_optimizer'] = self.algorithm.delta_value_optimizer.state_dict()
             # W Predictor (rQPCI only)
             if hasattr(self.algorithm, 'w_predictor'):
                 state['w_predictor'] = self.algorithm.w_predictor.state_dict()
@@ -1368,6 +1370,10 @@ class Trainer:
                 self.algorithm.outcome_bridge_optimizer.load_state_dict(algorithm_state['outcome_bridge_optimizer'])
             if 'kernel_action_embed_optimizer' in algorithm_state:
                 self.algorithm.kernel_action_embed_optimizer.load_state_dict(algorithm_state['kernel_action_embed_optimizer'])
+            if 'delta_value_net' in algorithm_state and getattr(self.algorithm, 'delta_value_net', None) is not None:
+                self.algorithm.delta_value_net.load_state_dict(algorithm_state['delta_value_net'])
+            if 'delta_value_optimizer' in algorithm_state and getattr(self.algorithm, 'delta_value_optimizer', None) is not None:
+                self.algorithm.delta_value_optimizer.load_state_dict(algorithm_state['delta_value_optimizer'])
      
         # Load shared value network (for all algorithms)
         if 'value_net' in algorithm_state:

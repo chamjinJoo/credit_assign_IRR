@@ -37,7 +37,7 @@ def import_runtime_modules():
     global create_environment, get_available_environments
     global PCIMAPPOAlgorithm, MAPPOAlgorithm, rMAPPOAlgorithm, IPPOAlgorithm, rIPPOAlgorithm
     global X_PCIAlgorithm, COMAAlgorithm, rCOMAAlgorithm, rPCIAlgorithm, qPCIAlgorithm
-    global rQMIXAlgorithm, rPCIQMIXAlgorithm, JAXPPOAlgorithm, JAXQPCIAlgorithm, JAXRPCIAlgorithm, JAXQMIXAlgorithm, JAXPCIQMIXAlgorithm
+    global rQMIXAlgorithm, JAXPPOAlgorithm, JAXQPCIAlgorithm, JAXRPCIAlgorithm, JAXQMIXAlgorithm
     global Trainer, JAXTrainer
 
     from envs import create_environment, get_available_environments
@@ -46,11 +46,9 @@ def import_runtime_modules():
         rIPPOAlgorithm,
         rPCIAlgorithm,
         rQMIXAlgorithm,
-        rPCIQMIXAlgorithm,
         JAXPPOAlgorithm,
         JAXRPCIAlgorithm,
         JAXQMIXAlgorithm,
-        JAXPCIQMIXAlgorithm,
     )
     from runner import Trainer, JAXTrainer
 
@@ -178,7 +176,6 @@ def create_algorithm(env, config):
             train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
             use_recurrent_policy=getattr(network_config, 'use_recurrent_policy', True),
             global_reward=getattr(algorithm_config, 'global_reward', True),
-            use_delta_critic=getattr(algorithm_config, 'use_delta_critic', False),
         )
     elif algorithm_type == 'mappo':
         algorithm = MAPPOAlgorithm(
@@ -297,12 +294,9 @@ def create_algorithm(env, config):
             bridge_prediction_print_samples=getattr(algorithm_config, 'bridge_prediction_print_samples', 1),
             bridge_prediction_print_interval=getattr(algorithm_config, 'bridge_prediction_print_interval', 50),
             bridge_prediction_batch_size=getattr(algorithm_config, 'bridge_prediction_batch_size', 2048),
+            train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
+            use_naive_predictor_for_delta=getattr(algorithm_config, 'use_naive_predictor_for_delta', False),
             normalize_pci_signal=getattr(algorithm_config, 'normalize_pci_signal', False),
-            use_delta_critic=(
-                False
-                if algorithm_type in ['jax_rippo', 'jax_rmappo', 'jax_rppo']
-                else getattr(algorithm_config, 'use_delta_critic', False)
-            ),
             anneal_lr=getattr(algorithm_config, 'anneal_lr', False),
             total_iterations=getattr(config.training, 'max_iterations', 0),
             seed=getattr(config.training, 'seed', 42),
@@ -383,7 +377,7 @@ def create_algorithm(env, config):
             num_batches=algorithm_config.num_batches,
             device=config.training.device,
         )
-    elif algorithm_type in ['qmix', 'r_qmix', 'pci_qmix', 'r_pci_qmix', 'jax_qmix', 'jax_r_qmix', 'jax_pci_qmix', 'jax_pciqmix']:
+    elif algorithm_type in ['qmix', 'r_qmix', 'jax_qmix', 'jax_r_qmix']:
         epsilon_anneal_time_config = getattr(algorithm_config, 'epsilon_anneal_time', None)
 
         if epsilon_anneal_time_config is None:
@@ -439,90 +433,6 @@ def create_algorithm(env, config):
                 global_reward=getattr(algorithm_config, 'global_reward', True),
                 seed=getattr(config.training, 'seed', 42),
             )
-        elif algorithm_type in ['jax_pci_qmix', 'jax_pciqmix']:
-            algorithm = JAXPCIQMIXAlgorithm(
-                env=env,
-                num_agents=env.num_agents,
-                obs_dim=base_obs_dim,
-                action_dim=env.get_action_dim(),
-                hidden_dim=network_config.hidden_dim,
-                lr=getattr(network_config, 'lr', getattr(network_config, 'lr_actor', 5e-4)),
-                lr_bridge=getattr(network_config, 'lr_bridge', 2e-3),
-                gamma=algorithm_config.gamma,
-                max_grad_norm=algorithm_config.max_grad_norm,
-                target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
-                epsilon_start=getattr(algorithm_config, 'epsilon_start', 1.0),
-                epsilon_finish=getattr(algorithm_config, 'epsilon_finish', 0.05),
-                epsilon_anneal_time=epsilon_anneal_time,
-                double_q=getattr(algorithm_config, 'double_q', True),
-                mixing_embed_dim=getattr(algorithm_config, 'mixing_embed_dim', 32),
-                hypernet_layers=getattr(algorithm_config, 'hypernet_layers', 2),
-                hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
-                mixer_init_scale=getattr(algorithm_config, 'mixer_init_scale', 1.0e-3),
-                reward_scale=getattr(algorithm_config, 'reward_scale', 1.0),
-                replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
-                train_batch_size=getattr(algorithm_config, 'train_batch_size', 64),
-                qmix_update_epochs=getattr(algorithm_config, 'qmix_update_epochs', None),
-                learning_starts=getattr(algorithm_config, 'learning_starts', 0),
-                device=config.training.device,
-                add_agent_id=getattr(algorithm_config, 'add_agent_id', True),
-                global_reward=getattr(algorithm_config, 'global_reward', True),
-                causal_lambda=getattr(algorithm_config, 'causal_lambda', 1.0),
-                bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 2),
-                causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None) or 3200,
-                tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
-                stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
-                clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
-                standardize_delta=getattr(algorithm_config, 'standardize_delta', False),
-                agent_delta_td_coef=getattr(algorithm_config, 'agent_delta_td_coef', 1.0),
-                bridge_prediction_batch_size=getattr(algorithm_config, 'bridge_prediction_batch_size', 2048),
-                seed=getattr(config.training, 'seed', 42),
-            )
-        elif algorithm_type in ['pci_qmix', 'r_pci_qmix']:
-            algorithm = rPCIQMIXAlgorithm(
-                env=env,
-                num_agents=env.num_agents,
-                obs_dim=effective_obs_dim,
-                action_dim=env.get_action_dim(),
-                hidden_dim=network_config.hidden_dim,
-                lr=getattr(network_config, 'lr', 5e-4),
-                lr_bridge=getattr(network_config, 'lr_bridge', 1e-3),
-                gamma=algorithm_config.gamma,
-                max_grad_norm=algorithm_config.max_grad_norm,
-                target_update_interval=getattr(algorithm_config, 'target_update_interval', 200),
-                epsilon_start=getattr(algorithm_config, 'epsilon_start', 1.0),
-                epsilon_finish=getattr(algorithm_config, 'epsilon_finish', 0.05),
-                epsilon_anneal_time=epsilon_anneal_time,
-                double_q=getattr(algorithm_config, 'double_q', True),
-                mixing_embed_dim=getattr(algorithm_config, 'mixing_embed_dim', 32),
-                hypernet_layers=getattr(algorithm_config, 'hypernet_layers', 2),
-                hypernet_embed=getattr(algorithm_config, 'hypernet_embed', 64),
-                mixer_init_scale=getattr(algorithm_config, 'mixer_init_scale', 1.0e-3),
-                reward_scale=getattr(algorithm_config, 'reward_scale', 1.0),
-                replay_buffer_size=getattr(algorithm_config, 'replay_buffer_size', 5000),
-                train_batch_size=getattr(algorithm_config, 'train_batch_size', 64),
-                qmix_update_epochs=getattr(algorithm_config, 'qmix_update_epochs', None),
-                learning_starts=getattr(algorithm_config, 'learning_starts', 0),
-                device=config.training.device,
-                use_episode_buffer=True,
-                global_reward=getattr(algorithm_config, 'global_reward', True),
-                add_agent_id=getattr(algorithm_config, 'add_agent_id', False),
-                causal_lambda=getattr(algorithm_config, 'causal_lambda', 1.0),
-                causal_lambda_schedule=getattr(algorithm_config, 'causal_lambda_schedule', False),
-                causal_lambda_start=getattr(algorithm_config, 'causal_lambda_start', 0.0),
-                causal_lambda_final=getattr(algorithm_config, 'causal_lambda_final', 1.0),
-                causal_lambda_warmup_steps=getattr(algorithm_config, 'causal_lambda_warmup_steps', 10000),
-                causal_lambda_startingpoint=getattr(algorithm_config, 'causal_lambda_startingpoint', 0),
-                bridge_epoch=getattr(algorithm_config, 'bridge_epoch', 4),
-                bridge_update_interval=getattr(algorithm_config, 'bridge_update_interval', 1),
-                causal_mini_batch_size=getattr(algorithm_config, 'causal_mini_batch_size', None),
-                tikhonov_gamma=getattr(algorithm_config, 'tikhonov_gamma', 1e-4),
-                stabilizer_lambda=getattr(algorithm_config, 'stabilizer_lambda', 1.0),
-                clip_delta=getattr(algorithm_config, 'clip_delta', 0.0),
-                standardize_delta=getattr(algorithm_config, 'standardize_delta', False),
-                train_naivepredictor=getattr(algorithm_config, 'train_naivepredictor', False),
-                agent_delta_td_coef=getattr(algorithm_config, 'agent_delta_td_coef', 1.0),
-            )
         else:
             algorithm = rQMIXAlgorithm(
                 num_agents=env.num_agents,
@@ -550,7 +460,7 @@ def create_algorithm(env, config):
                 use_episode_buffer=True,
             )
     else:
-        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_pci_ippo', 'jax_pci_mappo', 'jax_qmix', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', 'r_qmix', 'pci_qmix', or 'jax_pci_qmix'")
+        raise ValueError(f"Invalid algorithm type: {algorithm_type}. Must be 'pci_mappo', 'r_pci', 'mappo', 'r_mappo', 'ippo', 'r_ippo', 'jax_ppo', 'jax_ippo', 'jax_mappo', 'jax_rpci', 'jax_pci_ippo', 'jax_pci_mappo', 'jax_qmix', 'jax_rippo', 'jax_rmappo', 'x_pci', 'coma', 'r_coma', 'qmix', or 'r_qmix'")
     
     return algorithm
 
@@ -558,6 +468,8 @@ def main():
     """Main training function."""
     # Parse arguments
     args = parse_args()
+    if args.eval and not args.checkpoint:
+        raise ValueError("--eval requires --checkpoint")
     
     # Create config
     config = create_config_from_args(args)
@@ -741,12 +653,6 @@ def main():
                 env_name = env_class_name.lower()
                 config.wandb.run_name = env_name
 
-        if getattr(config.wandb, 'run_name_postfix', None):
-            if config.wandb.run_name:
-                config.wandb.run_name = f"{config.wandb.run_name}_{config.wandb.run_name_postfix}"
-            else:
-                config.wandb.run_name = config.wandb.run_name_postfix
-        
         # Log available environments
         available_envs = get_available_environments()
         logger.info(f"Available environments: {list(available_envs.keys())}")
@@ -772,7 +678,6 @@ def main():
         # set wandb logging name
         wandb_project_name = config.wandb.project
         wandb_run_name = config.wandb.run_name
-        wandb_group_name = config.wandb.group
         wandb_algo_name = algorithm_type
         if algorithm_type.lower().replace('-', '_') in ['r_pci', 'pci_rnn']:
             if getattr(config.algorithm, 'use_centralized_critic', False):
@@ -788,9 +693,6 @@ def main():
             wandb_run_name = f"{wandb_algo_name}_{wandb_run_name}_seed{actual_seed}"
         else:
             wandb_run_name = wandb_algo_name
-
-        if wandb_group_name:
-            wandb_group_name = f"{wandb_group_name}"
 
         # Create env_fn for parallel environments
         n_rollout_threads = getattr(config.training, 'n_rollout_threads', 1)
@@ -846,16 +748,14 @@ def main():
             use_wandb=False if is_test_mode else config.wandb.use_wandb,
             wandb_project=wandb_project_name,
             wandb_run_name=wandb_run_name,
-            wandb_group=wandb_group_name,
             device=device,
             n_rollout_threads=n_rollout_threads,
             env_fn=env_fn
         )
         # Check for evaluation or test mode
         if hasattr(args, 'eval') and args.eval:
-            if args.checkpoint:
-                logger.info(f"Loading checkpoint: {args.checkpoint}")
-                trainer.load_checkpoint(args.checkpoint)
+            logger.info(f"Loading checkpoint: {args.checkpoint}")
+            trainer.load_checkpoint(args.checkpoint)
             
             logger.info("Running evaluation...")
             eval_results = trainer.evaluate_policy()

@@ -16,7 +16,6 @@ MAX_ITERATIONS=${COST_MAX_ITERATIONS:-}
 MAX_STEPS=${COST_MAX_STEPS:-}
 LOG_INTERVAL=${COST_LOG_INTERVAL:-2}
 WANDB_PROJECT=${COST_WANDB_PROJECT:-pci-marl-bridge-cost}
-WANDB_GROUP_PREFIX=${COST_WANDB_GROUP_PREFIX:-bridge_cost}
 USE_WANDB=${COST_USE_WANDB:-true}
 
 export CUBLAS_WORKSPACE_CONFIG=${CUBLAS_WORKSPACE_CONFIG:-:4096:8}
@@ -41,7 +40,7 @@ run_one() {
     local variant="$3"
     local seed="$4"
 
-    local env_name config model centralized postfix group
+    local env_name config model centralized
     local extra_args=()
 
     case "${env_key}:${variant}:${backbone}" in
@@ -135,9 +134,6 @@ run_one() {
             ;;
     esac
 
-    postfix="cost_${env_key}_${variant}_${backbone}_s${seed}"
-    group="${WANDB_GROUP_PREFIX}_${env_key}"
-
     echo "[cost] env=${env_key} variant=${variant} backbone=${backbone} seed=${seed}"
     echo "[cost_meta] env=${env_key}"
     echo "[cost_meta] variant=${variant}"
@@ -182,8 +178,6 @@ PYINFO
         --n-rollout-threads "${N_ROLLOUT_THREADS}" \
         --device "${DEVICE}" \
         --seed "${seed}" \
-        --wandb-group "${group}" \
-        --wandb-run-name-postfix "${postfix}" \
         "${extra_args[@]}" \
         "${common_args[@]}"
 }

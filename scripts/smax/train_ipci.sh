@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Draft recurrent JAX PCI launcher for SMAX
+# JAX PCI-IPPO launcher for SMAX
 # ============================================================
 
 set -euo pipefail
@@ -24,23 +24,14 @@ lr_critic=0.004
 
 device="cuda"
 n_rollout_threads=8
-run_in_background=false
-run_name_postfix="42/1/2_3090"
 
 # reproducibility settings for JAX
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
-# export KMP_DUPLICATE_LIB_OK=TRUE # for Window
 
 # main training loop over config variants and seeds
 for allowed_target_window in "${allowed_target_windows[@]}"; do
     echo "[allowed_target_window=${allowed_target_window}] start"
     for seed in "${seeds[@]}"; do
-        wandb_group="${map_name:-default}"
-        wandb_args=(
-            --use-wandb
-            --wandb-group "${wandb_group}"
-            --wandb-run-name-postfix "${run_name_postfix}"
-        )
         echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
         
         python main.py \
@@ -57,6 +48,6 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
             --n-rollout-threads ${n_rollout_threads} \
             --device ${device} \
             --seed ${seed} \
-            "${wandb_args[@]}"
+            --use-wandb
     done
 done

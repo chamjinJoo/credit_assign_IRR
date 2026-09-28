@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# Canonical JAX QMIX launcher for SMAX
+# JAX QMIX launcher for SMAX
 # ============================================================
 
 set -euo pipefail
@@ -20,19 +20,12 @@ qmix_update_epochs=8
 seeds=(42 1 2 31 32)
 device="cuda"
 n_rollout_threads=16
-run_name_postfix="lr5e-5"
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 for allowed_target_window in "${allowed_target_windows[@]}"; do
     echo "[allowed_target_window=${allowed_target_window}] start"
     for seed in "${seeds[@]}"; do
-        wandb_group="${map_name:-default}"
-        wandb_args=(
-            --use-wandb
-            --wandb-group "${wandb_group}"
-            --wandb-run-name-postfix "${run_name_postfix}"
-        )
         echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
 
         python main.py \
@@ -46,6 +39,6 @@ for allowed_target_window in "${allowed_target_windows[@]}"; do
             --n-rollout-threads ${n_rollout_threads} \
             --device ${device} \
             --seed ${seed} \
-            "${wandb_args[@]}"
+            --use-wandb
     done
 done

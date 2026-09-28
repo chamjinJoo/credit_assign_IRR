@@ -75,7 +75,6 @@ class JAXRPCIAlgorithm:
         train_naive_predictor: Optional[bool] = None,
         train_naivepredictor: Optional[bool] = None,
         use_naive_predictor_for_delta: bool = False,
-        use_delta_critic: bool = True,
         anneal_lr: bool = True,
         total_iterations: int = 0,
         seed: int = 42,
@@ -131,11 +130,10 @@ class JAXRPCIAlgorithm:
         self.policy_obs_dim = obs_dim + num_agents if add_agent_id else obs_dim
         self.actor_state_dim = hidden_dim if use_recurrent_policy else 0
         self.critic_state_dim = hidden_dim if use_recurrent_policy else 0
-        self.delta_critic_state_dim = hidden_dim if use_delta_critic else 0
+        self.delta_critic_state_dim = hidden_dim if causal_lambda > 0.0 else 0
         self.bridge_hidden_dim = (num_agents - 1) * self.actor_state_dim
         self.bridge_prev_action_dim = (num_agents - 1) * action_dim
         self.bridge_context_dim = self.bridge_hidden_dim + self.bridge_prev_action_dim
-        self.use_delta_critic = use_delta_critic
         self.bridge_output_dim = 1 if global_reward else num_agents
         self.critic_output_dim = num_agents if (use_centralized_critic and not global_reward) else 1
         self.delta_critic_output_dim = 1
@@ -269,7 +267,7 @@ class JAXRPCIAlgorithm:
 
 
         self.delta_critic_state = None
-        if use_delta_critic:
+        if self.bridge_model is not None:
             self.delta_critic_model = RecurrentCritic(
                 hidden_dim=hidden_dim,
                 output_dim=self.delta_critic_output_dim,
@@ -705,7 +703,7 @@ class JAXRPCIAlgorithm:
                     raw_prev_actions_prev,
                     critic_reset_masks,
                 )
-                if self.use_delta_critic and self.delta_critic_state is not None:
+                if self.delta_critic_state is not None:
                     delta_critic_hidden_next, delta_values = self._delta_value_step(
                         delta_critic_params,
                         obs_aug,
@@ -791,7 +789,7 @@ class JAXRPCIAlgorithm:
                 last_value_reset_masks,
             )
             rollout_out = dict(rollout)
-            if self.use_delta_critic and self.delta_critic_state is not None:
+            if self.delta_critic_state is not None:
                 _, last_delta_value = self._delta_value_step(
                     delta_critic_params,
                     next_obs_aug,
@@ -827,7 +825,7 @@ class JAXRPCIAlgorithm:
                 runner_state,
                 self.actor_state.params,
                 self.critic_state.params,
-                self.delta_critic_state.params if self.use_delta_critic and self.delta_critic_state is not None else self.critic_state.params,
+                self.delta_critic_state.params if self.delta_critic_state is not None else self.critic_state.params,
             )
             return env_rng, states, next_obs, next_avail, next_runner, rollout, last_value
         return rollout_fn(
@@ -839,7 +837,7 @@ class JAXRPCIAlgorithm:
             runner_state,
             self.actor_state.params,
             self.critic_state.params,
-            self.delta_critic_state.params if self.use_delta_critic and self.delta_critic_state is not None else self.critic_state.params,
+            self.delta_critic_state.params if self.delta_critic_state is not None else self.critic_state.params,
         )
 
     def _flatten_actor_batch(
@@ -1497,7 +1495,7 @@ class JAXRPCIAlgorithm:
         use_naive_predictor = self.use_naive_predictor_for_delta
         if use_naive_predictor and self.naive_predictor_state is None:
             raise RuntimeError(
-                "use_naive_predictor_for_delta=True requires train_naivepredictor=True "
+                "The observational-regressor delta requires train_naivepredictor=True "
                 "and causal_lambda > 0.0."
             )
         prediction_state = self.naive_predictor_state if use_naive_predictor else self.bridge_state
@@ -1644,13 +1642,13 @@ class JAXRPCIAlgorithm:
         lr_step = self.current_iteration * self._lr_steps_per_iter
         metrics["lr_actor"] = self._current_lr(self._lr_actor_schedule, lr_step)
         metrics["lr_critic"] = self._current_lr(self._lr_critic_schedule, lr_step)
-        if self.use_delta_critic and self.delta_critic_state is not None:
+        if self.delta_critic_state is not None:
             metrics["lr_delta_critic"] = metrics["lr_critic"]
 
         bridge_metrics = self.update_causal_networks(rollout)
         metrics.update(bridge_metrics)
 
-        c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="full_weighted")
+        c_matrix, pci_metrics = self.compute_causal_rewards(rollout, baseline_type="weighted")
         delta = c_matrix.sum(axis=-1)
         metrics.update(pci_metrics)
 
@@ -1675,7 +1673,7 @@ class JAXRPCIAlgorithm:
             self.gae_lambda,
         )
 
-        if self.use_delta_critic and self.delta_critic_state is not None:
+        if self.delta_critic_state is not None:
             delta_values = rollout["delta_values"]
             last_delta_value = rollout["last_delta_value"]
             pci_advantages, delta_returns = compute_gae(

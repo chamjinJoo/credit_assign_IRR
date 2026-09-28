@@ -23,7 +23,7 @@ algorithm:
   anneal_lr: false
 
 training:
-  max_iterations: 4000
+  max_iterations: 2500
   max_steps_per_iteration: 2000
   episodes_per_iteration: null
   n_rollout_threads: 8

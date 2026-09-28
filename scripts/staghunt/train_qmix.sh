@@ -14,7 +14,6 @@ lr=0.0005
 n_rollout_threads=8
 device="cuda"
 seeds=(42 1 2 31 32)
-run_name_postfix=""
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
@@ -26,6 +25,5 @@ for seed in "${seeds[@]}"; do
         --n-rollout-threads ${n_rollout_threads} \
         --device ${device} \
         --seed ${seed} \
-        --use-wandb \
-        --wandb-run-name-postfix "${run_name_postfix}"
+        --use-wandb
 done

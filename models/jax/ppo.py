@@ -9,6 +9,5 @@ class JAXPPOAlgorithm(JAXRPCIAlgorithm):
     def __init__(self, *args: Any, **kwargs: Any):
         kwargs.setdefault("causal_lambda", 0.0)
         kwargs.setdefault("bridge_epoch", 0)
-        kwargs["use_delta_critic"] = False
         kwargs["global_reward"] = True
         super().__init__(*args, **kwargs)

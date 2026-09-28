@@ -1,14 +1,12 @@
-from .torch import rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, rQMIXAlgorithm, rPCIQMIXAlgorithm
-from .jax import JAXPPOAlgorithm, JAXRPCIAlgorithm, JAXQMIXAlgorithm, JAXPCIQMIXAlgorithm
+from .torch import rPCIAlgorithm, rMAPPOAlgorithm, rIPPOAlgorithm, rQMIXAlgorithm
+from .jax import JAXPPOAlgorithm, JAXRPCIAlgorithm, JAXQMIXAlgorithm
 
 __all__ = [
     "rPCIAlgorithm",
     "rMAPPOAlgorithm",
     "rIPPOAlgorithm",
     "rQMIXAlgorithm",
-    "rPCIQMIXAlgorithm",
     "JAXPPOAlgorithm",
     "JAXRPCIAlgorithm",
     "JAXQMIXAlgorithm",
-    "JAXPCIQMIXAlgorithm",
 ]

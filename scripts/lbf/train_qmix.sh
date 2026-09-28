@@ -13,7 +13,6 @@ n_rollout_threads=8
 log_interval=2
 device="cuda"
 seeds=(42 1 2 31 32)
-run_in_background=false
 
 eval "$(conda shell.bash hook)"
 conda activate pcimarl
@@ -27,18 +26,9 @@ run_training() {
         --log-interval ${log_interval} \
         --device ${device} \
         --seed ${seed} \
-        --use-wandb \
-        --wandb-project pci-marl-lbf
+        --use-wandb
 }
 
 for seed in "${seeds[@]}"; do
-    if [ "${run_in_background}" = "true" ]; then
-        run_training "${seed}" &
-    else
-        run_training "${seed}"
-    fi
+    run_training "${seed}"
 done
-
-if [ "${run_in_background}" = "true" ]; then
-    wait
-fi

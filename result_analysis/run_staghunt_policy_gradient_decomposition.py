@@ -42,6 +42,12 @@ def parse_args():
     parser.add_argument("--rollout-seed", type=int, default=20260731)
     parser.add_argument("--device", choices=("cpu", "cuda"), default="cpu")
     parser.add_argument("--limit-seeds", type=int, nargs="*", default=None)
+    parser.add_argument(
+        "--baseline-mode",
+        choices=("leave_one_out_renorm", "full_weighted"),
+        default="leave_one_out_renorm",
+        help="Counterfactual baseline used to reconstruct the auxiliary reward.",
+    )
     return parser.parse_args()
 
 
@@ -129,7 +135,12 @@ def load_model(checkpoint_path, env, config, device):
     bridge.load_state_dict(state["outcome_bridge_net"])
     bridge.eval()
 
-    previous_action_representation = "one_hot"
+    one_hot_x_dim = (
+        obs_dim
+        + (num_agents - 1) * hidden_dim
+        + (num_agents - 1) * action_dim
+    )
+    embedding = None
     if "prev_action_embedding" in state:
         embedding_weight = state["prev_action_embedding"]["weight"]
         embedding = torch.nn.Embedding(
@@ -138,10 +149,24 @@ def load_model(checkpoint_path, env, config, device):
         ).to(device)
         embedding.load_state_dict(state["prev_action_embedding"])
         embedding.eval()
-        policy.bridge_previous_action_embedding = embedding
-        previous_action_representation = f"embedding_dim_{embedding_weight.shape[1]}"
-    else:
+
+    embedding_x_dim = (
+        obs_dim + (num_agents - 1) * hidden_dim
+        + (num_agents - 1) * int(embedding.embedding_dim)
+        if embedding is not None else None
+    )
+    if x_dim == one_hot_x_dim:
         policy.bridge_previous_action_embedding = None
+        previous_action_representation = "one_hot"
+    elif embedding is not None and x_dim == embedding_x_dim:
+        policy.bridge_previous_action_embedding = embedding
+        previous_action_representation = f"embedding_dim_{embedding.embedding_dim}"
+    else:
+        raise ValueError(
+            "Bridge input dimension does not match one-hot or saved-embedding "
+            f"previous actions: x_dim={x_dim}, one_hot={one_hot_x_dim}, "
+            f"embedding={embedding_x_dim}"
+        )
 
     metadata = {
         "checkpoint_iteration": int(checkpoint["iteration"]),
@@ -189,6 +214,7 @@ def counterfactual_baselines(
     action_probabilities,
     hidden_states,
     previous_actions,
+    baseline_mode,
 ):
     baselines = {}
     with torch.no_grad():
@@ -221,13 +247,16 @@ def counterfactual_baselines(
             ).reshape(policy.action_dim, -1).sum(dim=-1)
 
             probabilities = action_probabilities[focal_agent].clone()
-            probabilities[int(actions[focal_agent])] = 0.0
-            probabilities = probabilities / probabilities.sum().clamp_min(1e-10)
+            if baseline_mode == "leave_one_out_renorm":
+                probabilities[int(actions[focal_agent])] = 0.0
+                probabilities = probabilities / probabilities.sum().clamp_min(1e-10)
+            elif baseline_mode != "full_weighted":
+                raise ValueError(f"Unsupported baseline mode: {baseline_mode}")
             baselines[focal_agent] = float(torch.sum(probabilities * predictions).item())
     return baselines
 
 
-def collect_episodes(policy, bridge, env, num_episodes, rollout_seed, device):
+def collect_episodes(policy, bridge, env, num_episodes, rollout_seed, device, baseline_mode):
     episodes = []
     for episode_id in range(num_episodes):
         seed = rollout_seed + episode_id
@@ -272,6 +301,7 @@ def collect_episodes(policy, bridge, env, num_episodes, rollout_seed, device):
                 probabilities,
                 hidden_states,
                 previous_actions,
+                baseline_mode,
             )
             next_observations, rewards, dones, info = env.step(actions)
             global_reward = float(sum(rewards.values()))
@@ -431,11 +461,12 @@ def policy_gradient_components(policy, episodes, advantages, agent_id, device):
     return global_grad.cpu(), delta_grad.cpu(), combined_direct.cpu(), residual
 
 
-def vector_metrics(global_grad, delta_grad, combined_grad):
+def vector_metrics(global_grad, delta_grad, combined_grad, causal_lambda):
     eps = 1e-12
     global_norm = float(torch.linalg.vector_norm(global_grad).item())
     delta_norm = float(torch.linalg.vector_norm(delta_grad).item())
     combined_norm = float(torch.linalg.vector_norm(combined_grad).item())
+    bias_free_norm = (1.0 + float(causal_lambda)) * global_norm
     dot_global_delta = float(torch.dot(global_grad, delta_grad).item())
     cosine = dot_global_delta / max(global_norm * delta_norm, eps)
     cosine = float(np.clip(cosine, -1.0, 1.0))
@@ -454,6 +485,8 @@ def vector_metrics(global_grad, delta_grad, combined_grad):
         "global_grad_norm": global_norm,
         "delta_grad_norm": delta_norm,
         "combined_grad_norm": combined_norm,
+        "bias_free_grad_norm": bias_free_norm,
+        "gradient_gain": combined_norm / max(bias_free_norm, eps),
         "delta_to_global_norm_ratio": delta_norm / max(global_norm, eps),
         "delta_to_combined_norm_ratio": delta_norm / max(combined_norm, eps),
         "global_delta_cosine": cosine,
@@ -507,7 +540,12 @@ def summarize_checkpoint(
             "agent_id": agent_id,
             "checkpoint_path": str(checkpoint_path.resolve()),
             **metadata,
-            **vector_metrics(global_grad, delta_grad, combined_grad),
+            **vector_metrics(
+                global_grad,
+                delta_grad,
+                combined_grad,
+                metadata["causal_lambda"],
+            ),
             **advantage_metrics(advantages, agent_id),
             "gradient_additivity_relative_error": residual,
         }
@@ -551,7 +589,12 @@ def summarize_checkpoint(
             "agent_id": -1,
             "checkpoint_path": str(checkpoint_path.resolve()),
             **metadata,
-            **vector_metrics(global_grad, delta_grad, combined_grad),
+            **vector_metrics(
+                global_grad,
+                delta_grad,
+                combined_grad,
+                metadata["causal_lambda"],
+            ),
             "advantage_global_delta_correlation": float(np.mean(joint_adv_correlations)),
             "advantage_sign_flip_fraction": float(np.mean(joint_sign_flips)),
             "gradient_additivity_relative_error": float(max(residuals)),
@@ -596,6 +639,8 @@ def aggregate_rows(rows):
         "global_grad_norm",
         "delta_grad_norm",
         "combined_grad_norm",
+        "bias_free_grad_norm",
+        "gradient_gain",
         "delta_to_global_norm_ratio",
         "delta_to_combined_norm_ratio",
         "global_delta_cosine",
@@ -793,6 +838,7 @@ def main():
                 args.num_episodes,
                 args.rollout_seed,
                 device,
+                args.baseline_mode,
             )
             advantages = prepare_advantages(
                 episodes,
@@ -826,7 +872,6 @@ def main():
     summary = aggregate_rows(all_rows)
     write_csv(args.result_dir / "checkpoint_gradient_summary.csv", summary)
     plot_summary(args.result_dir / "gradient_decomposition.png", summary)
-    write_report(args.result_dir / "REPORT.md", summary, args, runs, all_rows)
     metadata = {
         "checkpoint_root": str(args.checkpoint_root.resolve()),
         "result_dir": str(args.result_dir.resolve()),
@@ -834,6 +879,7 @@ def main():
         "num_episodes": args.num_episodes,
         "rollout_seed": args.rollout_seed,
         "device": str(device),
+        "baseline_mode": args.baseline_mode,
         "training_seeds": [seed for seed, _, _ in runs],
     }
     (args.result_dir / "analysis_metadata.json").write_text(

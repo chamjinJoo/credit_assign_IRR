@@ -32,7 +32,6 @@ algorithm:
   
   # Scalability options (false = original behavior)
   normalize_pci_signal: false  # true: per-agent normalize PCI before combining with env_adv
-  use_delta_critic: true       # true: per-agent V^i_delta critic for TD-style PCI advantages
 
   tikhonov_gamma: 1.0e-4 # default: 1.0e-4
   print_bridge_predictions: false # debugging flag to print bridge predictions.

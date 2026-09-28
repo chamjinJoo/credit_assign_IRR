@@ -168,8 +168,7 @@ class JAXTrainer(Trainer):
                 )
                 delta_critic_state = getattr(self.algorithm, "delta_critic_state", None)
                 if (
-                    getattr(self.algorithm, "use_delta_critic", False)
-                    and delta_critic_state is not None
+                    delta_critic_state is not None
                     and hasattr(self.algorithm, "_delta_value_step")
                 ):
                     delta_critic_hidden_next, delta_values = self.algorithm._delta_value_step(

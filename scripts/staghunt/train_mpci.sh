@@ -14,15 +14,14 @@ causal_lambda=1.0
 
 # proxy shuffling setting
 # mode: none, w, z, wz
-proxy_shuffle_mode="w"
-proxy_shuffle_prob=0.5
+proxy_shuffle_mode="none"
+proxy_shuffle_prob=0.0
 proxy_shuffle_strategy="episode_axis"
 
 # training and logging
-n_rollout_threads=16
+n_rollout_threads=8
 device="cpu"
-seeds=(1)
-run_name_postfix="w_0.5"
+seeds=(42 1 2 31 32)
 
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
@@ -41,6 +40,5 @@ for seed in ${seeds[@]}; do
         --proxy-shuffle-strategy ${proxy_shuffle_strategy} \
         --device ${device} \
         --seed ${seed} \
-        --use-wandb \
-        --wandb-run-name-postfix "${run_name_postfix}"
+        --use-wandb
 done
