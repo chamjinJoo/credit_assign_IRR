@@ -22,11 +22,11 @@ sh_smax_lbf_table.tex
 !/result_analysis/run_staghunt_policy_gradient_decomposition.py
 !/result_analysis/run_smax_policy_gradient_decomposition.py
 
-# Dependency required by the SMAX gradient decomposition script.
+# Minimal dependency required by the SMAX gradient decomposition script.
 !/result_analysis/utils/
 /result_analysis/utils/*
 !/result_analysis/utils/__init__.py
-!/result_analysis/utils/tab2_smax_checkpoint_eval_utils.py
+!/result_analysis/utils/smax_gradient_checkpoint_utils.py
 
 # Oracle validation sources only; exclude reports, backups and generated assets.
 # Notebook cell outputs must be cleared separately before committing.

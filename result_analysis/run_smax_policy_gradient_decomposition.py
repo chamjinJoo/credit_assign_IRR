@@ -21,7 +21,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from models.jax.common import compute_gae
-from result_analysis.utils.tab2_smax_checkpoint_eval_utils import (
+from result_analysis.utils.smax_gradient_checkpoint_utils import (
     build_trainer_for_run,
     discover_runs,
 )
