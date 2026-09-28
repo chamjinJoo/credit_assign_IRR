@@ -16,17 +16,8 @@ plots/
 figures/
 sh_smax_lbf_table.tex
 
-# Paper-specific gradient analysis only. Performance tables, plotting notebooks,
-# generated outputs, caches, and exploratory analyses remain ignored.
-/result_analysis/*
-!/result_analysis/run_staghunt_policy_gradient_decomposition.py
-!/result_analysis/run_smax_policy_gradient_decomposition.py
-
-# Minimal dependency required by the SMAX gradient decomposition script.
-!/result_analysis/utils/
-/result_analysis/utils/*
-!/result_analysis/utils/__init__.py
-!/result_analysis/utils/smax_gradient_checkpoint_utils.py
+# Local performance analysis, notebooks, generated outputs, and caches.
+/result_analysis/
 
 # Oracle validation sources only; exclude reports, backups and generated assets.
 # Notebook cell outputs must be cleared separately before committing.

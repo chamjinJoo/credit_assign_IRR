@@ -27,7 +27,7 @@ from models.torch.networks import OutcomeBridgeNetwork
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT_ROOT = ROOT / "runs/checkpoints_for_sh/sh/ipci"
-DEFAULT_RESULT_DIR = ROOT / "result_analysis/gradient_analysis"
+DEFAULT_RESULT_DIR = ROOT / "runs/gradient_analysis/staghunt"
 DEFAULT_ITERATIONS = [0, 500, 1000, 1500, 2000, 2500, 3000, 3500, 3999]
 
 

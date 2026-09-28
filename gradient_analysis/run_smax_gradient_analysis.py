@@ -21,13 +21,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from models.jax.common import compute_gae
-from result_analysis.utils.smax_gradient_checkpoint_utils import (
+from gradient_analysis.smax_checkpoint_utils import (
     build_trainer_for_run,
     discover_runs,
 )
 
 
-DEFAULT_RESULT_DIR = ROOT / "result_analysis/gradient_analysis"
+DEFAULT_RESULT_DIR = ROOT / "runs/gradient_analysis/smax"
 METRICS = (
     "global_grad_norm",
     "delta_grad_norm",
