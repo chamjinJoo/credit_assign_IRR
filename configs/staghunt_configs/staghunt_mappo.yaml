@@ -1,0 +1,55 @@
+# Canonical Torch MAPPO config for StagHunt
+
+network:
+  hidden_dim: 64
+  lr_actor: 3.0e-4
+  lr_critic: 3.0e-4
+  recurrent_N: 1
+  use_recurrent_policy: true
+
+algorithm:
+  type: "r_mappo"
+  gamma: 0.99
+  rnn_chunk_length: 16
+  gae_lambda: 0.95
+  global_reward: true
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  num_batches: 2
+  add_agent_id: false
+  use_value_parameter_sharing: true
+  anneal_lr: false
+
+training:
+  max_iterations: 2500
+  max_steps_per_iteration: 2000
+  episodes_per_iteration: null
+  n_rollout_threads: 8
+  log_interval: 2
+  save_interval: 500
+  eval_interval: 50
+  eval_episodes: 10
+  save_dir: "./runs/checkpoints"
+  device: "cuda"
+  seed: 42
+  deterministic: true
+
+environment:
+  env_name: "StagHunt"
+  num_agents: 3
+  max_steps: 50
+  stag_move_prob: 0.0
+  coop_bonus: 0.0
+  forage_reward: 3.0
+  stag_reward: 5.0
+  mauling_punishment: 0.0
+  grid_observation: true
+  obs_noise_std: 0.0
+
+wandb:
+  use_wandb: false
+  project: "pci-marl-staghunt-vanilla"
+  tags: ["torch", "staghunt", "mappo"]

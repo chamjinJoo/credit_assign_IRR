@@ -1,0 +1,88 @@
+# Canonical JAX QMIX config for SMAX
+#
+# Based on the SMAX Q-learning settings from the referenced table where the
+# current implementation exposes an equivalent hyperparameter. Unsupported
+# table entries are intentionally not added as inert config keys.
+
+network:
+  hidden_dim: 512
+  lr: 5.0e-5
+  # Kept for config compatibility; JAX QMIX uses network.lr.
+  lr_actor: 5.0e-5
+  lr_critic: 5.0e-5
+  recurrent_N: 1
+  use_recurrent_policy: true
+
+algorithm:
+  type: "jax_qmix"
+  gamma: 0.99
+  max_grad_norm: 10.0
+  target_update_interval: 80 # for TARGET UPDATE INTERVAL=10 (=target_update_interval/qmix_update_epochs)
+  qmix_update_epochs: 8
+  epsilon_start: 1.0
+  epsilon_finish: 0.05
+  epsilon_anneal_time: 1.0e+6 # 0.1 of 1e7 timesteps.
+  double_q: true
+  mixing_embed_dim: 64
+  hypernet_layers: 2
+  hypernet_embed: 256
+  mixer_init_scale: 1.0e-3
+  reward_scale: 10.0
+  replay_buffer_size: 5000
+  train_batch_size: 32
+  learning_starts: 10000
+  global_reward: true
+  add_agent_id: true
+  anneal_lr: false
+
+training:
+  # 4883 * (16 parallel envs * 128 rollout steps) ~= 1.0e7 timesteps.
+  max_iterations: 4883
+  max_steps_per_iteration: 2048
+  n_rollout_threads: 16
+  log_interval: 2
+  save_interval: 500
+  eval_interval: 25
+  eval_episodes: 16
+  save_dir: "./runs/checkpoints"
+  device: "cuda"
+  seed: 42
+  deterministic: true
+
+environment:
+  env_name: "SMAX"
+  map_name: "smacv2_5_units"
+  # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
+
+  # [Tar] Target Allocation: directly masking actions in Wrapper.
+  use_allowed_targets: true
+  use_partial_damage_restore: false
+  allowed_target_window: 3
+
+  max_steps: 100
+  use_individual_rewards: false
+  enemy_shoots: true
+  attack_mode: "closest"
+  map_width: 32
+  map_height: 32
+  world_steps_per_env_step: 8
+  time_per_step: 0.0625
+  see_enemy_actions: true
+  won_battle_bonus: 1.0
+  walls_cause_death: true
+  observation_type: "unit_list"
+  smacv2_position_generation: true
+  smacv2_unit_type_generation: true
+
+  # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
+  use_cooperative_kill_bonus: false
+  cooperative_bonus_mode: "kill"
+  cooperative_kill_window: 2
+  cooperative_kill_bonus: 0.5
+  cooperative_kill_owner_ratio: 0.7
+  cooperative_size: 2
+
+wandb:
+  use_wandb: false
+  project: "pci-marl-smax-jax-v2"
+  tags: ["jax", "smax", "qmix", "jaxmarl"]

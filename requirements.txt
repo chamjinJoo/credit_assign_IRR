@@ -1,0 +1,13 @@
+# Minimal runtime dependencies for the submit-ready codebase.
+# install.sh installs torch / torchvision / torchaudio and the JAX stack
+# (jax, jaxlib, jax-cuda12-*, jaxmarl, jaxopt) separately.
+
+cloudpickle==3.1.1
+flax==0.10.4
+matplotlib==3.10.8
+numpy==1.26.4
+optax==0.2.5
+protobuf==3.20.3
+PyYAML==6.0.2
+tqdm==4.67.1
+wandb==0.22.3

@@ -1,0 +1,85 @@
+# checkpoints (legacy root names, pending migration to runs/ once active jobs finish)
+save_checkpoints/
+save_animations/
+checkpoints_for_eval/
+gs1_checkpoints/
+SMAX_checkpts/
+checkpoints/
+
+# runs (consolidated checkpoints/wandb/logs)
+runs/
+wandb/
+jobs.md
+
+# plots
+plots/
+figures/
+sh_smax_lbf_table.tex
+
+# Local performance analysis, notebooks, generated outputs, and caches.
+/result_analysis/
+
+# Oracle validation sources only; exclude reports, backups and generated assets.
+# Notebook cell outputs must be cleared separately before committing.
+/oracle/*
+!/oracle/*.py
+!/oracle/*.ipynb
+
+# Model checkpoints, cached arrays and output bundles, wherever they are saved.
+*.pt
+*.pth
+*.pkl
+*.pickle
+*.ckpt
+*.safetensors
+*.npy
+*.npz
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.gif
+*.mp4
+*.log
+
+# Editor backups and notebook autosaves.
+*.orig
+*.bak
+*~
+.ipynb_checkpoints/
+
+# logs
+logs/
+
+# __pycache__
+__pycache__/
+
+# figures\
+figures/
+*.png
+*.jpg
+*.pdf
+
+# slurm
+slurms/
+.rsync_exclude
+*.sbatch
+
+# third-party binaries
+third_party/
+
+# backup
+not_for_submit/
+legacy/
+src/
+
+# IDE or Chatbot specific files
+.vscode/
+.claude/
+.idea/
+.agents/
+AGENTS.md
+
+# others
+merge.sh
+rebuttal.md

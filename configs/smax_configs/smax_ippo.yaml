@@ -1,0 +1,74 @@
+# Canonical JAX MAPPO config for SMAX
+
+network:
+  hidden_dim: 128
+  lr_actor: 1.0e-3
+  lr_critic: 1.0e-3
+  recurrent_N: 1
+  use_recurrent_policy: true
+
+algorithm:
+  type: "jax_rippo"
+  gamma: 0.99
+  gae_lambda: 0.95
+  clip_epsilon: 0.2
+  entropy_coef: 0.0
+  value_coef: 0.5
+  max_grad_norm: 0.25
+  ppo_epochs: 2
+  num_batches: 2
+  batch_size: 0 # unused
+  use_centralized_critic: false
+  global_reward: true
+  add_agent_id: true
+  anneal_lr: true
+  
+training:
+  max_iterations: 1600
+  max_steps_per_iteration: 6400
+  log_interval: 2
+  save_interval: 500
+  eval_interval: 25
+  eval_episodes: 16
+  save_dir: "./runs/checkpoints"
+  device: "cuda"
+  seed: 42
+  deterministic: true
+
+environment:
+  env_name: "SMAX"
+  map_name: "smacv2_5_units" 
+  # maps: [3m, 2s3z, 3s_vs_5z, 3s5z_vs_3s6z, 5m_vs_6m, 3s5z, 6h_vs_8z, 10m_vs_11m, smacv2_5_units, smacv2_10_units]
+ 
+  # [Tar] Target Allocation: directly masking actions in Wrapper.
+  use_allowed_targets: true
+  use_partial_damage_restore: false # if false all damage is nullified if there exist any non-target attack to the enemy.
+  allowed_target_window: 3
+
+  max_steps: 100
+  use_individual_rewards: false
+  enemy_shoots: true
+  attack_mode: "closest"
+  map_width: 32
+  map_height: 32
+  world_steps_per_env_step: 8
+  time_per_step: 0.0625
+  see_enemy_actions: true
+  won_battle_bonus: 1.0
+  walls_cause_death: true
+  observation_type: "unit_list"
+  smacv2_position_generation: true
+  smacv2_unit_type_generation: true
+
+  # [C.B.] Provide bonus for cooperative kills: only when all required pairs attack the same target within the window.
+  use_cooperative_kill_bonus: false 
+  cooperative_bonus_mode: "kill" # kill | damage
+  cooperative_kill_window: 2
+  cooperative_kill_bonus: 0.5
+  cooperative_kill_owner_ratio: 0.7
+  cooperative_size: 2
+
+wandb:
+  use_wandb: false
+  project: "pci-marl-smax-jax-v2"
+  tags: ["jax", "smax", "mappo", "jaxmarl"]

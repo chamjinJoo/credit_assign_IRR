@@ -1,0 +1,71 @@
+# Canonical JAX PCI-MAPPO config for LBForaging
+
+network:
+  hidden_dim: 128
+  lr_actor: 3.0e-4
+  lr_bridge: 1.0e-3
+  lr_critic: 3.0e-4
+  rkhs_gamma: 1.0
+  recurrent_N: 1
+  use_recurrent_policy: true
+
+algorithm:
+  type: "jax_rpci"
+  gamma: 0.99
+  rnn_chunk_length: 128
+  gae_lambda: 0.9
+  clip_epsilon: 0.2
+  entropy_coef: 0.01
+  value_coef: 0.5
+  max_grad_norm: 0.5
+  ppo_epochs: 4
+  batch_size: 0
+  num_batches: 2
+  max_buffer_size: 10000
+  add_agent_id: true
+  use_centralized_critic: true
+  use_value_parameter_sharing: true
+  causal_lambda: 1.0
+  causal_mini_batch_size: 2048
+  train_naivepredictor: false
+  use_naive_predictor_for_delta: false
+  bridge_epoch: 4
+
+training:
+  max_iterations: 1000
+  max_steps_per_iteration: 2048
+  log_interval: 2
+  save_interval: 500
+  eval_interval: 10
+  eval_episodes: 32
+  save_dir: "./runs/checkpoints"
+  device: "cpu"
+  seed: 42
+  deterministic: true
+  n_rollout_threads: 16
+
+environment:
+  env_name: "JaxLBF"
+  # Candidate Settings:
+  # 2s-8x8-2p-2f-coop
+  # 2s-10x10-3p-3f
+  # 2s-15x15-3p-3f
+  # 2s-15x15-4p-3f
+  # 2s-15x15-4p-5f
+  sight: 2
+  field_size: 15
+  num_agents: 4
+  max_food: 5
+  player_level: [1, 2]
+  food_level: [1, null]
+  max_episode_steps: 50
+  force_coop: false
+  grid_observation: true
+  normalize_reward: false
+  penalty: 0.0
+
+wandb:
+  use_wandb: false
+  project: "pci-marl-lbf"
+  run_name: false
+  tags: ["jax", "lbf", "pci", "mappo"]

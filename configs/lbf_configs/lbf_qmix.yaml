@@ -1,0 +1,65 @@
+# Canonical JAX QMIX config for LBForaging
+
+network:
+  hidden_dim: 128
+  lr: 5.0e-4 # default 5e-4
+
+algorithm:
+  type: "jax_qmix"
+  gamma: 0.99
+  global_reward: true
+  max_grad_norm: 10.0
+  add_agent_id: true
+  target_update_interval: 200
+  qmix_update_epochs: 8
+  epsilon_start: 1.0
+  epsilon_finish: 0.05
+  epsilon_anneal_time: 5.0e+4
+  double_q: true
+  mixing_embed_dim: 32
+  hypernet_layers: 2
+  hypernet_embed: 64
+  mixer_init_scale: 1.0e-3
+  reward_scale: 1.0
+  replay_buffer_size: 5000
+  train_batch_size: 32
+  learning_starts: 0
+
+training:
+  max_iterations: 1000
+  max_steps_per_iteration: 2048
+  log_interval: 2
+  save_interval: 500
+  eval_interval: 10
+  eval_episodes: 32
+  save_dir: "./runs/checkpoints"
+  device: "cpu"
+  seed: 42
+  deterministic: true
+  n_rollout_threads: 16
+
+environment:
+  env_name: "JaxLBF"
+  # Candidate Settings:
+  # 2s-8x8-2p-2f-coop
+  # 2s-10x10-3p-3f
+  # 2s-15x15-3p-3f
+  # 2s-15x15-4p-3f
+  # 2s-15x15-4p-5f
+  sight: 2
+  field_size: 15
+  num_agents: 4
+  max_food: 5
+  player_level: [1, 2]
+  food_level: [1, null]
+  max_episode_steps: 50
+  force_coop: false
+  grid_observation: true
+  normalize_reward: false
+  penalty: 0.0
+
+wandb:
+  use_wandb: false
+  project: "pci-marl-lbf"
+  run_name: false
+  tags: ["jax", "lbf", "qmix"]
