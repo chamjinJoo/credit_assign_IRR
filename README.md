@@ -1,15 +1,20 @@
 # Rethinking Credit Assignment in Cooperative MARL via Interventional Reward Response
-This is an implementaion of the following paper.
-
-[Published in NeurIPS 2026](https://openreview.net/forum?id=FOmIe6PtvT&referrer=%5BAuthor%20Console%5D(%2Fgroup%3Fid%3DNeurIPS.cc%2F2026%2FConference%2FAuthors%23your-submissions))
-<p align="center"> Chamjin Joo, Myoung Hoon Ha, Sang Wan Lee </p>
-
-KAIST [Brain x Machine Intelligence Lab](https://aibrain.kaist.ac.kr), Deajeon, South Korea.
+This is the official implementaion for the paper [Rethinking Credit Assignment in Cooperative MARL via Interventional Reward Response](https://openreview.net/forum?id=FOmIe6PtvT&referrer=%5BAuthor%20Console%5D(%2Fgroup%3Fid%3DNeurIPS.cc%2F2026%2FConference%2FAuthors%23your-submissions)) 
+<p align="center"> by Chamjin Joo, Myoung Hoon Ha, Sang Wan Lee </p>
 
 **(TL;DR)**: We address the **credit assginemnt** challenge in cooperative MARL **by formulating agent-level credit as an interventional reward response (IRR)**, using **Proximal Causal Inference (PCI)** to identify credit from observable proxies via an outcome bridge function. Building on this identification strategy, we design a practical credit-aligned update signal and integrate it into policy gradient methods.
 
-<p align="center"><img src="./assets/images/decpomdp.jpg" alt="Experimental Results" width="80%"></p>
-<p align="center"><img src="./assets/images/IRR.jpg" width="80%"></p>
+## Our approach
+We define an IRR, rather than a conditional expectation. Based on the theoretical framework of causal inference. The IRR desribes the causation between an individual agent and the global reward.
+<p align="center"><img src="./assets/images/IRR.jpg" width="50%"></p>
+
+To identify IRR, we analyze the Dec-POMDP causal graph to figure out the causal effect of an individual agent on the global reward. Here, another challenge, partial observability, hinders the identification of the causal effect. 
+
+<p align="center"><img src="./assets/images/decpomdp.jpg" alt="IRR" width="80%"></p>
+
+Therefore, we adopt PCI to comprehensivelty handle the two challenges and finally propose an credit-aligned policy-based online MARL framework, **PCI-IPPO/MAPPO**.
+<p align="center"><img src="./assets/images/fig2_oracle_val.jpg" alt="Oracle Results" width="60%"></p>
+<p align="center"><img src="./assets/images/fig4_perf_prof.jpg" alt="Experimental Results" width="60%"></p>
 
 ## What does this code do?
 
