@@ -1,16 +1,33 @@
-## Setup
+# Rethinking Credit Assignment in Cooperative MARL via Interventional Reward Response
+This is an implementaion of the following paper.
+
+[Published in NeurIPS 2026](https://openreview.net/forum?id=FOmIe6PtvT&referrer=%5BAuthor%20Console%5D(%2Fgroup%3Fid%3DNeurIPS.cc%2F2026%2FConference%2FAuthors%23your-submissions))
+<center>Chamjin Joo, Myoung Hoon Ha, Sang Wan Lee </center>
+
+KAIST [Brain x Machine Intelligence Lab](https://aibrain.kaist.ac.kr), Deajeon, South Korea.
+
+**(TL;DR)**: We address the **credit assginemnt** challenge in cooperative MARL **by formulating agent-level credit as an interventional reward response (IRR)**, using **Proximal Causal Inference (PCI)** to identify credit from observable proxies via an outcome bridge function. Building on this identification strategy, we design a practical credit-aligned update signal and integrate it into policy gradient methods.
+
+<center><img src="./assets/decpomdp.jpg" width="500"></center>
+<center><img src="./assets/IRR.jpg" width="300"></center>
+
+## What does this code do?
+
+## Get started
 
 Create a conda environment and install dependencies:
 
 ```bash
-conda create -n pcimarl python=3.10.18 -y
-conda activate pcimarl
+conda create -n env_name python=3.10.18 -y
+conda activate env_name
 bash install.sh
 ```
 
-The launcher scripts assume the conda environment name is `pcimarl`.
+Note: 
+- Python ver, Pytorch, Jax 등 필수 library version/version범위 명시.
+- `requirements.txt` does not contain all necessary libraries. Please see the `install.sh` for more information. 
 
-## Training Scripts
+## Training scripts
 
 - `scripts/staghunt/`: Torch Stag Hunt experiments.
 - `scripts/smax/`: JAX SMAX experiments.
@@ -30,7 +47,7 @@ Some scripts enable Weights & Biases logging by default. If external logging is
 not needed, remove or comment out the corresponding `--use-wandb` arguments in
 the script before running it.
 
-## Code Layout
+## Code layout
 
 - `models/torch/`: Torch algorithm implementations used for Stag Hunt.
 - `models/jax/`: JAX algorithm implementations used for SMAX.
@@ -38,9 +55,14 @@ the script before running it.
 - `envs/`: multi-agent environments and wrappers.
 - `runner/torch/`, `runner/jax/`: training loops for Torch and JAX.
 - `utils/`: shared utility code.
-- `figures/`: analysis notebooks/scripts used to produce paper figures and tables.
-- `legacy/`: retired source snapshots kept for reference only, not imported by anything.
-- `third_party/`: vendored dependencies (`StarCraftII/` game assets, `gym-cooking/` env).
-- `slurms/templates/`: SLURM `.sbatch` job templates; submit from the repo root, e.g. `sbatch slurms/templates/slurm_train_smax.sbatch`.
-- `runs/`: gitignored training outputs (checkpoints, W&B logs/exports) consolidated under one directory.
-- `not_for_submit/`: gitignored eval checkpoints excluded from paper submission.
+
+## Citation
+```
+@inproceedings{anonymous2026rethinking,
+    title={Rethinking Credit Assignment in Cooperative {MARL} via Interventional Reward Response},
+    author={Anonymous},
+    booktitle={The Fortieth Annual Conference on Neural Information Processing Systems},
+    year={2026},
+    url={https://openreview.net/forum?id=FOmIe6PtvT}
+}
+```
