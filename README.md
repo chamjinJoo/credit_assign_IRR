@@ -8,8 +8,8 @@ KAIST [Brain x Machine Intelligence Lab](https://aibrain.kaist.ac.kr), Deajeon, 
 
 **(TL;DR)**: We address the **credit assginemnt** challenge in cooperative MARL **by formulating agent-level credit as an interventional reward response (IRR)**, using **Proximal Causal Inference (PCI)** to identify credit from observable proxies via an outcome bridge function. Building on this identification strategy, we design a practical credit-aligned update signal and integrate it into policy gradient methods.
 
-<center><img src="./assets/decpomdp.jpg" width="500"></center>
-<center><img src="./assets/IRR.jpg" width="300"></center>
+<center><img src="./assets/images/decpomdp.jpg" width="500"></center>
+<center><img src="./assets/images/IRR.jpg" width="300"></center>
 
 ## What does this code do?
 
