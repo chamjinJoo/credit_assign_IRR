@@ -15,10 +15,6 @@ log_interval=2
 device="cuda"
 seeds=(42)
 
-# Conda 초기화 및 환경 활성화
-eval "$(conda shell.bash hook)"
-conda activate pcimarl
-
 run_training() {
     local seed="$1"
     echo "[seed=${seed}] start"

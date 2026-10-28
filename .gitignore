@@ -58,6 +58,11 @@ __pycache__/
 figures/
 *.png
 *.pdf
+!assets/SMAX_replay/smax_unit_sprites.png
+!assets/SMAX_replay/smax_replays/*.gif
+!assets/SMAX_replay/trajectories/*.npz
+assets/SMAX_replay/sc2_replays/
+assets/SMAX_replay/replay_in_sc2.py
 
 # slurm
 slurms/

@@ -1,4 +1,6 @@
 #!/bin/bash
+set -euo pipefail
+
 # env setting
 env="StagHunt"
 num_agents=3
@@ -16,7 +18,8 @@ seeds=(42 1 2 31 32)
 # CuBLAS workspace config for deterministic behavior
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-for seed in ${seeds[@]}; do
+run_training() {
+    local seed="$1"
     echo "[seed=${seed}] start]"
     python main.py --env ${env} --num-agents ${num_agents} \
         --config ${config} --model ${model} \
@@ -25,4 +28,8 @@ for seed in ${seeds[@]}; do
         --device ${device} \
         --seed ${seed} \
         --use-wandb
+}
+
+for seed in "${seeds[@]}"; do
+    run_training "${seed}"
 done

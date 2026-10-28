@@ -23,22 +23,26 @@ n_rollout_threads=8
 # reproducibility settings for JAX
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-# main training loop over config variants and seeds
+run_training() {
+    local allowed_target_window="$1"
+    local seed="$2"
+    echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
+    python main.py --env SMAX \
+        --config ${config} \
+        --model ${model} \
+        --map-name "${map_name}" \
+        --use-recurrent-policy ${use_recurrent_policy} \
+        --allowed-target-window ${allowed_target_window} \
+        --lr-actor ${lr_actor} \
+        --lr-critic ${lr_critic} \
+        --n-rollout-threads ${n_rollout_threads} \
+        --device ${device} \
+        --seed ${seed} \
+        --use-wandb
+}
+
 for allowed_target_window in "${allowed_target_windows[@]}"; do
-    echo "[allowed_target_window=${allowed_target_window}] start"
     for seed in "${seeds[@]}"; do
-        echo "[seed=${seed}] start]"
-        python main.py --env SMAX \
-            --config ${config} \
-            --model ${model} \
-            --map-name "${map_name}" \
-            --use-recurrent-policy ${use_recurrent_policy} \
-            --allowed-target-window ${allowed_target_window} \
-            --lr-actor ${lr_actor} \
-            --lr-critic ${lr_critic} \
-            --n-rollout-threads ${n_rollout_threads} \
-            --device ${device} \
-            --seed ${seed} \
-            --use-wandb
+        run_training "${allowed_target_window}" "${seed}"
     done
 done

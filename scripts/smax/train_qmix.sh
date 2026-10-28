@@ -23,22 +23,26 @@ n_rollout_threads=16
 
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
-for allowed_target_window in "${allowed_target_windows[@]}"; do
-    echo "[allowed_target_window=${allowed_target_window}] start"
-    for seed in "${seeds[@]}"; do
-        echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
+run_training() {
+    local allowed_target_window="$1"
+    local seed="$2"
+    echo "[allowed_target_window=${allowed_target_window} seed=${seed}] start"
+    python main.py \
+        --env SMAX \
+        --config ${config} \
+        --model ${model} \
+        --map-name "${map_name}" \
+        --allowed-target-window ${allowed_target_window} \
+        --lr ${lr} \
+        --qmix-update-epochs ${qmix_update_epochs} \
+        --n-rollout-threads ${n_rollout_threads} \
+        --device ${device} \
+        --seed ${seed} \
+        --use-wandb
+}
 
-        python main.py \
-            --env SMAX \
-            --config ${config} \
-            --model ${model} \
-            --map-name "${map_name}" \
-            --allowed-target-window ${allowed_target_window} \
-            --lr ${lr} \
-            --qmix-update-epochs ${qmix_update_epochs} \
-            --n-rollout-threads ${n_rollout_threads} \
-            --device ${device} \
-            --seed ${seed} \
-            --use-wandb
+for allowed_target_window in "${allowed_target_windows[@]}"; do
+    for seed in "${seeds[@]}"; do
+        run_training "${allowed_target_window}" "${seed}"
     done
 done
