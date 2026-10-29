@@ -176,39 +176,78 @@ The largest improvements appear on the diagnostic Stag-Hunt environments, includ
 <table>
   <tr>
     <td width="33%" align="center">
-      <img src="assets/SMAX_replay/smax_replays/SMAX_3m_seed10008.gif" alt="3m Hard" width="100%">
+      <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_3m_seed10008.gif" alt="3m Hard" width="100%">
       <br>
       <sub><b>3m: Hard</b></sub>
     </td>
     <td width="33%" align="center">
-      <img src="assets/SMAX_replay/smax_replays/SMAX_2s3z_seed10001.gif" alt="2s3z Hard" width="100%">
+      <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_2s3z_seed10001.gif" alt="2s3z Hard" width="100%">
       <br>
       <sub><b>2s3z: Hard</b></sub>
     </td>
     <td width="33%" align="center">
-      <img src="assets/SMAX_replay/smax_replays/SMAX_3s5z_seed10001.gif" alt="3s5z Hard" width="100%">
+      <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_3s5z_seed10001.gif" alt="3s5z Hard" width="100%">
       <br>
       <sub><b>3s5z: Hard</b></sub>
     </td>
   </tr>
   <tr>
     <td width="33%" align="center">
-      <img src="assets/SMAX_replay/smax_replays/SMAX_6h_vs_8z_seed10001.gif" alt="6h vs 8z Hard" width="100%">
+      <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_6h_vs_8z_seed10001.gif" alt="6h vs 8z Hard" width="100%">
       <br>
       <sub><b>6h_vs_8z: Hard</b></sub>
     </td>
     <td width="33%" align="center">
-      <img src="assets/SMAX_replay/smax_replays/SMAX_smacv2_5_units_seed10002.gif" alt="SMACv2 5 units Hard" width="100%">
+      <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_smacv2_5_units_seed10002.gif" alt="SMACv2 5 units Hard" width="100%">
       <br>
       <sub><b>smacv2_5_units: Hard</b></sub>
     </td>
     <td width="33%" align="center">
-      <img src="assets/SMAX_replay/smax_replays/SMAX_smacv2_10_units_seed10008.gif" alt="SMACv2 10 units Hard" width="100%">
+      <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_smacv2_10_units_seed10008.gif" alt="SMACv2 10 units Hard" width="100%">
       <br>
       <sub><b>smacv2_10_units: Hard</b></sub>
     </td>
   </tr>
 </table>
+
+<details>
+<summary> Compare with baselines on SMAX `3m:hard` where credit assignment is particularly challenging. </summary>
+Our methods (PCI-MAPPO/-IPPO) learn a distinct coordination strategy: agents gather near the boundary and wait to attack until their actions become useful to the team. This illustrates how agent-wise credit can support more coordinated decision-making than shared rewards alone.
+  <table>
+    <tr>
+      <td width="33%" align="center">
+        <img src="assets/SMAX_replay/smax_replays/mpci/SMAX_3m_seed10008_target_markers.gif" alt="3m Hard" width="100%">
+        <br>
+        <sub><b>PCI-MAPPO</b></sub>
+      </td>
+      <td width="33%" align="center">
+        <img src="assets/SMAX_replay/smax_replays/mappo/SMAX_3m_tw2_train1_eval10010_target_markers.gif" alt="2s3z Hard" width="100%">
+        <br>
+        <sub><b>MAPPO</b></sub>
+      </td>
+      <td width="33%" align="center">
+        <img src="assets/SMAX_replay/smax_replays/qmix/SMAX_3m_tw2_train1_eval10001_target_markers.gif" alt="3s5z Hard" width="100%">
+        <br>
+        <sub><b>QMIX</b></sub>
+      </td>
+    </tr>
+    <tr>
+      <td width="33%" align="center">
+        <img src="assets/SMAX_replay/smax_replays/pci-ippo/SMAX_3m_tw2_train1_eval10009_target_markers.gif" alt="3m Hard" width="100%">
+        <br>
+        <sub><b>PCI-IPPO</b></sub>
+      </td>
+      <td width="33%" align="center">
+        <img src="assets/SMAX_replay/smax_replays/ippo/SMAX_3m_tw2_train1_eval10002_target_markers.gif" alt="2s3z Hard" width="100%">
+        <br>
+        <sub><b>IPPO</b></sub>
+      </td>
+      <td width="33%" align="center">
+      </td>
+    </tr>
+  </table>
+</details>
+
 
 **Result Table**
 <p align="center">

@@ -39,6 +39,9 @@ sh_smax_lbf_table.tex
 *.tgz
 *.zip
 *.gif
+!assets/SMAX_replay/smax_replays/**/*.gif
+assets/SMAX_replay/smax_replays/**/*_red_palette_trial.gif
+assets/SMAX_replay/smax_replays/**/*_target_markers_separated.gif
 *.mp4
 *.log
 

@@ -11,8 +11,20 @@ from PIL import Image, ImageDraw, ImageFont
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TEAM_COLORS = ((60, 170, 255), (255, 105, 85))
+TEAM_COLORS = ((60, 170, 255), (235, 55, 60))
 TEAM_LABELS = ("Trained policy", "Enemy bot")
+ENEMY_ID_COLORS = (
+    (255, 238, 0),
+    (143, 255, 0),
+    (0, 235, 118),
+    (0, 230, 210),
+    (0, 225, 255),
+    (255, 255, 255),
+    (255, 75, 220),
+    (200, 95, 255),
+    (255, 165, 235),
+    (255, 190, 40),
+)
 UNIT_SPRITE_ORDER = ("marine", "marauder", "stalker", "scout", "zealot", "zergling", "hydralisk")
 UNIT_SPRITE_PATH = ROOT / "assets" / "SMAX_replay" / "smax_unit_sprites.png"
 UNIT_ICON_SIZE = 36
@@ -138,6 +150,87 @@ def _draw_melee_swing(draw, style, age, attacker, target, color):
             draw.line((*c, *d), fill=(255, 235, 196), width=3)
 
 
+def _draw_target_markers(draw, center, enemy_indices, num_enemies, radius):
+    x, y = center
+    angle_step = 360 / num_enemies
+    arc_width = min(27, angle_step * 0.75)
+    for enemy_index in enemy_indices:
+        angle = -90 + enemy_index * angle_step
+        bounds = (x - radius, y - radius, x + radius, y + radius)
+        draw.arc(
+            bounds,
+            start=angle - arc_width / 2,
+            end=angle + arc_width / 2,
+            fill=(18, 24, 34),
+            width=9,
+        )
+        draw.arc(
+            bounds,
+            start=angle - arc_width / 2,
+            end=angle + arc_width / 2,
+            fill=ENEMY_ID_COLORS[enemy_index],
+            width=5,
+        )
+
+
+def _separate_unit_centers(positions, alive, map_size):
+    left, top, right, bottom = FIELD
+    radius = UNIT_ICON_SIZE // 2 + 2
+    min_distance = 2 * radius + 2
+    max_shift = 80.0
+    base = np.empty(positions.shape, dtype=np.float32)
+    base[..., 0] = left + positions[..., 0] / map_size[0] * (right - left)
+    base[..., 1] = bottom - positions[..., 1] / map_size[1] * (bottom - top)
+    separated = base.copy()
+    previous_offsets = np.zeros(positions.shape[1:], dtype=np.float32)
+
+    for frame in range(len(positions)):
+        unit_ids = np.flatnonzero(alive[frame])
+        if not len(unit_ids):
+            previous_offsets.fill(0)
+            continue
+
+        points = base[frame].copy()
+        points[unit_ids] += previous_offsets[unit_ids] * 0.82
+        points[:, 0] = np.clip(points[:, 0], left + radius, right - radius)
+        points[:, 1] = np.clip(points[:, 1], top + radius, bottom - radius)
+
+        for _ in range(100):
+            max_overlap = 0.0
+            for offset, unit_i in enumerate(unit_ids):
+                for unit_j in unit_ids[offset + 1:]:
+                    delta = points[unit_j] - points[unit_i]
+                    distance = float(np.hypot(delta[0], delta[1]))
+                    if distance >= min_distance:
+                        continue
+                    if distance < 1e-4:
+                        angle = (unit_i * 2.399963 + unit_j * 0.754878) % (2 * np.pi)
+                        direction = np.array([np.cos(angle), np.sin(angle)])
+                    else:
+                        direction = delta / distance
+                    overlap = min_distance - distance
+                    max_overlap = max(max_overlap, overlap)
+                    shift = overlap * 0.51
+                    points[unit_i] -= direction * shift
+                    points[unit_j] += direction * shift
+
+            if max_overlap < 0.1:
+                break
+            offsets = points - base[frame]
+            lengths = np.linalg.norm(offsets, axis=1)
+            too_far = lengths > max_shift
+            offsets[too_far] *= (max_shift / lengths[too_far])[:, None]
+            points = base[frame] + offsets
+            points[:, 0] = np.clip(points[:, 0], left + radius, right - radius)
+            points[:, 1] = np.clip(points[:, 1], top + radius, bottom - radius)
+
+        separated[frame] = points
+        previous_offsets.fill(0)
+        previous_offsets[unit_ids] = points[unit_ids] - base[frame, unit_ids]
+
+    return separated
+
+
 def render_frame(data: dict[str, np.ndarray], frame: int, fonts) -> Image.Image:
     image = Image.new("RGB", (WIDTH, HEIGHT), (16, 21, 31))
     draw = ImageDraw.Draw(image)
@@ -172,12 +265,22 @@ def render_frame(data: dict[str, np.ndarray], frame: int, fonts) -> Image.Image:
         y = bottom - float(point[1]) / float(map_size[1]) * (bottom - top)
         return int(x), int(y)
 
+    def unit_xy(unit_id, at_frame=frame):
+        display_centers = data.get("_display_centers")
+        if display_centers is not None:
+            return tuple(np.rint(display_centers[at_frame, unit_id]).astype(int))
+        return xy(positions[at_frame, unit_id])
+
+    allowed_enemies_by_ally = data.get("_allowed_enemies_by_ally")
+    num_allies = int(np.count_nonzero(teams == 0))
+    num_enemies = int(np.count_nonzero(teams == 1))
+
     melee_effects = []
     for unit_id in range(positions.shape[1]):
         if not alive[frame, unit_id]:
             continue
 
-        x, y = xy(positions[frame, unit_id])
+        x, y = unit_xy(unit_id)
         team_id = int(teams[unit_id])
         color = TEAM_COLORS[team_id]
         unit_type = str(type_names[int(types[unit_id])]).lower()
@@ -195,7 +298,7 @@ def render_frame(data: dict[str, np.ndarray], frame: int, fonts) -> Image.Image:
             if latest_swing is not None:
                 launch_frame, target_id = latest_swing
                 age = frame - launch_frame
-                target = xy(positions[frame, target_id])
+                target = unit_xy(target_id)
                 dx, dy = target[0] - x, target[1] - y
                 stride = 9 if unit_type == "zealot" else 12
                 scale = (1.0, 0.55, -0.15, -0.45)[age]
@@ -221,6 +324,23 @@ def render_frame(data: dict[str, np.ndarray], frame: int, fonts) -> Image.Image:
             outline=color,
             width=3,
         )
+        if allowed_enemies_by_ally:
+            enemy_indices = (
+                allowed_enemies_by_ally[unit_id]
+                if team_id == 0
+                else (unit_id - num_allies,)
+            )
+            visible_enemy_indices = [
+                enemy_index for enemy_index in enemy_indices
+                if alive[frame, num_allies + enemy_index]
+            ]
+            _draw_target_markers(
+                draw,
+                (x, y),
+                visible_enemy_indices,
+                num_enemies,
+                badge_radius,
+            )
 
         bar_width = 30
         bar_y = y + badge_radius + 4
@@ -239,13 +359,13 @@ def render_frame(data: dict[str, np.ndarray], frame: int, fonts) -> Image.Image:
         if not 0 <= age < PROJECTILE_FRAMES:
             continue
         impact_frame = min(len(positions) - 1, launch_frame + PROJECTILE_FRAMES)
-        start = positions[launch_frame, shooter_id]
-        end = positions[impact_frame, target_id]
+        start = np.asarray(unit_xy(shooter_id, launch_frame), dtype=np.float32)
+        end = np.asarray(unit_xy(target_id, impact_frame), dtype=np.float32)
         progress = (age + 1) / PROJECTILE_FRAMES
         point = start + (end - start) * progress
         previous = start + (end - start) * (age / PROJECTILE_FRAMES)
-        px, py = xy(point)
-        qx, qy = xy(previous)
+        px, py = point
+        qx, qy = previous
         projectile_color = TEAM_COLORS[int(teams[shooter_id])]
         style = PROJECTILE_STYLES.get(shooter_type, "bullet")
         _draw_projectile(draw, style, (qx, qy), (px, py), projectile_color)
@@ -260,7 +380,14 @@ def render_frame(data: dict[str, np.ndarray], frame: int, fonts) -> Image.Image:
     return image
 
 
-def render_trajectory(source: Path, output: Path, fps: int, map_name: str | None = None) -> None:
+def render_trajectory(
+    source: Path,
+    output: Path,
+    fps: int,
+    map_name: str | None = None,
+    show_target_markers: bool = False,
+    separate_unit_centers: bool = False,
+) -> None:
     with np.load(source, allow_pickle=False) as archive:
         data = {key: np.asarray(archive[key]) for key in archive.files}
 
@@ -276,11 +403,33 @@ def render_trajectory(source: Path, output: Path, fps: int, map_name: str | None
     missing = required - data.keys()
     if missing:
         raise ValueError(f"Trajectory is missing fields: {sorted(missing)}")
+    if show_target_markers:
+        if "target_window" not in data:
+            raise ValueError("Target-marker rendering requires target_window metadata")
+        teams = data["unit_teams"][0]
+        num_allies = int(np.count_nonzero(teams == 0))
+        num_enemies = int(np.count_nonzero(teams == 1))
+        if num_enemies > len(ENEMY_ID_COLORS):
+            raise ValueError(f"Target badges support at most {len(ENEMY_ID_COLORS)} enemies")
+        window = min(num_enemies, max(1, int(data["target_window"])))
+        step = num_enemies / max(1, num_allies)
+        allowed_enemies_by_ally = [[] for _ in range(num_allies)]
+        for ally_id in range(num_allies):
+            for offset in range(window):
+                enemy_id = (round(ally_id * step) + offset) % num_enemies
+                allowed_enemies_by_ally[ally_id].append(enemy_id)
+        data["_allowed_enemies_by_ally"] = [tuple(targets) for targets in allowed_enemies_by_ally]
+    if separate_unit_centers:
+        data["_display_centers"] = _separate_unit_centers(
+            data["positions"],
+            data["alive"].astype(bool),
+            data["map_size"],
+        )
     data["_unit_sprites"] = _load_unit_sprites()
     fonts = {"title": _font(28), "small": _font(16)}
     data["_hit_frames"], data["_shot_events"] = _events(data)
     frames = [
-        render_frame(data, frame, fonts).quantize(colors=128, method=Image.Quantize.FASTOCTREE)
+        render_frame(data, frame, fonts).quantize(colors=256, method=Image.Quantize.FASTOCTREE)
         for frame in range(len(data["positions"]))
     ]
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -301,12 +450,29 @@ def main() -> None:
     parser.add_argument("trajectory", type=Path)
     parser.add_argument("--output", type=Path, default=None)
     parser.add_argument("--map-name", type=str, default=None)
+    parser.add_argument(
+        "--show-target-markers",
+        action="store_true",
+        help="Show target-identity color marks on enemy and ally unit rings.",
+    )
+    parser.add_argument(
+        "--separate-unit-centers",
+        action="store_true",
+        help="Apply small display-only shifts to keep unit rings from overlapping.",
+    )
     parser.add_argument("--fps", type=int, default=16)
     args = parser.parse_args()
     if args.fps < 1:
         parser.error("fps must be positive")
     output = args.output or ROOT / "assets" / "SMAX_replay" / "smax_replays" / f"{args.trajectory.stem}.gif"
-    render_trajectory(args.trajectory, output, args.fps, args.map_name)
+    render_trajectory(
+        args.trajectory,
+        output,
+        args.fps,
+        args.map_name,
+        args.show_target_markers,
+        args.separate_unit_centers,
+    )
 
 
 if __name__ == "__main__":
