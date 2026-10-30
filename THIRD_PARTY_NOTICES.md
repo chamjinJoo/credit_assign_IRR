@@ -9,8 +9,8 @@ This repository includes code derived from third-party open-source software.
 - Upstream license: MIT License
 - Related paper: Chao Yu, Akash Velu, Eugene Vinitsky, Jiaxuan Gao, Yu Wang, Alexandre Bayen, and Yi Wu. "The Surprising Effectiveness of PPO in Cooperative Multi-Agent Games." NeurIPS 2022.
 - Local derived files:
-  - `algorithms/networks/mlp.py`
-  - `algorithms/networks/rnn.py`
+  - `models/torch/networks/mlp.py`
+  - `models/torch/networks/rnn.py`
 
 These files were adapted from the upstream implementation for use in this project.
 
